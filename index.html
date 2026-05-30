@@ -592,11 +592,12 @@ const avc  = i => AVC[i%AVC.length];
 
 function partyBal(pid) {
   const total = S.challans.filter(c=>c.pid===pid).reduce((s,c)=>s+c.total,0);
-  // Use settlements (always accurate) — sum all settlements on this party's challans
   const partyChallanIds = S.challans.filter(c=>c.pid===pid).map(c=>c.id);
   const paid = S.settlements.filter(s=>partyChallanIds.includes(s.cid)).reduce((s,x)=>s+x.amount,0);
   const party = S.parties.find(x=>x.id===pid);
-  return total + (party?.ob||0) - paid;
+  const ob = party?.ob||0;
+  const obPaid = party?.ob_paid||0;
+  return total + ob - paid - obPaid;
 }
 function challanPaid(cid) { return S.settlements.filter(s=>s.cid===cid).reduce((a,s)=>a+s.amount,0); }
 
@@ -1161,6 +1162,10 @@ function savePayment() {
     if(rem>=due){S.settlements.push({cid:c.id,payId,amount:due,date:dt});c.status='S';c.sDate=dt;rem-=due;}
     else{S.settlements.push({cid:c.id,payId,amount:rem,date:dt});c.status='T';rem=0;}
   });
+  if(rem>0){
+    const party=S.parties.find(x=>x.id===pid);
+    if(party) party.ob_paid=(party.ob_paid||0)+rem;
+  }
   saveToCloud(); closeModal('payment'); renderAll();
   if (curParty===pid) renderPartyDetail(pid);
 }
@@ -1253,6 +1258,13 @@ function delPayment(pid) {
   document.getElementById('del-ok').onclick=()=>{
     const pay=S.payments.find(x=>x.id===pid); if(!pay){closeModal('del');return;}
     const aff=S.settlements.filter(s=>s.payId===pid).map(s=>s.cid);
+    // Reverse ob_paid: total payment minus what went to challans
+    const settledAmt=S.settlements.filter(s=>s.payId===pid).reduce((a,s)=>a+s.amount,0);
+    const obAmt=pay.amount-settledAmt;
+    if(obAmt>0){
+      const party=S.parties.find(x=>x.id===pay.pid);
+      if(party) party.ob_paid=Math.max(0,(party.ob_paid||0)-obAmt);
+    }
     S.settlements=S.settlements.filter(s=>s.payId!==pid);
     S.payments=S.payments.filter(x=>x.id!==pid);
     aff.forEach(cid=>{
