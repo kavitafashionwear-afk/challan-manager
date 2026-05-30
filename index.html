@@ -591,13 +591,17 @@ const AVC  = ['#1A2E5A','#065F46','#92400E','#6D28D9','#9D174D','#1E40AF','#0478
 const avc  = i => AVC[i%AVC.length];
 
 function partyBal(pid) {
-  const total = S.challans.filter(c=>c.pid===pid).reduce((s,c)=>s+c.total,0);
-  const partyChallanIds = S.challans.filter(c=>c.pid===pid).map(c=>c.id);
-  const paid = S.settlements.filter(s=>partyChallanIds.includes(s.cid)).reduce((s,x)=>s+x.amount,0);
   const party = S.parties.find(x=>x.id===pid);
   const ob = party?.ob||0;
-  const obPaid = party?.ob_paid||0;
-  return total + ob - paid - obPaid;
+  const total = S.challans.filter(c=>c.pid===pid).reduce((s,c)=>s+c.total,0);
+  const partyChallanIds = S.challans.filter(c=>c.pid===pid).map(c=>c.id);
+  // Amount settled against specific challans
+  const settledOnChallans = S.settlements.filter(s=>partyChallanIds.includes(s.cid)).reduce((s,x)=>s+x.amount,0);
+  // Total payments ever made for this party
+  const totalPaid = S.payments.filter(p=>p.pid===pid).reduce((s,p)=>s+p.amount,0);
+  // Excess = payments beyond challan settlements = applied to opening balance
+  const obPaid = Math.max(0, totalPaid - settledOnChallans);
+  return total + ob - settledOnChallans - obPaid;
 }
 function challanPaid(cid) { return S.settlements.filter(s=>s.cid===cid).reduce((a,s)=>a+s.amount,0); }
 
@@ -1162,10 +1166,6 @@ function savePayment() {
     if(rem>=due){S.settlements.push({cid:c.id,payId,amount:due,date:dt});c.status='S';c.sDate=dt;rem-=due;}
     else{S.settlements.push({cid:c.id,payId,amount:rem,date:dt});c.status='T';rem=0;}
   });
-  if(rem>0){
-    const party=S.parties.find(x=>x.id===pid);
-    if(party) party.ob_paid=(party.ob_paid||0)+rem;
-  }
   saveToCloud(); closeModal('payment'); renderAll();
   if (curParty===pid) renderPartyDetail(pid);
 }
@@ -1258,13 +1258,6 @@ function delPayment(pid) {
   document.getElementById('del-ok').onclick=()=>{
     const pay=S.payments.find(x=>x.id===pid); if(!pay){closeModal('del');return;}
     const aff=S.settlements.filter(s=>s.payId===pid).map(s=>s.cid);
-    // Reverse ob_paid: total payment minus what went to challans
-    const settledAmt=S.settlements.filter(s=>s.payId===pid).reduce((a,s)=>a+s.amount,0);
-    const obAmt=pay.amount-settledAmt;
-    if(obAmt>0){
-      const party=S.parties.find(x=>x.id===pay.pid);
-      if(party) party.ob_paid=Math.max(0,(party.ob_paid||0)-obAmt);
-    }
     S.settlements=S.settlements.filter(s=>s.payId!==pid);
     S.payments=S.payments.filter(x=>x.id!==pid);
     aff.forEach(cid=>{
@@ -2148,6 +2141,11 @@ function printStmt(pid) {
   const slMap={P:'PENDING',T:'PARTIAL',S:'SETTLED'};
   const scMap={P:'#1E40AF',T:'#92400E',S:'#065F46'};
   const sbMap={P:'#DBEAFE',T:'#FEF3C7',S:'#D1FAE5'};
+  const ob=S.parties.find(x=>x.id===pid)?.ob||0;
+  const partyChallanIds=chs.map(c=>c.id);
+  const settledOnChallans=S.settlements.filter(s=>partyChallanIds.includes(s.cid)).reduce((s,x)=>s+x.amount,0);
+  const totalPmts=pmts.reduce((s,p)=>s+p.amount,0);
+  const obPaidAmt=Math.max(0,totalPmts-settledOnChallans);
   const chR=chs.map((c,i)=>{const paid=challanPaid(c.id),due=c.total-paid;return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:7px 9px;border:1px solid #E0E0E0">${esc(c.num)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0">${fmtD(c.date)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0">${c.items.map(it=>esc(it.name)+' ('+it.qty+')').join(', ')}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(c.total)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;text-align:right;color:#059669;font-weight:700">${fmt(paid)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;text-align:right;color:${due>0?'#DC2626':'#059669'};font-weight:700">${fmt(due)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;text-align:center"><span style="background:${sbMap[c.status]};color:${scMap[c.status]};padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700">${slMap[c.status]}</span></td></tr>`;}).join('');
   const pR=pmts.map((p,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:7px 9px;border:1px solid #E0E0E0">${fmtD(p.date)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(p.amount)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0">${esc(p.mode)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;color:#666">${esc(p.remarks||'-')}</td></tr>`).join('');
   const w=window.open('','_blank');
@@ -2161,7 +2159,7 @@ function printStmt(pid) {
 <div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:14px;font-weight:700;color:#1A2E5A">ACCOUNT STATEMENT</div><div style="font-size:17px;font-weight:700;margin-top:3px">${esc(party.name)}</div><div style="font-size:11px;color:#888;margin-top:3px">As on ${fmtD(today())}</div></div></div>
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A">${esc(party.name)}</div><div class="ml">Phone</div><div class="mv">${esc(party.phone||'-')}</div><div class="ml">City</div><div class="mv">${esc(party.city||'-')}</div><div class="ml">Total Challans</div><div class="mv">${chs.length}</div></div>
 <div class="sec">Challan Details</div>
-<table><thead><tr><th style="width:10%">Challan</th><th style="width:13%">Date</th><th>Items</th><th style="width:11%;text-align:right">Amount</th><th style="width:11%;text-align:right">Paid</th><th style="width:11%;text-align:right">Balance</th><th style="width:10%;text-align:center">Status</th></tr></thead><tbody>${chR||'<tr><td colspan="7" style="padding:12px;text-align:center;color:#999">No challans</td></tr>'}</tbody><tfoot><tr style="background:#EFF6FF;font-weight:700"><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">TOTAL</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">${fmt(chs.reduce((s,c)=>s+c.total,0))}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:#059669">${fmt(pmts.reduce((s,p)=>s+p.amount,0))}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:${bal>0?'#DC2626':'#059669'}">${fmt(bal)}</td><td style="border:1px solid #BFDBFE"></td></tr></tfoot></table>
+<table><thead><tr><th style="width:10%">Challan</th><th style="width:13%">Date</th><th>Items</th><th style="width:11%;text-align:right">Amount</th><th style="width:11%;text-align:right">Paid</th><th style="width:11%;text-align:right">Balance</th><th style="width:10%;text-align:center">Status</th></tr></thead><tbody>${chR||'<tr><td colspan="7" style="padding:12px;text-align:center;color:#999">No challans</td></tr>'}</tbody><tfoot><tr style="background:#EFF6FF;font-weight:700"><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">TOTAL</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">${fmt(chs.reduce((s,c)=>s+c.total,0))}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:#059669">${fmt(settledOnChallans)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">${fmt(chs.reduce((s,c)=>s+c.total,0)-settledOnChallans)}</td><td style="border:1px solid #BFDBFE"></td></tr>${ob>0?`<tr style="background:#FFF7ED"><td colspan="3" style="padding:7px 9px;border:1px solid #FDE68A;color:#92400E;font-weight:600">Opening Balance</td><td style="padding:7px 9px;border:1px solid #FDE68A;text-align:right;font-weight:700;color:#92400E">${fmt(ob)}</td><td style="padding:7px 9px;border:1px solid #FDE68A;text-align:right;color:#059669;font-weight:700">${fmt(obPaidAmt)}</td><td style="padding:7px 9px;border:1px solid #FDE68A;text-align:right;color:${(ob-obPaidAmt)>0?'#DC2626':'#059669'};font-weight:700">${fmt(Math.max(0,ob-obPaidAmt))}</td><td style="border:1px solid #FDE68A"></td></tr>`:''}</tfoot></table>
 <div class="sec">Payment History</div>
 <table><thead><tr><th style="width:18%">Date</th><th style="width:20%">Amount</th><th style="width:16%">Mode</th><th>Remarks</th></tr></thead><tbody>${pR||'<tr><td colspan="4" style="padding:12px;text-align:center;color:#999">No payments</td></tr>'}</tbody></table>
 <div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">NET OUTSTANDING</div><div style="font-size:22px;font-weight:700;color:${bal>0?'#DC2626':'#059669'}">${fmt(Math.abs(bal))} ${bal<=0?'(CLEAR)':''}</div></div>
