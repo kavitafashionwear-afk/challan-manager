@@ -999,13 +999,6 @@ function challanCard(c, showParty) {
       <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:3px"><span>Paid: ${fmt(paid)} (${pct}%)</span><span>Due: ${fmt(due)}</span></div>
       <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
       ${ptags?`<div style="margin-top:6px">${ptags}</div>`:''}
-      ${(()=>{
-        const totalPBal=partyBal(c.pid);
-        const prevPend=Math.max(0,totalPBal-due);
-        const totalOut=totalPBal;
-        if(prevPend<=0)return'';
-        return`<div style="margin:8px 0 4px;border:1px dashed #D1D5DB;border-radius:8px;padding:8px 12px;background:#F9FAFB;display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#6B7280"><span style="font-weight:600;color:#374151">Previous Pendency</span></div><span style="font-size:13px;font-weight:700;color:#DC2626">${fmt(prevPend)}</span></div><div style="border:1.5px solid #EF4444;border-radius:8px;padding:8px 12px;background:#FEF2F2;display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;font-weight:700;color:#991B1B">TOTAL OUTSTANDING</span><span style="font-size:15px;font-weight:700;color:#B91C1C">${fmt(totalOut)}</span></div>`;
-      })()}
       <div class="cfoot">
         <span>${c.status==='S'?'✅ Settled':'⏳ Due: '+fmt(due)}</span>
         <div class="cfoot-btns">
