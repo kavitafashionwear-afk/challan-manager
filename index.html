@@ -728,16 +728,31 @@ function subscribeData() {
   }, err => { setSyncDot('err'); console.error(err); });
 }
 
+function deepSanitize(obj) {
+  if (Array.isArray(obj)) { obj.forEach(deepSanitize); return; }
+  if (obj && typeof obj === 'object') {
+    Object.keys(obj).forEach(k => {
+      if (obj[k] === undefined || obj[k] === null) obj[k] = '';
+      else if (typeof obj[k] === 'object') deepSanitize(obj[k]);
+    });
+  }
+}
 async function saveToCloud() {
   if (!uid) return;
   setSyncDot('busy');
   try {
-    await db.collection('users').doc(uid).collection('appdata').doc('main').set({
-      parties:S.parties, challans:S.challans, payments:S.payments,
-      settlements:S.settlements, trash:S.trash,
-      pC:S.pC, cC:S.cC, pyC:S.pyC,
+    // Sanitize: Firestore rejects undefined values
+    const payload = {
+      parties:   JSON.parse(JSON.stringify(S.parties   || [])),
+      challans:  JSON.parse(JSON.stringify(S.challans  || [])),
+      payments:  JSON.parse(JSON.stringify(S.payments  || [])),
+      settlements: JSON.parse(JSON.stringify(S.settlements || [])),
+      trash:     JSON.parse(JSON.stringify(S.trash     || [])),
+      pC: S.pC || 0, cC: S.cC || 0, pyC: S.pyC || 0,
       updated: new Date().toISOString()
-    });
+    };
+    deepSanitize(payload);
+    await db.collection('users').doc(uid).collection('appdata').doc('main').set(payload);
     setSyncDot('ok');
   } catch(e) { setSyncDot('err'); alert('Sync error: ' + e.message); }
 }
@@ -1144,7 +1159,8 @@ function saveChallan() {
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
   S.cC++;
   const party=S.parties.find(p=>p.id===pid);
-  S.challans.push({id:'C'+pad(S.cC),num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,total:items.reduce((s,i)=>s+i.amount,0),status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
+  const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0);
+  S.challans.push({id:'C'+pad(S.cC),num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
   saveToCloud(); closeModal('challan'); renderAll();
   if (curParty===pid) renderPartyDetail(pid); else openParty(pid);
 }
@@ -2113,7 +2129,7 @@ function printChallan(cid) {
   const pR=setts.length?setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join(''):`<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
-<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
+<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 WhatsApp</button><button onclick="shareNativeChallan()" style="background:#6D28D9;color:#fff">📤 Share</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
 <div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div><div style="font-size:22px;font-weight:700;color:#1A2E5A">${esc(c.num)}</div><div style="margin-top:5px;display:inline-block;background:${sb};color:${sc};padding:2px 12px;border-radius:20px;font-size:11px;font-weight:700">${sl}</div></div></div>
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
 ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> ${esc(c.remarks)}</div>`:''}
@@ -2127,6 +2143,25 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
 <div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
 <div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}</div>
 </div></body></html>`);
+  const waText = encodeURIComponent(
+    '*Delivery Challan - Modrobe Impex*\n' +
+    '*' + (c.num||'') + '*\n' +
+    'Party: ' + (party?party.name:c.pname) + '\n' +
+    'Date: ' + (c.date||'') + '\n\n' +
+    '*Total: Rs.' + (c.total||0).toLocaleString('en-IN') + '*\n' +
+    'Balance Due: Rs.' + (due||0).toLocaleString('en-IN') + '\n\n' +
+    '_Modrobe Impex - New Delhi_'
+  );
+  const shareText = 'Delivery Challan ' + (c.num||'') + '\nParty: ' + (party?party.name:c.pname) + '\nDate: ' + (c.date||'') + '\nTotal: Rs.' + (c.total||0).toLocaleString('en-IN') + '\nBalance: Rs.' + (due||0).toLocaleString('en-IN') + '\n\nModrobe Impex';
+  const waURL = 'https://wa.me/?text=' + waText;
+  w.document.write('<scr'+'ipt>');
+  w.document.write('function shareWAChallan(){window.open("'+waURL+'","_blank");}');
+  w.document.write('function shareNativeChallan(){');
+  w.document.write('var t='+JSON.stringify(shareText)+';');
+  w.document.write('if(navigator.share){navigator.share({title:"Challan",text:t}).catch(function(){});}');
+  w.document.write('else{navigator.clipboard.writeText(t).then(function(){alert("Copied!");});}');
+  w.document.write('}');
+  w.document.write('<\/scr'+'ipt>');
   w.document.close();
 }
 
