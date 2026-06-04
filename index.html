@@ -2098,7 +2098,8 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
 <div style="font-size:11px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px"><span>Paid: ${pct}%</span><span>${fmt(paid)} / ${fmt(c.total)}</span></div><div class="bb"><div class="bf" style="width:${pct}%"></div></div>
 <div class="sec">PAYMENT HISTORY</div>
 <table><thead><tr><th style="width:22%">Date</th><th style="width:22%">Amount</th><th style="width:18%">Mode</th><th>Remarks</th></tr></thead><tbody>${pR}</tbody></table>
-<div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE</div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
+<div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE<div style="font-size:10px;font-weight:400;color:#6B7280;margin-top:1px">This challan only</div></div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
+${prevBal>0?`<div style="margin:6px 0 4px;border:1.5px dashed #D1D5DB;border-radius:8px;padding:10px 14px;background:#F9FAFB;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:11px;font-weight:600;color:#374151">Previous Pendency</div><div style="font-size:10px;color:#6B7280;margin-top:2px">${otherPendingChallans.length} challan(s) pending${party&&party.ob>0?' + opening balance':''}</div></div><div style="font-size:16px;font-weight:700;color:#DC2626">${fmt(prevBal)}</div></div><div style="border:2px solid #B91C1C;border-radius:8px;padding:10px 14px;margin:4px 0 12px;background:#FEF2F2;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:11px;font-weight:700;color:#991B1B">TOTAL OUTSTANDING</div><div style="font-size:10px;color:#9B1C1C;margin-top:1px">All pending dues combined</div></div><div style="font-size:20px;font-weight:700;color:#B91C1C">${fmt(totalOutstanding)}</div></div>`:''}
 <div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
 <div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}</div>
 </div></body></html>`;
@@ -2121,6 +2122,12 @@ function printChallan(cid) {
   const c=S.challans.find(x=>x.id===cid); if(!c) return;
   const party=S.parties.find(p=>p.id===c.pid);
   const paid=challanPaid(cid),due=c.total-paid,pct=Math.min(100,Math.round((paid/c.total)*100));
+  // Previous pendency: total party outstanding minus this challan's due
+  // Uses partyBal() which correctly handles FIFO payments + opening balance
+  const totalPartyBal=partyBal(c.pid);
+  const prevBal=Math.max(0,totalPartyBal-due);
+  const totalOutstanding=totalPartyBal;
+  const otherPendingChallans=S.challans.filter(x=>x.pid===c.pid&&x.id!==cid&&(x.total-challanPaid(x.id))>0);
   const setts=S.settlements.filter(s=>s.cid===cid);
   const sc=c.status==='S'?'#065F46':c.status==='T'?'#92400E':'#1E40AF';
   const sb=c.status==='S'?'#D1FAE5':c.status==='T'?'#FEF3C7':'#DBEAFE';
@@ -2139,7 +2146,8 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
 <div style="font-size:11px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px"><span>Paid: ${pct}%</span><span>${fmt(paid)} / ${fmt(c.total)}</span></div><div class="bb"><div class="bf" style="width:${pct}%"></div></div>
 <div class="sec">PAYMENT HISTORY</div>
 <table><thead><tr><th style="width:22%">Date</th><th style="width:22%">Amount</th><th style="width:18%">Mode</th><th>Remarks</th></tr></thead><tbody>${pR}</tbody></table>
-<div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE</div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
+<div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE<div style="font-size:10px;font-weight:400;color:#6B7280;margin-top:1px">This challan only</div></div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
+${prevBal>0?`<div style="margin:6px 0 4px;border:1.5px dashed #D1D5DB;border-radius:8px;padding:10px 14px;background:#F9FAFB;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:11px;font-weight:600;color:#374151">Previous Pendency</div><div style="font-size:10px;color:#6B7280;margin-top:2px">${otherPendingChallans.length} challan(s) pending${party&&party.ob>0?' + opening balance':''}</div></div><div style="font-size:16px;font-weight:700;color:#DC2626">${fmt(prevBal)}</div></div><div style="border:2px solid #B91C1C;border-radius:8px;padding:10px 14px;margin:4px 0 12px;background:#FEF2F2;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:11px;font-weight:700;color:#991B1B">TOTAL OUTSTANDING</div><div style="font-size:10px;color:#9B1C1C;margin-top:1px">All pending dues combined</div></div><div style="font-size:20px;font-weight:700;color:#B91C1C">${fmt(totalOutstanding)}</div></div>`:''}
 <div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
 <div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}</div>
 </div></body></html>`);
