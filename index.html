@@ -2201,9 +2201,9 @@ function printStmt(pid) {
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Statement - ${esc(party.name)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:760px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px;flex-wrap:wrap}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{font-weight:700;font-size:12px;color:#1A2E5A;margin:14px 0 7px;text-transform:uppercase;border-bottom:2px solid #1A2E5A;padding-bottom:3px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#1A2E5A;color:#fff;padding:8px 9px;text-align:left;font-size:11px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:13px 16px;display:flex;justify-content:space-between;align-items:center;margin:14px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
 <div class="pb np">
   <button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button>
-  <button onclick="shareWA()" style="background:#25D366;color:#fff">📲 WhatsApp</button>
-  <button onclick="shareNative()" style="background:#6D28D9;color:#fff">📤 Share</button>
-  <button onclick="downloadStmt()" style="background:#F59E0B;color:#fff">⬇️ Download</button>
+  <button onclick="window.opener.stmtShareWA(window._shareData.waURL)" style="background:#25D366;color:#fff">📲 WhatsApp</button>
+  <button onclick="window.opener.stmtShareNative(window._shareData.nTitle,window._shareData.nMsg)" style="background:#6D28D9;color:#fff">📤 Share</button>
+  <button onclick="window.opener.stmtDownloadFile(window._shareData.fname,window._shareData.html)" style="background:#F59E0B;color:#fff">⬇️ Download</button>
   <button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button>
 </div>
 <div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:14px;font-weight:700;color:#1A2E5A">ACCOUNT STATEMENT</div><div style="font-size:17px;font-weight:700;margin-top:3px">${esc(party.name)}</div><div style="font-size:11px;color:#888;margin-top:3px">As on ${fmtD(today())}</div></div></div>
@@ -2216,34 +2216,68 @@ function printStmt(pid) {
 <div class="sig"><div><div class="sl">Party Signature<br><strong>${esc(party.name)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
 <div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(party.name)}</div>
 </div>
-<script>
-var _waText=encodeURIComponent('*Account Statement - Modrobe Impex*\n*Party: ${esc(party.name)}*\n${party.phone?'📞 '+esc(party.phone)+'\\n':''}City: ${esc(party.city||'-')}\nDate: ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}\n\n━━━━━━━━━━━━━━━━━━━━\n*Challans: ${chs.length}* (${chs.filter(c=>c.total-challanPaid(c.id)>0).length} pending)\nTotal Billed: *Rs.${chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN')}*\nTotal Received: *Rs.${settledOnChallans.toLocaleString('en-IN')}*\n━━━━━━━━━━━━━━━━━━━━\n*NET OUTSTANDING: Rs.${Math.abs(bal).toLocaleString('en-IN')}${bal<=0?' ✅ CLEAR':''}*\n━━━━━━━━━━━━━━━━━━━━\n_Modrobe Impex - Wholesale Readymade Garments, New Delhi_');
-var _nativeText='Account Statement - Modrobe Impex\nParty: ${esc(party.name)}\n${party.phone?'Phone: '+esc(party.phone)+'\\n':''}Date: '+new Date().toLocaleDateString('en-IN')+'\n\nChallans: ${chs.length}\nTotal Billed: Rs.${chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN')}\nTotal Received: Rs.${settledOnChallans.toLocaleString('en-IN')}\nNET OUTSTANDING: Rs.${Math.abs(bal).toLocaleString('en-IN')}${bal<=0?' (CLEAR)':''}\n\nModrobe Impex - New Delhi';
-function shareWA(){
-  window.open('https://wa.me/?text='+_waText,'_blank');
+</body></html>`);
+
+  // Compute share data in outer scope (has access to all JS variables)
+  const _waMsg = encodeURIComponent(
+    '*Account Statement - Modrobe Impex*\n' +
+    '*Party: ' + esc(party.name) + '*\n' +
+    (party.phone ? '\u260e\ufe0f ' + party.phone + '\n' : '') +
+    (party.city  ? '\ud83d\udccd ' + party.city  + '\n' : '') +
+    'Date: ' + new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'}) + '\n\n' +
+    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n' +
+    '*Challans: ' + chs.length + '*\n' +
+    'Total Billed: *Rs.' + chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN') + '*\n' +
+    'Total Received: *Rs.' + settledOnChallans.toLocaleString('en-IN') + '*\n' +
+    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n' +
+    '*NET OUTSTANDING: Rs.' + Math.abs(bal).toLocaleString('en-IN') + (bal<=0?' \u2705 CLEAR':'') + '*\n' +
+    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n' +
+    '_Modrobe Impex - Wholesale Readymade Garments, New Delhi_'
+  );
+  const _nativeMsg =
+    'Account Statement - Modrobe Impex\n' +
+    'Party: ' + esc(party.name) + '\n' +
+    (party.phone ? 'Phone: ' + party.phone + '\n' : '') +
+    'Date: ' + new Date().toLocaleDateString('en-IN') + '\n\n' +
+    'Total Challans: ' + chs.length + '\n' +
+    'Total Billed: Rs.' + chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN') + '\n' +
+    'Total Received: Rs.' + settledOnChallans.toLocaleString('en-IN') + '\n' +
+    'NET OUTSTANDING: Rs.' + Math.abs(bal).toLocaleString('en-IN') + (bal<=0?' (CLEAR)':'') + '\n\n' +
+    'Modrobe Impex - New Delhi';
+  const _stmtFile = 'Statement_' + party.name.replace(/\s+/g,'_') + '_' + new Date().toISOString().slice(0,10) + '.html';
+
+  // Share via window.opener (no script injection needed in popup)
+  const _waURL = 'https://wa.me/?text=' + encodeURIComponent(
+    '*Account Statement - Modrobe Impex*\n*Party: ' + esc(party.name) + '*\n' +
+    (party.phone ? '\u260e\ufe0f ' + party.phone + '\n' : '') +
+    'Date: ' + new Date().toLocaleDateString('en-IN') + '\n\n' +
+    'Challans: ' + chs.length + ' | Billed: Rs.' + chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN') +
+    '\nReceived: Rs.' + settledOnChallans.toLocaleString('en-IN') +
+    '\n*Outstanding: Rs.' + Math.abs(bal).toLocaleString('en-IN') + (bal<=0?' CLEAR':'') + '*\n\nModrobe Impex'
+  );
+  const _nMsg = 'Account Statement\nParty: ' + party.name + '\nDate: ' + new Date().toLocaleDateString('en-IN') +
+    '\nBilled: Rs.' + chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN') +
+    '\nReceived: Rs.' + settledOnChallans.toLocaleString('en-IN') +
+    '\nOutstanding: Rs.' + Math.abs(bal).toLocaleString('en-IN') + (bal<=0?' (CLEAR)':'') + '\n\nModrobe Impex';
+  const _nTitle = 'Statement - ' + party.name;
+  const _fname = 'Statement_' + party.name.replace(/\s+/g,'_') + '_' + new Date().toISOString().slice(0,10) + '.html';
+  w._shareData = {waURL:_waURL, nMsg:_nMsg, nTitle:_nTitle, fname:_fname, html:''};
+  w.document.close();
+  // Set html after close
+  w._shareData.html = '<!DOCTYPE html>' + w.document.documentElement.outerHTML;
 }
-function shareNative(){
-  if(navigator.share){
-    navigator.share({title:'Statement - ${esc(party.name)}',text:_nativeText}).catch(function(){});
-  } else {
-    navigator.clipboard.writeText(_nativeText).then(function(){alert('Statement summary copied to clipboard!');});
-  }
+
+function stmtShareWA(url){window.open(url,'_blank');}
+function stmtShareNative(title,text){
+  if(navigator.share){navigator.share({title:title,text:text}).catch(function(){});}
+  else{navigator.clipboard.writeText(text).then(function(){alert('Statement summary copied to clipboard!');});}
 }
-function downloadStmt(){
-  var html=document.documentElement.outerHTML;
-  // Remove toolbar from download
-  html=html.replace(/<div class="pb np">[\s\S]*?<\/div>/,'');
+function stmtDownloadFile(fname,html){
   var blob=new Blob([html],{type:'text/html'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=url;
-  a.download='Statement_${esc(party.name).replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.html';
-  a.click();
+  a.href=url;a.download=fname;a.click();
   setTimeout(function(){URL.revokeObjectURL(url);},1000);
-}
-<\/script>
-</body></html>`);
-  w.document.close();
 }
 </script>
 </body>
