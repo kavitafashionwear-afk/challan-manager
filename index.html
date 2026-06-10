@@ -462,6 +462,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     <div class="fg"><label>Date *</label><input id="ch-date" type="date"></div>
     <div class="fg"><label>Remarks</label><input id="ch-rmk" placeholder="Optional"></div>
     <div class="fg"><label>Items</label><div id="item-rows"></div><button class="btn sm" onclick="addItemRow()" style="width:100%;justify-content:center;margin-top:4px">+ Add Item</button></div>
+    <div class="fg"><label>Freight / Transport (Rs.)</label><input id="ch-freight" type="number" inputmode="decimal" placeholder="0" oninput="calcTotal()"></div>
     <div id="ch-total" style="display:none" class="ibox"></div>
   </div>
   <div class="mfoot"><button class="btn full pri" onclick="saveChallan()">✓ Create Challan</button></div>
@@ -506,6 +507,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
       <div id="ec-item-rows"></div>
       <button class="btn sm" onclick="addECItemRow()" style="width:100%;justify-content:center;margin-top:6px">+ Add Item</button>
     </div>
+    <div class="fg"><label>Freight / Transport (Rs.)</label><input id="ec-freight" type="number" inputmode="decimal" placeholder="0" oninput="calcECTotal()"></div>
     <div id="ec-total-preview" style="display:none" class="ibox"></div>
     <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:10px 12px;font-size:12px;color:#92400E;margin-top:10px">
       ⚠️ Editing a challan updates its total. Existing payment settlements are kept as-is — the balance due will recalculate automatically.
@@ -994,7 +996,7 @@ function challanCard(c, showParty) {
     <div class="cbody" id="cb-${c.id}">
       <table class="itable"><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th style="text-align:right">Amount</th></tr></thead>
       <tbody>${c.items.map(it=>`<tr><td>${esc(it.name)}</td><td>${it.qty}</td><td>${fmtR(it.rate)}</td><td style="text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody>
-      <tfoot><tr style="background:#F0F4FF;font-weight:700;font-size:12px"><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#555">Total</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">${c.items.reduce((s,i)=>s+i.qty,0)} pcs</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE"></td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A;font-size:13px">${fmt(c.total)}</td></tr></tfoot>
+      <tfoot><tr style="background:#F0F4FF;font-weight:700;font-size:12px"><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#555">Subtotal</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">${c.items.reduce((s,i)=>s+i.qty,0)} pcs</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE"></td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.items.reduce((s,i)=>s+i.amount,0))}</td></tr>${c.freight?`<tr style="background:#F0F4FF;font-size:12px"><td style="padding:4px 8px;color:#555" colspan="3">🚚 Freight</td><td style="padding:4px 8px;text-align:right;font-weight:700;color:#555">+ ${fmt(c.freight)}</td></tr>`:''}<tr style="background:#EFF6FF;font-weight:700;font-size:13px"><td colspan="3" style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">TOTAL</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot>
       </table>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:3px"><span>Paid: ${fmt(paid)} (${pct}%)</span><span>Due: ${fmt(due)}</span></div>
       <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
@@ -1026,6 +1028,7 @@ function openModal(type) {
     document.getElementById('ch-date').value=today();
     document.getElementById('ch-rmk').value='';
     document.getElementById('item-rows').innerHTML='';
+    document.getElementById('ch-freight').value='';
     document.getElementById('ch-total').style.display='none';
     document.getElementById('quick-party-box').style.display='none';
     addItemRow(); addItemRow();
@@ -1079,8 +1082,10 @@ function calcItem(id) {
 }
 function calcTotal() {
   let t=0; document.querySelectorAll('#item-rows .icard').forEach(c=>{t+=+c.querySelector('.iamt').dataset.v||0;});
+  const fr=+document.getElementById('ch-freight').value||0;
+  const grand=t+fr;
   const box=document.getElementById('ch-total');
-  if(t>0){box.style.display='block';box.textContent='Challan Total: '+fmt(t);}else box.style.display='none';
+  if(grand>0){box.style.display='block';box.textContent='Items: '+fmt(t)+(fr>0?' + Freight: '+fmt(fr):'')+' = Total: '+fmt(grand);}else box.style.display='none';
 }
 
 /* ══════════════════════════════
@@ -1159,8 +1164,9 @@ function saveChallan() {
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
   S.cC++;
   const party=S.parties.find(p=>p.id===pid);
-  const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0);
-  S.challans.push({id:'C'+pad(S.cC),num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
+  const freight=+document.getElementById('ch-freight').value||0;
+  const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0)+freight;
+  S.challans.push({id:'C'+pad(S.cC),num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
   saveToCloud(); closeModal('challan'); renderAll();
   if (curParty===pid) renderPartyDetail(pid); else openParty(pid);
 }
@@ -1800,6 +1806,7 @@ function openEditChallan(cid) {
   ecRowId = 0;
   c.items.forEach(it => addECItemRow(it));
   if (!c.items.length) addECItemRow();
+  document.getElementById('ec-freight').value=c.freight||'';
   calcECTotal();
   document.getElementById('mo-edit-challan').classList.add('open');
 }
@@ -1859,7 +1866,8 @@ function saveEditChallan() {
   c.date    = newDate;
   c.remarks = newRmk;
   c.items   = items;
-  c.total   = items.reduce((s,i)=>s+i.amount, 0);
+  c.freight = +document.getElementById('ec-freight').value||0;
+  c.total   = items.reduce((s,i)=>s+i.amount, 0) + c.freight;
   recalcChallanStatus(cid);
   saveToCloud();
   closeModal('edit-challan');
@@ -2093,7 +2101,7 @@ th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px 
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
 ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> ${esc(c.remarks)}</div>`:''}
 <div class="sec">ITEM DETAILS</div>
-<table><thead><tr><th style="width:44%">Item</th><th style="width:14%;text-align:center">Qty</th><th style="width:20%;text-align:right">Rate</th><th style="width:22%;text-align:right">Amount</th></tr></thead><tbody>${iR}</tbody><tfoot><tr style="background:#EFF6FF;font-weight:700"><td style="padding:9px 10px;border:1px solid #BFDBFE;font-size:13px">TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:center;font-size:13px;color:#1A2E5A">${c.items.reduce((s,i)=>s+(+i.qty||0),0)} pcs</td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:14px;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table>
+<table><thead><tr><th style="width:44%">Item</th><th style="width:14%;text-align:center">Qty</th><th style="width:20%;text-align:right">Rate</th><th style="width:22%;text-align:right">Amount</th></tr></thead><tbody>${iR}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:8px 10px;border:1px solid #BFDBFE">Subtotal</td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:center;color:#1A2E5A">${c.items.reduce((s,i)=>s+(+i.qty||0),0)} pcs</td><td style="padding:8px 10px;border:1px solid #BFDBFE"></td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.items.reduce((s,i)=>s+(+i.amount||0),0))}</td></tr>${c.freight?`<tr style="background:#F0F4FF"><td colspan="3" style="padding:7px 10px;border:1px solid #BFDBFE;color:#555">🚚 Freight / Transport</td><td style="padding:7px 10px;border:1px solid #BFDBFE;text-align:right;font-weight:700;color:#555">+ ${fmt(c.freight)}</td></tr>`:''}<tr style="background:#EFF6FF;font-weight:700"><td colspan="2" style="padding:9px 10px;border:1px solid #BFDBFE;font-size:14px;color:#1A2E5A">GRAND TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:15px;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table>
 <div class="sum"><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Total</div><div style="font-size:15px;font-weight:700;color:#1A2E5A">${fmt(c.total)}</div></div><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Received</div><div style="font-size:15px;font-weight:700;color:#059669">${fmt(paid)}</div></div><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Balance</div><div style="font-size:15px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)}</div></div></div>
 <div style="font-size:11px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px"><span>Paid: ${pct}%</span><span>${fmt(paid)} / ${fmt(c.total)}</span></div><div class="bb"><div class="bf" style="width:${pct}%"></div></div>
 <div class="sec">PAYMENT HISTORY</div>
@@ -2141,7 +2149,7 @@ function printChallan(cid) {
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
 ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> ${esc(c.remarks)}</div>`:''}
 <div class="sec">ITEM DETAILS</div>
-<table><thead><tr><th style="width:44%">Item</th><th style="width:14%;text-align:center">Qty</th><th style="width:20%;text-align:right">Rate</th><th style="width:22%;text-align:right">Amount</th></tr></thead><tbody>${iR}</tbody><tfoot><tr style="background:#EFF6FF;font-weight:700"><td style="padding:9px 10px;border:1px solid #BFDBFE;font-size:13px">TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:center;font-size:13px;color:#1A2E5A">${c.items.reduce((s,i)=>s+(+i.qty||0),0)} pcs</td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:14px;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table>
+<table><thead><tr><th style="width:44%">Item</th><th style="width:14%;text-align:center">Qty</th><th style="width:20%;text-align:right">Rate</th><th style="width:22%;text-align:right">Amount</th></tr></thead><tbody>${iR}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:8px 10px;border:1px solid #BFDBFE">Subtotal</td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:center;color:#1A2E5A">${c.items.reduce((s,i)=>s+(+i.qty||0),0)} pcs</td><td style="padding:8px 10px;border:1px solid #BFDBFE"></td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.items.reduce((s,i)=>s+(+i.amount||0),0))}</td></tr>${c.freight?`<tr style="background:#F0F4FF"><td colspan="3" style="padding:7px 10px;border:1px solid #BFDBFE;color:#555">🚚 Freight / Transport</td><td style="padding:7px 10px;border:1px solid #BFDBFE;text-align:right;font-weight:700;color:#555">+ ${fmt(c.freight)}</td></tr>`:''}<tr style="background:#EFF6FF;font-weight:700"><td colspan="2" style="padding:9px 10px;border:1px solid #BFDBFE;font-size:14px;color:#1A2E5A">GRAND TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:15px;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table>
 <div class="sum"><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Total</div><div style="font-size:15px;font-weight:700;color:#1A2E5A">${fmt(c.total)}</div></div><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Received</div><div style="font-size:15px;font-weight:700;color:#059669">${fmt(paid)}</div></div><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Balance</div><div style="font-size:15px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)}</div></div></div>
 <div style="font-size:11px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px"><span>Paid: ${pct}%</span><span>${fmt(paid)} / ${fmt(c.total)}</span></div><div class="bb"><div class="bf" style="width:${pct}%"></div></div>
 <div class="sec">PAYMENT HISTORY</div>
