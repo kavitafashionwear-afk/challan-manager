@@ -2144,7 +2144,7 @@ function printChallan(cid) {
   const pR=setts.length?setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join(''):`<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
-<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 WhatsApp</button><button onclick="shareNativeChallan()" style="background:#6D28D9;color:#fff">📤 Share</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
+<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 Share via WhatsApp</button><button onclick="shareNativeChallan()" style="background:#6D28D9;color:#fff">📤 Share File</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
 <div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div><div style="font-size:22px;font-weight:700;color:#1A2E5A">${esc(c.num)}</div><div style="margin-top:5px;display:inline-block;background:${sb};color:${sc};padding:2px 12px;border-radius:20px;font-size:11px;font-weight:700">${sl}</div></div></div>
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
 ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> ${esc(c.remarks)}</div>`:''}
@@ -2170,13 +2170,23 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
   );
   const shareText = 'Delivery Challan ' + (c.num||'') + '\nParty: ' + (party?party.name:c.pname) + '\nDate: ' + (c.date||'') + '\nTotal: Rs.' + (c.total||0).toLocaleString('en-IN') + '\nBalance: Rs.' + (due||0).toLocaleString('en-IN') + '\n\nModrobe Impex';
   const waURL = 'https://wa.me/?text=' + waText;
+  var challanFileName = (c.num||'Challan').replace(/\s+/g,'-') + '_' + (party?party.name:'Party').replace(/\s+/g,'-') + '.html';
   w.document.write('<scr'+'ipt>');
-  w.document.write('function shareWAChallan(){window.open("'+waURL+'","_blank");}');
-  w.document.write('function shareNativeChallan(){');
-  w.document.write('var t='+JSON.stringify(shareText)+';');
-  w.document.write('if(navigator.share){navigator.share({title:"Challan",text:t}).catch(function(){});}');
-  w.document.write('else{navigator.clipboard.writeText(t).then(function(){alert("Copied!");});}');
+  w.document.write('function getCleanHTML(){var clone=document.documentElement.cloneNode(true);var pb=clone.querySelector(".pb");if(pb)pb.remove();return "<!DOCTYPE html>"+clone.outerHTML;}');
+  w.document.write('function shareAsFile(title,fname){');
+  w.document.write('var html=getCleanHTML();');
+  w.document.write('var file=new File([html],fname,{type:"text/html"});');
+  w.document.write('if(navigator.canShare&&navigator.canShare({files:[file]})){');
+  w.document.write('navigator.share({title:title,files:[file]}).catch(function(){});');
+  w.document.write('}else{');
+  w.document.write('var blob=new Blob([html],{type:"text/html"});');
+  w.document.write('var url=URL.createObjectURL(blob);');
+  w.document.write('var a=document.createElement("a");a.href=url;a.download=fname;a.click();');
+  w.document.write('setTimeout(function(){URL.revokeObjectURL(url);},1000);');
   w.document.write('}');
+  w.document.write('}');
+  w.document.write('function shareWAChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}');
+  w.document.write('function shareNativeChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}');
   w.document.write('<\/scr'+'ipt>');
   w.document.close();
 }
@@ -2209,8 +2219,8 @@ function printStmt(pid) {
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Statement - ${esc(party.name)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:760px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px;flex-wrap:wrap}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{font-weight:700;font-size:12px;color:#1A2E5A;margin:14px 0 7px;text-transform:uppercase;border-bottom:2px solid #1A2E5A;padding-bottom:3px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#1A2E5A;color:#fff;padding:8px 9px;text-align:left;font-size:11px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:13px 16px;display:flex;justify-content:space-between;align-items:center;margin:14px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
 <div class="pb np">
   <button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button>
-  <button onclick="shareWA()" style="background:#25D366;color:#fff">📲 WhatsApp</button>
-  <button onclick="shareNative()" style="background:#6D28D9;color:#fff">📤 Share</button>
+  <button onclick="shareWA()" style="background:#25D366;color:#fff">📲 Share via WhatsApp</button>
+  <button onclick="shareNative()" style="background:#6D28D9;color:#fff">📤 Share File</button>
   <button onclick="downloadStmt()" style="background:#F59E0B;color:#fff">⬇️ Download</button>
   <button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button>
 </div>
@@ -2227,16 +2237,21 @@ function printStmt(pid) {
 <script>
 var _waText=encodeURIComponent('*Account Statement - Modrobe Impex*\n*Party: ${esc(party.name)}*\n${party.phone?'📞 '+esc(party.phone)+'\\n':''}City: ${esc(party.city||'-')}\nDate: ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}\n\n━━━━━━━━━━━━━━━━━━━━\n*Challans: ${chs.length}* (${chs.filter(c=>c.total-challanPaid(c.id)>0).length} pending)\nTotal Billed: *Rs.${chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN')}*\nTotal Received: *Rs.${settledOnChallans.toLocaleString('en-IN')}*\n━━━━━━━━━━━━━━━━━━━━\n*NET OUTSTANDING: Rs.${Math.abs(bal).toLocaleString('en-IN')}${bal<=0?' ✅ CLEAR':''}*\n━━━━━━━━━━━━━━━━━━━━\n_Modrobe Impex - Wholesale Readymade Garments, New Delhi_');
 var _nativeText='Account Statement - Modrobe Impex\nParty: ${esc(party.name)}\n${party.phone?'Phone: '+esc(party.phone)+'\\n':''}Date: '+new Date().toLocaleDateString('en-IN')+'\n\nChallans: ${chs.length}\nTotal Billed: Rs.${chs.reduce((s,c)=>s+c.total,0).toLocaleString('en-IN')}\nTotal Received: Rs.${settledOnChallans.toLocaleString('en-IN')}\nNET OUTSTANDING: Rs.${Math.abs(bal).toLocaleString('en-IN')}${bal<=0?' (CLEAR)':''}\n\nModrobe Impex - New Delhi';
-function shareWA(){
-  window.open('https://wa.me/?text='+_waText,'_blank');
-}
-function shareNative(){
-  if(navigator.share){
-    navigator.share({title:'Statement - ${esc(party.name)}',text:_nativeText}).catch(function(){});
+function getCleanHTML(){var clone=document.documentElement.cloneNode(true);var pb=clone.querySelector('.pb');if(pb)pb.remove();return '<!DOCTYPE html>'+clone.outerHTML;}
+function shareAsFile(title,fname){
+  var html=getCleanHTML();
+  var file=new File([html],fname,{type:'text/html'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    navigator.share({title:title,files:[file]}).catch(function(){});
   } else {
-    navigator.clipboard.writeText(_nativeText).then(function(){alert('Statement summary copied to clipboard!');});
+    var blob=new Blob([html],{type:'text/html'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');a.href=url;a.download=fname;a.click();
+    setTimeout(function(){URL.revokeObjectURL(url);},1000);
   }
 }
+function shareWA(){shareAsFile('Statement - ${esc(party.name)}','Statement_${esc(party.name).replace(/\s+/g,"_")}_${new Date().toISOString().slice(0,10)}.html');}
+function shareNative(){shareAsFile('Statement - ${esc(party.name)}','Statement_${esc(party.name).replace(/\s+/g,"_")}_${new Date().toISOString().slice(0,10)}.html');}
 function downloadStmt(){
   var html=document.documentElement.outerHTML;
   // Remove toolbar from download
