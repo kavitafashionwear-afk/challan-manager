@@ -2236,66 +2236,46 @@ function printStmt(pid) {
 </div>
 </body></html>`);
 
-  w.document.close();
-
-  // Pre-compute share data
-  var _stmtTitle = 'Statement - ' + esc(party.name);
+  // Inject share functions INTO the popup (same proven pattern as challan share)
+  var _stmtTitle = 'Statement - ' + party.name;
   var _stmtFile = 'Statement_' + party.name.replace(/\s+/g,'_') + '_' + new Date().toISOString().slice(0,10) + '.html';
   var _waText = '*Account Statement - Modrobe Impex*\n' +
-    '*Party: ' + esc(party.name) + '*\n' +
-    (party.phone ? '\u260e\ufe0f ' + party.phone + '\n' : '') +
-    (party.city ? '\ud83d\udccd ' + party.city + '\n' : '') +
-    'Date: ' + new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'}) + '\n\n' +
-    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n' +
-    '*Challans: ' + chs.length + '*\n' +
-    'Billed: *Rs.' + chs.reduce(function(s,c){return s+c.total;},0).toLocaleString('en-IN') + '*\n' +
-    'Received: *Rs.' + settledOnChallans.toLocaleString('en-IN') + '*\n' +
-    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n' +
-    '*Outstanding: Rs.' + Math.abs(bal).toLocaleString('en-IN') + (bal<=0?' \u2705':'') + '*\n' +
+    '*Party: ' + party.name + '*\n' +
+    (party.phone ? 'Phone: ' + party.phone + '\n' : '') +
+    'Date: ' + new Date().toLocaleDateString('en-IN') + '\n' +
+    'Challans: ' + chs.length + '\n' +
+    'Billed: Rs.' + chs.reduce(function(s,c){return s+c.total;},0).toLocaleString('en-IN') + '\n' +
+    'Received: Rs.' + settledOnChallans.toLocaleString('en-IN') + '\n' +
+    '*Outstanding: Rs.' + Math.abs(bal).toLocaleString('en-IN') + (bal<=0?' CLEAR':'') + '*\n' +
     '_Modrobe Impex, New Delhi_';
 
-  function shareStmtFile(){
-    try {
-      var clean = w.document.documentElement.cloneNode(true);
-      var pb = clean.querySelector('.pb'); if(pb) pb.remove();
-      var html = '<!DOCTYPE html>' + clean.outerHTML;
-      var file = new File([html], _stmtFile, {type:'text/html'});
-      if(navigator.canShare && navigator.canShare({files:[file]})){
-        navigator.share({title:_stmtTitle, files:[file]}).catch(function(){});
-      } else {
-        var blob = new Blob([html], {type:'text/html'});
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a'); a.href=url; a.download=_stmtFile; a.click();
-        setTimeout(function(){URL.revokeObjectURL(url);}, 1000);
-      }
-    } catch(e) {
-      w.open('https://wa.me/?text=' + encodeURIComponent(_waText), '_blank');
-    }
-  }
-
-  try {
-    w.document.getElementById('st-print').addEventListener('click', function(){ w.print(); });
-    w.document.getElementById('st-close').addEventListener('click', function(){ w.close(); });
-    w.document.getElementById('st-wa').addEventListener('click', function(){
-      try {
-        var clean = w.document.documentElement.cloneNode(true);
-        var pb = clean.querySelector('.pb'); if(pb) pb.remove();
-        var html = '<!DOCTYPE html>' + clean.outerHTML;
-        var file = new File([html], _stmtFile, {type:'text/html'});
-        if(navigator.canShare && navigator.canShare({files:[file]})){
-          navigator.share({title:_stmtTitle, files:[file]}).catch(function(){});
-        } else {
-          w.open('https://wa.me/?text=' + encodeURIComponent(_waText), '_blank');
-        }
-      } catch(e) { w.open('https://wa.me/?text=' + encodeURIComponent(_waText), '_blank'); }
-    });
-    w.document.getElementById('st-share').addEventListener('click', shareStmtFile);
-    w.document.getElementById('st-pdf').addEventListener('click', function(){
-      var pb = w.document.querySelector('.pb'); if(pb) pb.style.display='none';
-      w.print();
-      setTimeout(function(){ if(pb) pb.style.display=''; }, 800);
-    });
-  } catch(e) { /* popup may be blocked */ }
+  w.document.write('<scr'+'ipt>');
+  w.document.write('function getCleanHTML(){var clone=document.documentElement.cloneNode(true);var pb=clone.querySelector(".pb");if(pb)pb.remove();return "<!DOCTYPE html>"+clone.outerHTML;}');
+  w.document.write('function shareAsFile(title,fname,waFallback){');
+  w.document.write('var html=getCleanHTML();');
+  w.document.write('var file=new File([html],fname,{type:"text/html"});');
+  w.document.write('if(navigator.canShare&&navigator.canShare({files:[file]})){');
+  w.document.write('navigator.share({title:title,files:[file]}).catch(function(){});');
+  w.document.write('}else if(waFallback){');
+  w.document.write('window.open("https://wa.me/?text="+encodeURIComponent(waFallback),"_blank");');
+  w.document.write('}else{');
+  w.document.write('var blob=new Blob([html],{type:"text/html"});');
+  w.document.write('var url=URL.createObjectURL(blob);');
+  w.document.write('var a=document.createElement("a");a.href=url;a.download=fname;a.click();');
+  w.document.write('setTimeout(function(){URL.revokeObjectURL(url);},1000);');
+  w.document.write('}');
+  w.document.write('}');
+  w.document.write('function shareWA(){shareAsFile('+JSON.stringify(_stmtTitle)+','+JSON.stringify(_stmtFile)+','+JSON.stringify(_waText)+');}');
+  w.document.write('function shareNative(){shareAsFile('+JSON.stringify(_stmtTitle)+','+JSON.stringify(_stmtFile)+',null);}');
+  w.document.write('function downloadStmt(){');
+  w.document.write('var html=getCleanHTML();');
+  w.document.write('var blob=new Blob([html],{type:"text/html"});');
+  w.document.write('var url=URL.createObjectURL(blob);');
+  w.document.write('var a=document.createElement("a");a.href=url;a.download='+JSON.stringify(_stmtFile)+';a.click();');
+  w.document.write('setTimeout(function(){URL.revokeObjectURL(url);},1000);');
+  w.document.write('}');
+  w.document.write('<\/scr'+'ipt>');
+  w.document.close();
 }
 </script>
 </body>
