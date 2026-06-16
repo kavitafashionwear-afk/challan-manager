@@ -300,6 +300,16 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     </div>
   </div>
 
+  <div class="cscreen" id="cs-daybook">
+    <div class="pg">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <h2 style="font-size:21px">📅 Daybook</h2>
+        <input type="date" id="db-date" onchange="renderDaybook()" style="padding:8px 12px;border:1.5px solid #E5E0D5;border-radius:10px;font-size:14px;font-family:inherit">
+      </div>
+      <div id="db-body"></div>
+    </div>
+  </div>
+
   <div class="cscreen" id="cs-trash">
     <div class="pg">
       <div style="background:#FFF7ED;border:1px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#92400E;display:flex;align-items:center;gap:10px">
@@ -319,6 +329,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     <button class="nav-tab on" id="nt-home" onclick="goTab('home')"><div class="ni">🏠</div><div>Home</div></button>
     <button class="nav-tab" id="nt-parties" onclick="goTab('parties')"><div class="ni">👥</div><div>Parties</div></button>
     <button class="nav-tab" id="nt-challans" onclick="goTab('challans')"><div class="ni">📋</div><div>Challans</div></button>
+    <button class="nav-tab" id="nt-daybook" onclick="goTab('daybook')"><div class="ni">📅</div><div>Daybook</div></button>
     <button class="nav-tab" id="nt-trash" onclick="goTab('trash')"><div class="ni">🗑️</div><div>Recycle Bin</div></button>
   </nav>
 </div>
@@ -766,6 +777,7 @@ function renderAll() {
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
+  if (curTab==='daybook')  renderDaybook();
   if (curTab==='trash')    renderTrash();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
@@ -781,11 +793,12 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   document.getElementById('nt-'+tab).classList.add('on');
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = tab==='trash' ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
-    tab==='challans' ? '📋 Challans' : '🗑️ Recycle Bin';
+    tab==='challans' ? '📋 Challans' :
+    tab==='daybook'  ? '📅 Daybook' : '🗑️ Recycle Bin';
   renderAll();
 }
 
@@ -1296,6 +1309,81 @@ function delPayment(pid) {
    RECYCLE BIN
 ══════════════════════════════ */
 let trashFilter = 'ALL';
+
+function renderDaybook(){
+  const dp=document.getElementById('db-date');
+  if(dp && !dp.value) dp.value=today();
+  const day=dp?dp.value:today();
+  const body=document.getElementById('db-body');
+  if(!body)return;
+  function pname(pid,fallback){const p=S.parties.find(x=>x.id===pid);return p?p.name:(fallback||'Unknown');}
+
+  // Challans created this day
+  const chs=(S.challans||[]).filter(c=>c.date===day)
+    .sort((a,b)=>(a.num||'').localeCompare(b.num||''));
+  // Payments received this day
+  const pays=(S.payments||[]).filter(p=>p.date===day)
+    .sort((a,b)=>(b.amount||0)-(a.amount||0));
+
+  const totalBilled=chs.reduce((s,c)=>s+(c.total||0),0);
+  const totalRecv=pays.reduce((s,p)=>s+(p.amount||0),0);
+
+  let html='';
+
+  // Summary band
+  html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+    <div class="stat" style="background:#EFF6FF;border-color:#BFDBFE"><div class="sl">📦 Billed Today</div><div class="sv" style="color:#1A2E5A">${fmt(totalBilled)}</div><div style="font-size:11px;color:#6B7280">${chs.length} challan(s)</div></div>
+    <div class="stat" style="background:#ECFDF5;border-color:#A7F3D0"><div class="sl">💵 Received Today</div><div class="sv" style="color:#065F46">${fmt(totalRecv)}</div><div style="font-size:11px;color:#6B7280">${pays.length} payment(s)</div></div>
+  </div>`;
+
+  if(!chs.length && !pays.length){
+    html+=`<div style="text-align:center;padding:40px 16px;color:#9B9285">
+      <div style="font-size:40px;margin-bottom:10px">📅</div>
+      <div style="font-size:14px">No activity on ${fmtD(day)}</div>
+      <div style="font-size:12px;margin-top:4px">No challans or payments recorded for this date.</div>
+    </div>`;
+    body.innerHTML=html;
+    return;
+  }
+
+  // ── CHALLANS section ──
+  if(chs.length){
+    html+=`<div style="display:flex;align-items:center;gap:8px;margin:6px 0 10px"><span style="font-size:15px;font-weight:700;color:#1A2E5A">📦 Challans / Bills</span><span style="flex:1;border-bottom:1.5px dashed #E5E0D5"></span></div>`;
+    chs.forEach(c=>{
+      const qty=(c.items||[]).reduce((s,i)=>s+(+i.qty||0),0);
+      const statusTxt=c.status==='S'?'PAID':c.status==='P'?'PENDING':c.status;
+      const statusCol=c.status==='S'?'#065F46':'#B45309';
+      const statusBg=c.status==='S'?'#ECFDF5':'#FFFBEB';
+      html+=`<div onclick="openParty('${c.pid}')" style="background:#fff;border:1px solid #E5E0D5;border-radius:14px;padding:13px 15px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:12px">
+        <div style="width:42px;height:42px;border-radius:11px;background:#EFF6FF;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">📦</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:14px">${esc(c.num||c.id)} · ${esc(pname(c.pid,c.pname))}</div>
+          <div style="font-size:12px;color:#6B7280">${qty} pcs${c.freight?' · 🚚 '+fmt(c.freight):''} · <span style="color:${statusCol};font-weight:600">${statusTxt}</span></div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-weight:700;font-size:15px;color:#1A2E5A">${fmt(c.total)}</div>
+        </div>
+      </div>`;
+    });
+  }
+
+  // ── PAYMENTS section ──
+  if(pays.length){
+    html+=`<div style="display:flex;align-items:center;gap:8px;margin:16px 0 10px"><span style="font-size:15px;font-weight:700;color:#065F46">💵 Payments Received</span><span style="flex:1;border-bottom:1.5px dashed #E5E0D5"></span></div>`;
+    pays.forEach(p=>{
+      html+=`<div onclick="openParty('${p.pid}')" style="background:#fff;border:1px solid #E5E0D5;border-radius:14px;padding:13px 15px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:12px">
+        <div style="width:42px;height:42px;border-radius:11px;background:#ECFDF5;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">💵</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:14px">${esc(pname(p.pid))}</div>
+          <div style="font-size:12px;color:#6B7280">${esc(p.mode||'Cash')}${p.remarks?' · '+esc(p.remarks):''}</div>
+        </div>
+        <div style="font-weight:700;font-size:15px;color:#065F46;flex-shrink:0">+ ${fmt(p.amount)}</div>
+      </div>`;
+    });
+  }
+
+  body.innerHTML=html;
+}
 
 function renderTrash() {
   if (!S.trash) S.trash = [];
