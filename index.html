@@ -45,6 +45,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 .avatar-btn img{width:100%;height:100%;object-fit:cover}
 .sync-dot{width:8px;height:8px;border-radius:50%;background:#4ADE80;display:inline-block;margin-left:4px;vertical-align:middle}
 .sync-dot.busy{background:#FCD34D;animation:pulse .8s infinite}
+.sync-dot.offline{background:#9CA3AF}
+.sync-dot.err{background:#F87171}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ── BOTTOM NAV ── */
@@ -337,10 +339,79 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 <!-- FAB -->
 <button class="fab" id="fab" onclick="openModal('challan')" style="display:none">+</button>
 
+<!-- ══════════ STAFF BILLING INTERFACE ══════════ -->
+<div id="page-staff" style="display:none;position:fixed;inset:0;z-index:15;background:#F0F2F5;overflow-y:auto">
+  <!-- Staff top bar -->
+  <div style="background:linear-gradient(135deg,#1A2E5A,#2D4A8A);color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:5">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="font-size:20px">🧾</div>
+      <div><div style="font-size:15px;font-weight:700">Modrobe Impex — Billing</div>
+      <div style="font-size:10px;opacity:.7" id="staff-sub">Staff</div></div>
+    </div>
+    <button onclick="doLogout()" style="background:rgba(255,255,255,.15);border:none;color:#fff;padding:7px 12px;border-radius:8px;font-size:12px;cursor:pointer">Sign out</button>
+  </div>
+
+  <!-- PENDING / REQUEST ACCESS view -->
+  <div id="staff-gate" style="display:none;min-height:80vh;display:flex;align-items:center;justify-content:center;padding:24px">
+    <div style="background:#fff;border-radius:18px;padding:32px 24px;max-width:380px;width:100%;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.08)">
+      <div id="gate-icon" style="font-size:48px;margin-bottom:12px">🔒</div>
+      <div id="gate-title" style="font-size:18px;font-weight:700;color:#1A2E5A;margin-bottom:8px">Access required</div>
+      <div id="gate-msg" style="font-size:13px;color:#666;line-height:1.6;margin-bottom:20px">You need permission from the owner to create bills.</div>
+      <div id="gate-userbox" style="background:#F5F7FA;border-radius:10px;padding:12px;margin-bottom:18px;font-size:12px;color:#555"></div>
+      <button id="gate-btn" onclick="requestAccess()" style="width:100%;background:#1A2E5A;color:#fff;border:none;padding:13px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer">Request Access</button>
+      <div id="gate-status" style="margin-top:14px;font-size:12px"></div>
+    </div>
+  </div>
+
+  <!-- APPROVED staff: billing workspace -->
+  <div id="staff-work" style="display:none;padding:16px;max-width:640px;margin:0 auto">
+    <div style="background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.05)">
+      <div style="font-size:13px;font-weight:700;color:#1A2E5A;margin-bottom:10px">🧾 Create a Bill</div>
+
+      <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Party *</label>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <select id="st-party" style="flex:1;padding:11px;border:1.5px solid #DDD;border-radius:10px;font-size:14px;background:#fff"></select>
+        <button onclick="staffToggleNewParty()" id="st-newbtn" style="background:#EFF6FF;border:1.5px solid #BFDBFE;color:#1A2E5A;border-radius:10px;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">+ New</button>
+      </div>
+      <div id="st-newparty" style="display:none;background:#F8FAFF;border:1px solid #DDE7F5;border-radius:10px;padding:12px;margin-bottom:10px">
+        <input id="st-np-name" placeholder="Party name *" style="width:100%;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">
+        <div style="display:flex;gap:8px">
+          <input id="st-np-phone" placeholder="Phone" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">
+          <input id="st-np-city" placeholder="City" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">
+        </div>
+      </div>
+
+      <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Date *</label>
+      <input id="st-date" type="date" style="width:100%;padding:11px;border:1.5px solid #DDD;border-radius:10px;font-size:14px;margin-bottom:12px;box-sizing:border-box">
+
+      <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:6px">Items *</label>
+      <div id="st-items"></div>
+      <button onclick="staffAddItem()" style="width:100%;background:#F5F7FA;border:1.5px dashed #BBB;color:#1A2E5A;border-radius:10px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">+ Add Item</button>
+
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <div style="flex:1"><label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Freight</label>
+        <input id="st-freight" type="number" inputmode="decimal" placeholder="0" oninput="staffCalcTotal()" style="width:100%;padding:11px;border:1.5px solid #DDD;border-radius:10px;font-size:14px;box-sizing:border-box"></div>
+        <div style="flex:2"><label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Remarks</label>
+        <input id="st-rmk" placeholder="Optional" style="width:100%;padding:11px;border:1.5px solid #DDD;border-radius:10px;font-size:14px;box-sizing:border-box"></div>
+      </div>
+
+      <div style="background:#EFF6FF;border-radius:10px;padding:12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <span style="font-size:13px;font-weight:600;color:#1A2E5A">Bill Total</span>
+        <span id="st-total" style="font-size:20px;font-weight:700;color:#1A2E5A">Rs.0</span>
+      </div>
+
+      <button onclick="staffCreateBill()" style="width:100%;background:#1A2E5A;color:#fff;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer">🖨 Create &amp; Print Bill</button>
+    </div>
+
+    <div style="text-align:center;font-size:11px;color:#AAA;padding:6px">Bills you create are sent to the owner for records. <span id="st-sync" style="color:#9CA3AF">●</span></div>
+  </div>
+</div>
+
 <!-- User Menu -->
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
+  <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi danger" onclick="doLogout()">🚪 Sign Out</div>
 </div>
@@ -578,10 +649,41 @@ const auth = firebase.auth();
 const db   = firebase.firestore();
 
 /* ══════════════════════════════
+   OWNER / STAFF ACCESS CONTROL
+   ──────────────────────────────
+   OWNER_UIDS: the owner account(s) that can see ALL data and approve staff.
+   Find your UID: log in, open browser console, run:  firebase.auth().currentUser.uid
+   Paste it below (you can list more than one owner).
+══════════════════════════════ */
+const OWNER_UIDS = [
+  "PASTE_YOUR_OWNER_UID_HERE"
+];
+function isOwnerUid(u){ return OWNER_UIDS.indexOf(u) !== -1; }
+// The Firestore account that holds the real business data (the first listed owner).
+const DATA_OWNER_UID = OWNER_UIDS[0];
+
+let role = null;          // 'owner' | 'staff' | 'pending'
+let staffUnsub = null;    // listener for staff approval status
+let ownerReqUnsub = null; // owner's listener for incoming access requests
+let incomingUnsub = null; // owner's listener for staff-created bills (auto-merge)
+const _mergedBills = {};  // billIds already merged this session (guards double-merge)
+
+/* ── OFFLINE-FIRST: local cache so writes queue offline and auto-flush online ── */
+try {
+  db.enablePersistence({ synchronizeTabs: true }).catch(function(err){
+    console.warn('Offline persistence not enabled:', err && err.code);
+  });
+} catch(e) { console.warn('Persistence setup skipped', e); }
+let isOnline = (typeof navigator!=='undefined') ? navigator.onLine : true;
+window.addEventListener('online',  function(){ isOnline = true;  if(typeof updateSyncUI==='function')updateSyncUI(); if(typeof flushPendingSave==='function')flushPendingSave(); });
+window.addEventListener('offline', function(){ isOnline = false; if(typeof updateSyncUI==='function')updateSyncUI(); });
+
+/* ══════════════════════════════
    STATE
 ══════════════════════════════ */
 let S = { parties:[], challans:[], payments:[], settlements:[], trash:[], pC:0, cC:0, pyC:0 };
 let uid = null;
+let currentUser = null;
 let unsubDB = null;
 let curTab = 'home';
 let curParty = null;
@@ -627,10 +729,22 @@ function showApp(user) {
   if (!user) return;
   uid = user.uid;
   appIsReady = true;
+  currentUser = user;
   document.getElementById('page-loading').style.display = 'none';
   document.getElementById('page-login').style.display   = 'none';
-  document.getElementById('page-app').style.display     = 'block';
-  document.getElementById('fab').style.display          = 'flex';
+  if (isOwnerUid(user.uid)) {
+    role = 'owner';
+    enterOwnerApp(user);
+  } else {
+    role = null;
+    routeStaff(user);
+  }
+}
+
+function enterOwnerApp(user) {
+  document.getElementById('page-app').style.display = 'block';
+  document.getElementById('fab').style.display      = 'flex';
+  var sp = document.getElementById('page-staff'); if (sp) sp.style.display = 'none';
   try {
     document.getElementById('greet').textContent   = '👋 ' + (user.displayName||'').split(' ')[0];
     document.getElementById('hdate').textContent   = 'Today: ' + fmtD(today());
@@ -640,13 +754,23 @@ function showApp(user) {
     if (user.photoURL) av.innerHTML = '<img src="' + user.photoURL + '" referrerpolicy="no-referrer" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
     else av.textContent = (user.displayName||'U')[0].toUpperCase();
   } catch(e) {}
+  if (typeof loadLocal==='function' && loadLocal()) renderAll();
+  if (typeof updateSyncUI==='function') updateSyncUI();
   subscribeData();
+  subscribeStaffRequests();
+  subscribeIncomingBills();   // auto-merge staff-created bills into the main list
 }
 
 function showLogin() {
   appIsReady = false;  // always reset so login screen can show
   uid = null;
+  role = null;
+  currentUser = null;
   if (unsubDB) { unsubDB(); unsubDB = null; }
+  if (staffUnsub) { staffUnsub(); staffUnsub = null; }
+  if (ownerReqUnsub) { ownerReqUnsub(); ownerReqUnsub = null; }
+  if (incomingUnsub) { incomingUnsub(); incomingUnsub = null; }
+  var sp = document.getElementById('page-staff'); if (sp) sp.style.display = 'none';
   document.getElementById('page-loading').style.display = 'none';
   document.getElementById('page-app').style.display     = 'none';
   document.getElementById('fab').style.display          = 'none';
@@ -713,18 +837,416 @@ function doLogout() {
 }
 
 /* ══════════════════════════════
+   STAFF ACCESS CONTROL
+   ──────────────────────────────
+   Staff data lives under the OWNER's account:
+     users/{owner}/staff/{staffUid}          → { status:'approved'|'pending', name, email }
+     users/{owner}/incomingBills/{billId}    → staff-created bills awaiting owner review
+══════════════════════════════ */
+function ownerCol(name){ return db.collection('users').doc(DATA_OWNER_UID).collection(name); }
+
+// Decide what a non-owner sees: approved → billing workspace; else → request-access gate.
+function routeStaff(user) {
+  document.getElementById('page-app').style.display = 'none';
+  document.getElementById('fab').style.display      = 'none';
+  var sp = document.getElementById('page-staff'); sp.style.display = 'block';
+  document.getElementById('staff-sub').textContent = user.email || 'Staff';
+  document.getElementById('gate-userbox').innerHTML =
+    '<div style="font-weight:600;color:#1A2E5A">'+esc(user.displayName||'')+'</div>'+
+    '<div>'+esc(user.email||'')+'</div>';
+  // Live-watch this staff member's approval status under the owner's account.
+  if (staffUnsub) { staffUnsub(); staffUnsub = null; }
+  staffUnsub = ownerCol('staff').doc(user.uid).onSnapshot(function(snap){
+    var data = snap.exists ? snap.data() : null;
+    if (data && data.status === 'approved') {
+      role = 'staff';
+      showStaffWork();
+    } else if (data && data.status === 'pending') {
+      role = 'pending';
+      showStaffGate('pending');
+    } else {
+      // No uid doc yet — check if owner pre-authorized this Gmail.
+      checkPreauth(user);
+    }
+  }, function(err){
+    console.warn('staff status read:', err && err.code);
+    checkPreauth(user);
+  });
+}
+
+// If the owner pre-authorized this email, create the approved uid doc automatically.
+function checkPreauth(user) {
+  var em=(user.email||'').toLowerCase();
+  if(!em){ showStaffGate('none'); return; }
+  ownerCol('staff').doc('email:'+em).get().then(function(snap){
+    if(snap.exists && snap.data().status==='approved'){
+      ownerCol('staff').doc(user.uid).set({
+        status:'approved', uid:user.uid, name:user.displayName||'', email:em,
+        approvedAt:new Date().toISOString(), viaPreauth:true
+      }).then(function(){ /* onSnapshot above will flip to work view */ })
+        .catch(function(){ showStaffGate('none'); });
+    } else {
+      showStaffGate('none');
+    }
+  }).catch(function(){ showStaffGate('none'); });
+}
+
+function showStaffGate(state) {
+  document.getElementById('staff-work').style.display = 'none';
+  document.getElementById('staff-gate').style.display = 'flex';
+  var icon=document.getElementById('gate-icon'), title=document.getElementById('gate-title'),
+      msg=document.getElementById('gate-msg'), btn=document.getElementById('gate-btn'),
+      status=document.getElementById('gate-status');
+  if (state === 'pending') {
+    icon.textContent='⏳'; title.textContent='Request sent';
+    msg.textContent='Your request is waiting for the owner to approve. This screen will update automatically once you are granted access.';
+    btn.style.display='none'; status.innerHTML='<span style="color:#92400E">● Awaiting approval…</span>';
+  } else {
+    icon.textContent='🔒'; title.textContent='Access required';
+    msg.textContent='You are signed in but do not have billing access yet. Tap below to ask the owner for permission.';
+    btn.style.display='block'; btn.disabled=false; btn.textContent='Request Access'; status.textContent='';
+  }
+}
+
+function requestAccess() {
+  if (!currentUser) return;
+  var btn=document.getElementById('gate-btn'), status=document.getElementById('gate-status');
+  btn.disabled=true; btn.textContent='Sending…';
+  ownerCol('staff').doc(currentUser.uid).set({
+    status:'pending', uid:currentUser.uid,
+    name:currentUser.displayName||'', email:currentUser.email||'',
+    requestedAt:new Date().toISOString()
+  }).then(function(){
+    showStaffGate('pending');
+  }).catch(function(e){
+    btn.disabled=false; btn.textContent='Request Access';
+    status.innerHTML='<span style="color:#B91C1C">Could not send request: '+esc(e.message)+'</span>';
+  });
+}
+
+/* ── Approved staff billing workspace ── */
+let staffParties = [];      // read-only copy of parties (names only, no balances)
+let staffPartiesUnsub = null;
+
+function showStaffWork() {
+  document.getElementById('staff-gate').style.display = 'none';
+  document.getElementById('staff-work').style.display = 'block';
+  document.getElementById('st-date').value = today();
+  document.getElementById('st-items').innerHTML='';
+  staffAddItem();
+  staffCalcTotal();
+  // Read ONLY the slim public party directory (names/phone/city — no financial data).
+  if (staffPartiesUnsub) { staffPartiesUnsub(); staffPartiesUnsub=null; }
+  staffPartiesUnsub = db.collection('users').doc(DATA_OWNER_UID).collection('public').doc('parties')
+    .onSnapshot(function(snap){
+      var d = snap.exists ? snap.data() : {};
+      staffParties = (d.parties||[]).map(function(p){ return {id:p.id, name:p.name, phone:p.phone||'', city:p.city||''}; });
+      staffFillParties();
+    }, function(err){ console.warn('staff parties read:', err && err.code); });
+}
+
+function staffFillParties() {
+  var sel=document.getElementById('st-party');
+  var cur=sel.value;
+  sel.innerHTML='<option value="">— Select party —</option>'+
+    staffParties.sort(function(a,b){return a.name.localeCompare(b.name);})
+      .map(function(p){return '<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>';}).join('');
+  if (cur) sel.value=cur;
+}
+
+function staffToggleNewParty() {
+  var box=document.getElementById('st-newparty');
+  var show = box.style.display==='none';
+  box.style.display = show?'block':'none';
+  document.getElementById('st-newbtn').textContent = show?'✕ Cancel':'+ New';
+  if (show) document.getElementById('st-party').value='';
+}
+
+function staffAddItem() {
+  var wrap=document.getElementById('st-items');
+  var row=document.createElement('div');
+  row.className='st-irow';
+  row.style.cssText='display:flex;gap:6px;margin-bottom:8px';
+  row.innerHTML=
+    '<input placeholder="Item" class="st-i-name" style="flex:2;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">'+
+    '<input placeholder="Qty" type="number" inputmode="numeric" class="st-i-qty" oninput="staffCalcTotal()" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box;min-width:0">'+
+    '<input placeholder="Rate" type="number" inputmode="decimal" class="st-i-rate" oninput="staffCalcTotal()" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box;min-width:0">'+
+    '<button onclick="this.parentNode.remove();staffCalcTotal()" style="background:#FEF2F2;border:1px solid #FECACA;color:#DC2626;border-radius:8px;padding:0 10px;cursor:pointer;font-size:14px">✕</button>';
+  wrap.appendChild(row);
+}
+
+function staffGetItems() {
+  var items=[];
+  document.querySelectorAll('#st-items .st-irow').forEach(function(r){
+    var name=r.querySelector('.st-i-name').value.trim();
+    var qty=+r.querySelector('.st-i-qty').value;
+    var rate=+r.querySelector('.st-i-rate').value;
+    if(name&&qty&&rate) items.push({name:name,qty:qty,rate:rate,amount:qty*rate});
+  });
+  return items;
+}
+
+function staffCalcTotal() {
+  var items=staffGetItems();
+  var freight=+document.getElementById('st-freight').value||0;
+  var total=items.reduce(function(s,i){return s+i.amount;},0)+freight;
+  document.getElementById('st-total').textContent=fmt(total);
+}
+
+function staffCreateBill() {
+  // Resolve party (existing selection or new)
+  var pid, pname, pphone='', pcity='';
+  var newBox=document.getElementById('st-newparty');
+  if (newBox.style.display!=='none') {
+    pname=document.getElementById('st-np-name').value.trim();
+    if(!pname){alert('Enter the new party name.');return;}
+    pphone=document.getElementById('st-np-phone').value.trim();
+    pcity=document.getElementById('st-np-city').value.trim();
+    pid='NEW';
+  } else {
+    pid=document.getElementById('st-party').value;
+    if(!pid){alert('Select a party (or add a new one).');return;}
+    var p=staffParties.find(function(x){return x.id===pid;});
+    pname=p?p.name:''; pphone=p?p.phone:''; pcity=p?p.city:'';
+  }
+  var dt=document.getElementById('st-date').value;
+  if(!dt){alert('Select a date.');return;}
+  var items=staffGetItems();
+  if(!items.length){alert('Add at least one item with name, qty and rate.');return;}
+  var freight=+document.getElementById('st-freight').value||0;
+  var total=items.reduce(function(s,i){return s+i.amount;},0)+freight;
+  var rmk=document.getElementById('st-rmk').value.trim();
+
+  var bill={
+    billId:'SB-'+Date.now(),
+    pid:pid, pname:pname, pphone:pphone, pcity:pcity,
+    date:dt, items:items, freight:freight, total:total, remarks:rmk,
+    createdBy:{ uid:currentUser.uid, name:currentUser.displayName||'', email:currentUser.email||'' },
+    createdAt:new Date().toISOString(),
+    status:'new'
+  };
+  // Write into owner's incomingBills for review/merge.
+  ownerCol('incomingBills').doc(bill.billId).set(bill)
+    .then(function(){ document.getElementById('st-sync').style.color='#16A34A'; })
+    .catch(function(e){ document.getElementById('st-sync').style.color='#DC2626'; console.warn('bill save:',e&&e.code); alert('Saved locally, will sync when online.'); });
+
+  // Print the clean bill (no balances/totals history — staff version)
+  staffPrintBill(bill);
+
+  // Reset for next bill
+  document.getElementById('st-items').innerHTML=''; staffAddItem();
+  document.getElementById('st-freight').value=''; document.getElementById('st-rmk').value='';
+  document.getElementById('st-np-name').value=''; document.getElementById('st-np-phone').value=''; document.getElementById('st-np-city').value='';
+  if (newBox.style.display!=='none') staffToggleNewParty();
+  staffCalcTotal();
+}
+
+function staffPrintBill(b) {
+  var iR=b.items.map(function(it,i){return '<tr style="background:'+(i%2?'#F9F9F9':'#fff')+'"><td style="padding:8px 10px;border:1px solid #E0E0E0">'+esc(it.name)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">'+it.qty+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">'+fmtR(it.rate)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">'+fmt(it.amount)+'</td></tr>';}).join('');
+  var subtotal=b.items.reduce(function(s,i){return s+i.amount;},0);
+  var pcs=b.items.reduce(function(s,i){return s+(+i.qty||0);},0);
+  var w=window.open('','_blank');
+  w.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bill - '+esc(b.pname)+'</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">'+
+  '<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>'+
+  '<div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div></div></div>'+
+  '<div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">'+esc(b.pname)+'</div><div class="ml">Date</div><div class="mv">'+fmtD(b.date)+'</div><div class="ml">Phone</div><div class="mv">'+esc(b.pphone||'-')+'</div><div class="ml">City</div><div class="mv">'+esc(b.pcity||'-')+'</div></div>'+
+  (b.remarks?'<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> '+esc(b.remarks)+'</div>':'')+
+  '<div class="sec">ITEM DETAILS</div>'+
+  '<table><thead><tr><th style="width:44%">Item</th><th style="width:14%;text-align:center">Qty</th><th style="width:20%;text-align:right">Rate</th><th style="width:22%;text-align:right">Amount</th></tr></thead><tbody>'+iR+'</tbody>'+
+  '<tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:8px 10px;border:1px solid #BFDBFE">Subtotal</td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:center;color:#1A2E5A">'+pcs+' pcs</td><td style="padding:8px 10px;border:1px solid #BFDBFE"></td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:right;color:#1A2E5A">'+fmt(subtotal)+'</td></tr>'+
+  (b.freight?'<tr style="background:#F0F4FF"><td colspan="3" style="padding:7px 10px;border:1px solid #BFDBFE;color:#555">🚚 Freight / Transport</td><td style="padding:7px 10px;border:1px solid #BFDBFE;text-align:right;font-weight:700;color:#555">+ '+fmt(b.freight)+'</td></tr>':'')+
+  '<tr style="background:#EFF6FF;font-weight:700"><td colspan="2" style="padding:9px 10px;border:1px solid #BFDBFE;font-size:14px;color:#1A2E5A">GRAND TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:15px;color:#1A2E5A">'+fmt(b.total)+'</td></tr></tfoot></table>'+
+  '<div class="sig"><div><div class="sl">Receiver\'s Signature<br><strong>'+esc(b.pname)+'</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>'+
+  '<div class="ft">Generated: '+new Date().toLocaleString('en-IN')+'</div>'+
+  '</div></body></html>');
+  w.document.close();
+}
+
+/* ── Owner side: watch for incoming staff requests + show a badge ── */
+function subscribeStaffRequests() {
+  if (ownerReqUnsub) { ownerReqUnsub(); ownerReqUnsub=null; }
+  ownerReqUnsub = ownerCol('staff').onSnapshot(function(snap){
+    var pend=[], appr=[];
+    snap.forEach(function(doc){ var d=doc.data(); if(d.status==='pending')pend.push(d); else if(d.status==='approved')appr.push(d); });
+    window._staffPending=pend; window._staffApproved=appr;
+    renderStaffBadge(pend.length);
+  }, function(err){ console.warn('owner staff listen:', err && err.code); });
+}
+
+/* ── Owner side: auto-merge staff-created bills straight into the main challan list ──
+   Staff write to incomingBills (they can't touch the main doc). The owner's app picks
+   each one up, turns it into a normal challan tagged "Staff-generated" + email, creates
+   the party if it's new, saves, then deletes the queue doc so it isn't merged twice. ── */
+function subscribeIncomingBills() {
+  if (incomingUnsub) { incomingUnsub(); incomingUnsub=null; }
+  incomingUnsub = ownerCol('incomingBills').onSnapshot(function(snap){
+    var toMerge=[];
+    snap.forEach(function(doc){
+      var b=doc.data(); if(!b) return;
+      var bid=b.billId||doc.id;
+      if(_mergedBills[bid]) return;        // already handled this session
+      toMerge.push(b);
+    });
+    if(toMerge.length) mergeIncomingBills(toMerge);
+  }, function(err){ console.warn('incoming bills listen:', err && err.code); });
+}
+
+function mergeIncomingBills(bills) {
+  // Sort by creation time so challan numbers are assigned in order.
+  bills.sort(function(a,b){ return String(a.createdAt||'').localeCompare(String(b.createdAt||'')); });
+  bills.forEach(function(b){
+    var bid=b.billId;
+    _mergedBills[bid]=true;
+
+    // 1) Resolve or create the party.
+    var party=null;
+    if (b.pid && b.pid!=='NEW') party=S.parties.find(function(p){return p.id===b.pid;});
+    if (!party && b.pname) party=S.parties.find(function(p){return (p.name||'').trim().toLowerCase()===String(b.pname).trim().toLowerCase();});
+    if (!party) {
+      S.pC++;
+      party={ id:'P'+pad(S.pC), name:b.pname||'(Unnamed)', phone:b.pphone||'', city:b.pcity||'', ob:0,
+              staffAdded:true, staffEmail:(b.createdBy&&b.createdBy.email)||'' };
+      S.parties.push(party);
+    }
+
+    // 2) Create a real challan, tagged as staff-generated.
+    S.cC++;
+    var items=(b.items||[]).map(function(it){ return {name:it.name,qty:+it.qty||0,rate:+it.rate||0,amount:(+it.qty||0)*(+it.rate||0)}; });
+    var freight=+b.freight||0;
+    var total=items.reduce(function(s,i){return s+i.amount;},0)+freight;
+    S.challans.push({
+      id:'C'+pad(S.cC), num:'CH-'+pad(S.cC),
+      pid:party.id, pname:party.name, date:b.date||today(),
+      items:items, freight:freight, total:total, status:'P',
+      remarks:b.remarks||'',
+      staffGenerated:true,
+      staffEmail:(b.createdBy&&b.createdBy.email)||'',
+      staffName:(b.createdBy&&b.createdBy.name)||'',
+      staffBillId:bid, createdAt:b.createdAt||new Date().toISOString()
+    });
+  });
+
+  // 3) Persist the merged result (owner can write the main doc).
+  saveToCloud();
+  renderAll();
+
+  // 4) Remove the queue docs so they won't be merged again on any device.
+  bills.forEach(function(b){
+    ownerCol('incomingBills').doc(b.billId).delete().catch(function(e){ console.warn('queue cleanup deferred:', e&&e.code); });
+  });
+
+  // 5) Gentle heads-up.
+  try {
+    var n=bills.length;
+    var note=document.getElementById('staff-merge-note');
+    if(!note){
+      note=document.createElement('div'); note.id='staff-merge-note';
+      note.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:80px;background:#1A2E5A;color:#fff;padding:10px 18px;border-radius:24px;font-size:13px;font-weight:600;z-index:300;box-shadow:0 6px 20px rgba(0,0,0,.25)';
+      document.body.appendChild(note);
+    }
+    note.textContent='✓ '+n+' staff bill'+(n>1?'s':'')+' added to your list';
+    note.style.display='block';
+    clearTimeout(window._mergeNoteT);
+    window._mergeNoteT=setTimeout(function(){ note.style.display='none'; },4000);
+  } catch(e){}
+}
+
+function renderStaffBadge(n) {
+  var b=document.getElementById('staff-badge');
+  if(!b) return;
+  if(n>0){ b.style.display='inline-flex'; b.textContent=n; } else { b.style.display='none'; }
+}
+
+// Owner taps "Staff Access" in the menu → manage requests
+function openStaffManager() {
+  closeMenu();
+  var pend=window._staffPending||[], appr=window._staffApproved||[];
+  var html='<div style="font-size:13px;font-weight:700;color:#1A2E5A;margin-bottom:10px">Pending Requests ('+pend.length+')</div>';
+  if(!pend.length) html+='<div style="color:#999;font-size:13px;padding:6px 0 14px">No pending requests.</div>';
+  else html+=pend.map(function(s){return '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:12px;margin-bottom:8px">'+
+    '<div style="font-weight:600;color:#1A2E5A">'+esc(s.name||'')+'</div><div style="font-size:12px;color:#666;margin-bottom:8px">'+esc(s.email||'')+'</div>'+
+    '<div style="display:flex;gap:8px"><button onclick="approveStaff(\''+esc(s.uid)+'\')" style="flex:1;background:#16A34A;color:#fff;border:none;padding:9px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">✓ Approve</button>'+
+    '<button onclick="denyStaff(\''+esc(s.uid)+'\')" style="flex:1;background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;padding:9px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">Deny</button></div></div>';}).join('');
+  html+='<div style="font-size:13px;font-weight:700;color:#1A2E5A;margin:16px 0 10px">Approved Staff ('+appr.length+')</div>';
+  if(!appr.length) html+='<div style="color:#999;font-size:13px;padding:6px 0">No approved staff yet.</div>';
+  else html+=appr.map(function(s){return '<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'+
+    '<div><div style="font-weight:600;color:#166534">'+esc(s.name||'')+'</div><div style="font-size:12px;color:#666">'+esc(s.email||'')+'</div></div>'+
+    '<button onclick="denyStaff(\''+esc(s.uid)+'\')" style="background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Revoke</button></div>';}).join('');
+  // Pre-authorize by email
+  html+='<div style="border-top:1px solid #eee;margin-top:16px;padding-top:14px"><div style="font-size:13px;font-weight:700;color:#1A2E5A;margin-bottom:8px">Pre-authorize by Gmail</div>'+
+    '<div style="font-size:12px;color:#888;margin-bottom:8px">They must still sign in once with this Gmail, then they get instant access.</div>'+
+    '<input id="preauth-email" placeholder="staff@gmail.com" style="width:100%;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">'+
+    '<button onclick="preauthByEmail()" style="width:100%;background:#1A2E5A;color:#fff;border:none;padding:11px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">Add to allow-list</button>'+
+    '<div style="font-size:11px;color:#999;margin-top:8px;line-height:1.5">Note: pre-authorized emails appear as approved once the person signs in. For pre-auth to grant write access, your Firestore rules check the staff doc — see the rules I provided.</div></div>';
+  showInfoModal('👥 Staff Access', html);
+}
+
+function approveStaff(suid) {
+  ownerCol('staff').doc(suid).update({status:'approved', approvedAt:new Date().toISOString()})
+    .then(function(){ openStaffManager(); });
+}
+function denyStaff(suid) {
+  if(!confirm('Remove this staff member\'s access?')) return;
+  ownerCol('staff').doc(suid).delete().then(function(){ openStaffManager(); });
+}
+function preauthByEmail() {
+  var em=(document.getElementById('preauth-email').value||'').trim().toLowerCase();
+  if(!em||em.indexOf('@')<0){alert('Enter a valid email.');return;}
+  // Store a placeholder keyed by email; resolved to a uid when they first sign in.
+  ownerCol('staff').doc('email:'+em).set({status:'approved', email:em, preauth:true, addedAt:new Date().toISOString()})
+    .then(function(){ alert('✓ '+em+' added. They get access the moment they sign in with this Gmail.'); openStaffManager(); });
+}
+
+// Lightweight info modal (reuses a generic overlay)
+function showInfoModal(title, bodyHtml) {
+  var ov=document.getElementById('mo-info');
+  if(!ov){
+    ov=document.createElement('div'); ov.id='mo-info'; ov.className='ov';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:none;align-items:flex-end;justify-content:center';
+    ov.innerHTML='<div style="background:#fff;border-radius:18px 18px 0 0;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;padding:0"><div style="position:sticky;top:0;background:#fff;padding:16px 18px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center"><h3 id="mo-info-title" style="font-size:16px;color:#1A2E5A;margin:0"></h3><button onclick="document.getElementById(\'mo-info\').style.display=\'none\'" style="background:none;border:none;font-size:20px;cursor:pointer;color:#999">✕</button></div><div id="mo-info-body" style="padding:18px"></div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click',function(e){if(e.target===ov)ov.style.display='none';});
+  }
+  document.getElementById('mo-info-title').textContent=title;
+  document.getElementById('mo-info-body').innerHTML=bodyHtml;
+  ov.style.display='flex';
+}
+
+/* ══════════════════════════════
    FIRESTORE SYNC
 ══════════════════════════════ */
 function setSyncDot(s) {
   const d = document.getElementById('sync-dot');
-  d.className = 'sync-dot' + (s==='busy'?' busy':'');
-  d.title = s==='busy'?'Saving...':'Synced ✓';
+  if (!d) return;
+  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'');
+  d.title = s==='busy' ? 'Saving…'
+          : s==='offline' ? 'Offline — saved on this device, will sync when back online'
+          : s==='err' ? 'Sync issue — saved locally, will retry'
+          : 'Synced ✓';
 }
+function updateSyncUI(){ setSyncDot(isOnline ? 'ok' : 'offline'); }
+
+const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
+function saveLocal(){
+  try{ localStorage.setItem(LS_KEY(), JSON.stringify({
+    parties:S.parties, challans:S.challans, payments:S.payments,
+    settlements:S.settlements, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC
+  })); }catch(e){}
+}
+function loadLocal(){
+  try{ var raw=localStorage.getItem(LS_KEY()); if(!raw) return false;
+    var d=JSON.parse(raw);
+    S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
+    S.settlements=d.settlements||[]; S.trash=d.trash||[];
+    S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0; return true;
+  }catch(e){ return false; }
+}
+function flushPendingSave(){ if(uid && isOnline && isOwnerUid(uid)) saveToCloud(); }
 
 function subscribeData() {
   const ref = db.collection('users').doc(uid).collection('appdata').doc('main');
   setSyncDot('busy');
-  unsubDB = ref.onSnapshot(snap => {
+  unsubDB = ref.onSnapshot({ includeMetadataChanges:true }, snap => {
     if (snap.exists) {
       const d = snap.data();
       S.parties     = d.parties     || [];
@@ -735,10 +1257,16 @@ function subscribeData() {
       S.pC  = d.pC  || 0;
       S.cC  = d.cC  || 0;
       S.pyC = d.pyC || 0;
+      saveLocal();
     }
-    setSyncDot('ok');
+    const fromCache = snap.metadata && snap.metadata.fromCache;
+    setSyncDot(fromCache ? (isOnline ? 'busy' : 'offline') : 'ok');
     renderAll();
-  }, err => { setSyncDot('err'); console.error(err); });
+  }, err => {
+    console.warn('Snapshot listener error:', err && err.code);
+    if (loadLocal()) renderAll();
+    setSyncDot(isOnline ? 'err' : 'offline');
+  });
 }
 
 function deepSanitize(obj) {
@@ -750,24 +1278,39 @@ function deepSanitize(obj) {
     });
   }
 }
-async function saveToCloud() {
+function saveToCloud() {
   if (!uid) return;
-  setSyncDot('busy');
+  // Persist locally first — instant, never fails.
+  saveLocal();
+  setSyncDot(isOnline ? 'busy' : 'offline');
+  const payload = {
+    parties:   JSON.parse(JSON.stringify(S.parties   || [])),
+    challans:  JSON.parse(JSON.stringify(S.challans  || [])),
+    payments:  JSON.parse(JSON.stringify(S.payments  || [])),
+    settlements: JSON.parse(JSON.stringify(S.settlements || [])),
+    trash:     JSON.parse(JSON.stringify(S.trash     || [])),
+    pC: S.pC || 0, cC: S.cC || 0, pyC: S.pyC || 0,
+    updated: new Date().toISOString()
+  };
+  deepSanitize(payload);
   try {
-    // Sanitize: Firestore rejects undefined values
-    const payload = {
-      parties:   JSON.parse(JSON.stringify(S.parties   || [])),
-      challans:  JSON.parse(JSON.stringify(S.challans  || [])),
-      payments:  JSON.parse(JSON.stringify(S.payments  || [])),
-      settlements: JSON.parse(JSON.stringify(S.settlements || [])),
-      trash:     JSON.parse(JSON.stringify(S.trash     || [])),
-      pC: S.pC || 0, cC: S.cC || 0, pyC: S.pyC || 0,
-      updated: new Date().toISOString()
-    };
-    deepSanitize(payload);
-    await db.collection('users').doc(uid).collection('appdata').doc('main').set(payload);
-    setSyncDot('ok');
-  } catch(e) { setSyncDot('err'); alert('Sync error: ' + e.message); }
+    db.collection('users').doc(uid).collection('appdata').doc('main').set(payload)
+      .then(function(){ setSyncDot(isOnline ? 'ok' : 'offline'); })
+      .catch(function(err){ console.warn('Cloud write deferred:', err && err.code); setSyncDot(isOnline ? 'err' : 'offline'); });
+  } catch(e) { console.warn('Cloud write threw:', e); setSyncDot(isOnline ? 'err' : 'offline'); }
+  // Publish a SLIM party directory (names only — no financial data) for staff to read.
+  publishPartyDirectory();
+}
+
+// Staff can only ever read this slim doc — it contains zero challan/payment/balance data.
+function publishPartyDirectory() {
+  if (!uid || !isOwnerUid(uid)) return;
+  try {
+    var dir = (S.parties||[]).map(function(p){ return { id:p.id, name:p.name||'', phone:p.phone||'', city:p.city||'' }; });
+    db.collection('users').doc(uid).collection('public').doc('parties')
+      .set({ parties: dir, updated:new Date().toISOString() })
+      .catch(function(err){ console.warn('directory publish deferred:', err && err.code); });
+  } catch(e) { console.warn('directory publish threw:', e); }
 }
 
 /* ══════════════════════════════
@@ -1002,7 +1545,8 @@ function challanCard(c, showParty) {
       <div class="cleft">
         <span class="cnum">${esc(c.num)}</span>
         <div class="cinfo">${showParty&&party?`<div class="cp">${esc(party.name)}</div>`:''}
-          <div class="cd">📅 ${fmtD(c.date)}${c.remarks?` · <em style="color:#AAA">${esc(c.remarks)}</em>`:''}</div></div>
+          <div class="cd">📅 ${fmtD(c.date)}${c.remarks?` · <em style="color:#AAA">${esc(c.remarks)}</em>`:''}</div>
+          ${c.staffGenerated?`<div style="margin-top:3px"><span style="display:inline-block;background:#EDE9FE;color:#6D28D9;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">👤 Staff-generated${c.staffEmail?' · '+esc(c.staffEmail):''}</span></div>`:''}</div>
       </div>
       <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${c.status}">${c.status==='P'?'PENDING':c.status==='T'?'PARTIAL':'SETTLED'}</span></div>
     </div>
@@ -1822,7 +2366,7 @@ async function confirmImport() {
   // Recalc statuses for all affected challans
   r.newChallans.forEach(c=>recalcChallanStatus(c.id));
 
-  await saveToCloud();
+  saveToCloud(); // saves locally instantly; cloud syncs in background
 
   // Show step 4 done
   document.getElementById('imp-step3').style.display='none';
@@ -2197,7 +2741,7 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
 <div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE<div style="font-size:10px;font-weight:400;color:#6B7280;margin-top:1px">This challan only</div></div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
 
 <div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
-<div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}</div>
+<div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}${c.staffGenerated?' · Billed by staff: '+esc(c.staffEmail||c.staffName||''):''}</div>
 </div></body></html>`;
 
   // Create blob and trigger download
@@ -2245,7 +2789,7 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
 <div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE<div style="font-size:10px;font-weight:400;color:#6B7280;margin-top:1px">This challan only</div></div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
 
 <div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
-<div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}</div>
+<div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}${c.staffGenerated?' · Billed by staff: '+esc(c.staffEmail||c.staffName||''):''}</div>
 </div></body></html>`);
   const waText = encodeURIComponent(
     '*Delivery Challan - Modrobe Impex*\n' +
