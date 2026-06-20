@@ -411,6 +411,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
+  <div class="umi" onclick="exportBackup()">⬇️ Export Backup (JSON)</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi danger" onclick="doLogout()">🚪 Sign Out</div>
@@ -675,7 +676,11 @@ try {
   });
 } catch(e) { console.warn('Persistence setup skipped', e); }
 let isOnline = (typeof navigator!=='undefined') ? navigator.onLine : true;
-window.addEventListener('online',  function(){ isOnline = true;  if(typeof updateSyncUI==='function')updateSyncUI(); if(typeof flushPendingSave==='function')flushPendingSave(); });
+let loadedOnce = false; // true after a successful cloud read; guards against blank/stale overwrites
+// On reconnect we do NOT push local data — Firestore auto-flushes its own queued writes,
+// and the live snapshot brings down anything other devices changed while we were offline.
+// (Pushing here would overwrite newer remote bills with our stale copy.)
+window.addEventListener('online',  function(){ isOnline = true;  if(typeof updateSyncUI==='function')updateSyncUI(); });
 window.addEventListener('offline', function(){ isOnline = false; if(typeof updateSyncUI==='function')updateSyncUI(); });
 
 /* ══════════════════════════════
@@ -695,6 +700,13 @@ let iRowId = 0;
    HELPERS
 ══════════════════════════════ */
 const pad  = n => String(n).padStart(4,'0');
+// A per-device tag (stable per browser) so offline-created IDs never collide across devices.
+function _devTag(){ try{ var t=localStorage.getItem('cm_dev'); if(!t){ t=Math.random().toString(36).slice(2,6); localStorage.setItem('cm_dev',t); } return t; }catch(e){ return Math.random().toString(36).slice(2,6); } }
+// Globally-unique document id: prefix + time + device + session-counter + random.
+// The monotonic _idSeq guarantees uniqueness even when many ids are made in the same millisecond
+// (e.g. an import loop); the device tag guarantees uniqueness across devices created offline.
+let _idSeq = 0;
+function uniqId(prefix){ _idSeq++; return prefix + '-' + Date.now().toString(36) + _devTag() + _idSeq.toString(36) + Math.floor(Math.random()*1296).toString(36); }
 const fmt  = n => 'Rs.' + new Intl.NumberFormat('en-IN').format(Math.round(n||0));
 const fmtN = n => new Intl.NumberFormat('en-IN').format(Math.round(n||0));
 const fmtR = n => { if(!n&&n!==0)return '0'; var v=parseFloat(n); return Number.isInteger(v)?String(v):v.toFixed(2).replace(/\.?0+$/,''); };
@@ -833,6 +845,7 @@ function doLogout() {
   closeMenu();
   appIsReady = false;  // reset BEFORE signOut so onAuthStateChanged shows login
   uid = null;
+  loadedOnce = false;
   auth.signOut().then(() => { showLogin(); });
 }
 
@@ -1045,8 +1058,7 @@ function staffPrintBill(b) {
   var iR=b.items.map(function(it,i){return '<tr style="background:'+(i%2?'#F9F9F9':'#fff')+'"><td style="padding:8px 10px;border:1px solid #E0E0E0">'+esc(it.name)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">'+it.qty+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">'+fmtR(it.rate)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">'+fmt(it.amount)+'</td></tr>';}).join('');
   var subtotal=b.items.reduce(function(s,i){return s+i.amount;},0);
   var pcs=b.items.reduce(function(s,i){return s+(+i.qty||0);},0);
-  var w=window.open('','_blank');
-  w.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bill - '+esc(b.pname)+'</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">'+
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bill - '+esc(b.pname)+'</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">'+
   '<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>'+
   '<div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div></div></div>'+
   '<div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">'+esc(b.pname)+'</div><div class="ml">Date</div><div class="mv">'+fmtD(b.date)+'</div><div class="ml">Phone</div><div class="mv">'+esc(b.pphone||'-')+'</div><div class="ml">City</div><div class="mv">'+esc(b.pcity||'-')+'</div></div>'+
@@ -1058,8 +1070,25 @@ function staffPrintBill(b) {
   '<tr style="background:#EFF6FF;font-weight:700"><td colspan="2" style="padding:9px 10px;border:1px solid #BFDBFE;font-size:14px;color:#1A2E5A">GRAND TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:15px;color:#1A2E5A">'+fmt(b.total)+'</td></tr></tfoot></table>'+
   '<div class="sig"><div><div class="sl">Receiver\'s Signature<br><strong>'+esc(b.pname)+'</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>'+
   '<div class="ft">Generated: '+new Date().toLocaleString('en-IN')+'</div>'+
-  '</div></body></html>');
-  w.document.close();
+  '<scr'+'ipt>window.onload=function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},350);};<\/scr'+'ipt>'+
+  '</div></body></html>';
+  printDoc(html, 'Bill - '+(b.pname||''));
+}
+
+/* Robust print: opens a new window (desktop) or falls back to a hidden iframe
+   (mobile, where popups are usually blocked). The HTML itself auto-calls print(). */
+function printDoc(html, title){
+  var w=null;
+  try { w=window.open('','_blank'); } catch(e){ w=null; }
+  if (w) { w.document.open(); w.document.write(html); w.document.close(); try{w.document.title=title||'Print';}catch(e){} return; }
+  // Popup blocked → hidden iframe that auto-prints.
+  var old=document.getElementById('__printFrame'); if(old) old.remove();
+  var f=document.createElement('iframe');
+  f.id='__printFrame';
+  f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0';
+  document.body.appendChild(f);
+  var d=f.contentWindow.document;
+  d.open(); d.write(html); d.close();
 }
 
 /* ── Owner side: watch for incoming staff requests + show a badge ── */
@@ -1104,7 +1133,7 @@ function mergeIncomingBills(bills) {
     if (!party && b.pname) party=S.parties.find(function(p){return (p.name||'').trim().toLowerCase()===String(b.pname).trim().toLowerCase();});
     if (!party) {
       S.pC++;
-      party={ id:'P'+pad(S.pC), name:b.pname||'(Unnamed)', phone:b.pphone||'', city:b.pcity||'', ob:0,
+      party={ id:uniqId('P'), name:b.pname||'(Unnamed)', phone:b.pphone||'', city:b.pcity||'', ob:0,
               staffAdded:true, staffEmail:(b.createdBy&&b.createdBy.email)||'' };
       S.parties.push(party);
     }
@@ -1115,7 +1144,7 @@ function mergeIncomingBills(bills) {
     var freight=+b.freight||0;
     var total=items.reduce(function(s,i){return s+i.amount;},0)+freight;
     S.challans.push({
-      id:'C'+pad(S.cC), num:'CH-'+pad(S.cC),
+      id:uniqId('C'), num:'CH-'+pad(S.cC),
       pid:party.id, pname:party.name, date:b.date||today(),
       items:items, freight:freight, total:total, status:'P',
       remarks:b.remarks||'',
@@ -1243,30 +1272,78 @@ function loadLocal(){
 }
 function flushPendingSave(){ if(uid && isOnline && isOwnerUid(uid)) saveToCloud(); }
 
+/* ════════════════════════════════════════════════════════════════
+   PER-DOCUMENT SYNC  (multi-device offline safe)
+   Each party / challan / payment / settlement is its OWN Firestore doc.
+   Two devices adding DIFFERENT bills offline write to DIFFERENT paths,
+   so nothing overwrites anything — Firestore merges them on reconnect.
+   Layout: users/{uid}/{parties|challans|payments|settlements}/{id}
+           users/{uid}/meta/state  { pC, cC, pyC, trash }
+════════════════════════════════════════════════════════════════ */
+function _col(name){ return db.collection('users').doc(uid).collection(name); }
+// Settlement document id. Includes the amount so two part-payments can NEVER collapse,
+// even in the impossible case of a shared payId+challan. Fully preserves every installment.
+function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.round((+s.amount||0)*100); }
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{} };
+let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null;
+function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
+
 function subscribeData() {
-  const ref = db.collection('users').doc(uid).collection('appdata').doc('main');
   setSyncDot('busy');
-  unsubDB = ref.onSnapshot({ includeMetadataChanges:true }, snap => {
-    if (snap.exists) {
-      const d = snap.data();
-      S.parties     = d.parties     || [];
-      S.challans    = d.challans    || [];
-      S.payments    = d.payments    || [];
-      S.settlements = d.settlements || [];
-      S.trash       = d.trash       || [];
-      S.pC  = d.pC  || 0;
-      S.cC  = d.cC  || 0;
-      S.pyC = d.pyC || 0;
-      saveLocal();
-    }
-    const fromCache = snap.metadata && snap.metadata.fromCache;
-    setSyncDot(fromCache ? (isOnline ? 'busy' : 'offline') : 'ok');
+  // Run the one-time migration FIRST, then attach listeners — so the first
+  // snapshots already contain the migrated data (no flash of empty screen).
+  migrateLegacyIfNeeded(function(){ attachDataListeners(); });
+}
+
+function attachDataListeners(){
+  const markLoaded = (cache)=>{
+    loadedOnce = true;
+    reconcileCounters();
+    saveLocal();
+    setSyncDot(cache ? (isOnline?'busy':'offline') : 'ok');
     renderAll();
-  }, err => {
-    console.warn('Snapshot listener error:', err && err.code);
-    if (loadLocal()) renderAll();
-    setSyncDot(isOnline ? 'err' : 'offline');
-  });
+  };
+  // One listener per collection — each rebuilds only its own array.
+  _subParts = _col('parties').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.parties = snap.docs.map(d=>d.data());
+    _lastSaved.parties = _indexById(S.parties);
+    markLoaded(snap.metadata && snap.metadata.fromCache);
+  }, err=>onSubErr('parties',err));
+  _subCh = _col('challans').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.challans = snap.docs.map(d=>d.data());
+    _lastSaved.challans = _indexById(S.challans);
+    markLoaded(snap.metadata && snap.metadata.fromCache);
+  }, err=>onSubErr('challans',err));
+  _subPay = _col('payments').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.payments = snap.docs.map(d=>d.data());
+    _lastSaved.payments = _indexById(S.payments);
+    markLoaded(snap.metadata && snap.metadata.fromCache);
+  }, err=>onSubErr('payments',err));
+  _subSet = _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.settlements = snap.docs.map(d=>d.data());
+    _lastSaved.settlements = _indexById(S.settlements, settlementId);
+    markLoaded(snap.metadata && snap.metadata.fromCache);
+  }, err=>onSubErr('settlements',err));
+  _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
+    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; }
+    markLoaded(snap.metadata && snap.metadata.fromCache);
+  }, err=>onSubErr('meta',err));
+
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+}
+
+function onSubErr(which, err){
+  console.warn('Read blocked ('+which+'):', err && err.code);
+  if (!loadedOnce && loadLocal()) renderAll();
+  setSyncDot(isOnline ? 'err' : 'offline');
+}
+
+// Keep numbering counters ahead of the highest existing number (offline devices may drift).
+function reconcileCounters(){
+  const maxNum = (arr, re)=> (arr||[]).reduce((m,x)=>{ const a=re.exec(x.id||''); const b=re.exec(x.num||''); const v=parseInt((a&&a[1])||(b&&b[1])||0,10); return v>m?v:m; },0);
+  S.pC  = Math.max(S.pC||0,  maxNum(S.parties,  /P0*(\d+)/));
+  S.cC  = Math.max(S.cC||0,  maxNum(S.challans, /(?:CH-|C)0*(\d+)/));
+  S.pyC = Math.max(S.pyC||0, maxNum(S.payments, /PAY0*(\d+)/));
 }
 
 function deepSanitize(obj) {
@@ -1278,28 +1355,93 @@ function deepSanitize(obj) {
     });
   }
 }
+function _clean(o){ const c=JSON.parse(JSON.stringify(o)); deepSanitize(c); return c; }
+
+/* Diff current S vs last-saved and write ONLY what changed (per-document). */
 function saveToCloud() {
   if (!uid) return;
-  // Persist locally first — instant, never fails.
+  if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); setSyncDot(isOnline?'err':'offline'); return; }
   saveLocal();
   setSyncDot(isOnline ? 'busy' : 'offline');
-  const payload = {
-    parties:   JSON.parse(JSON.stringify(S.parties   || [])),
-    challans:  JSON.parse(JSON.stringify(S.challans  || [])),
-    payments:  JSON.parse(JSON.stringify(S.payments  || [])),
-    settlements: JSON.parse(JSON.stringify(S.settlements || [])),
-    trash:     JSON.parse(JSON.stringify(S.trash     || [])),
-    pC: S.pC || 0, cC: S.cC || 0, pyC: S.pyC || 0,
-    updated: new Date().toISOString()
-  };
-  deepSanitize(payload);
   try {
-    db.collection('users').doc(uid).collection('appdata').doc('main').set(payload)
-      .then(function(){ setSyncDot(isOnline ? 'ok' : 'offline'); })
-      .catch(function(err){ console.warn('Cloud write deferred:', err && err.code); setSyncDot(isOnline ? 'err' : 'offline'); });
-  } catch(e) { console.warn('Cloud write threw:', e); setSyncDot(isOnline ? 'err' : 'offline'); }
-  // Publish a SLIM party directory (names only — no financial data) for staff to read.
+    diffWrite('parties',     S.parties,     _lastSaved.parties,     x=>x.id);
+    diffWrite('challans',    S.challans,    _lastSaved.challans,    x=>x.id);
+    diffWrite('payments',    S.payments,    _lastSaved.payments,    x=>x.id);
+    diffWrite('settlements', S.settlements, _lastSaved.settlements, settlementId);
+    _col('meta').doc('state').set(_clean({ pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], updated:new Date().toISOString() }))
+      .then(function(){ setSyncDot(isOnline?'ok':'offline'); })
+      .catch(function(err){ console.warn('meta write deferred:', err&&err.code); setSyncDot(isOnline?'err':'offline'); });
+  } catch(e){ console.warn('save threw:', e); setSyncDot(isOnline?'err':'offline'); }
   publishPartyDirectory();
+}
+
+function diffWrite(coll, arr, lastIndex, keyFn){
+  const nowIndex = {};
+  (arr||[]).forEach(item=>{
+    const id = keyFn(item);
+    nowIndex[id] = item;
+    const prev = lastIndex[id];
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) {
+      _col(coll).doc(String(id)).set(_clean(item)).catch(e=>console.warn(coll+' write deferred:', e&&e.code));
+    }
+  });
+  Object.keys(lastIndex).forEach(id=>{
+    if (!(id in nowIndex)) _col(coll).doc(String(id)).delete().catch(e=>console.warn(coll+' delete deferred:', e&&e.code));
+  });
+  Object.keys(lastIndex).forEach(k=>{ delete lastIndex[k]; });
+  Object.assign(lastIndex, nowIndex);
+}
+
+/* One-time migration from the old single-doc (appdata/main) layout. Calls done() when finished.
+   SAFETY:
+   • COPY-ONLY — the old document is never modified or deleted; it stays as a permanent backup.
+   • The "migrated" flag is stored in a SEPARATE doc (meta/migration), so the old data is untouched.
+   • Part-paid challans get _recheck:true so you can verify each one once and clear it. */
+function migrateLegacyIfNeeded(done){
+  done = done || function(){};
+  const legacy = db.collection('users').doc(uid).collection('appdata').doc('main');
+  const flag   = _col('meta').doc('migration');
+  flag.get().then(function(fsnap){
+    if(fsnap.exists && fsnap.data().done){ done(); return; }   // already migrated
+    legacy.get().then(function(snap){
+      if(!snap.exists){ flag.set({done:true, note:'nothing-to-migrate', at:new Date().toISOString()}); done(); return; }
+      const d = snap.data();
+      _col('challans').limit(1).get().then(function(chSnap){
+        if(!chSnap.empty){ flag.set({done:true, note:'new-data-already-present', at:new Date().toISOString()}); done(); return; }
+        const parties=d.parties||[], challans=d.challans||[], payments=d.payments||[], settlements=d.settlements||[];
+        if(!parties.length && !challans.length && !payments.length){ flag.set({done:true, note:'empty', at:new Date().toISOString()}); done(); return; }
+        console.log('Migrating',challans.length,'challans (copy-only; old data left untouched)…');
+
+        // Identify part-paid challans so they can be flagged for one-time verification.
+        const settByChallan = {};
+        settlements.forEach(s=>{ if(s&&s.cid){ (settByChallan[s.cid]=settByChallan[s.cid]||[]).push(s); } });
+
+        const writes=[];
+        parties.forEach(p=>{ if(p&&p.id) writes.push(_col('parties').doc(String(p.id)).set(_clean(p))); });
+        challans.forEach(c=>{
+          if(!c||!c.id) return;
+          const setts = settByChallan[c.id]||[];
+          // A challan is a "part payment" if it was paid in more than one installment,
+          // or it's marked partial (status 'T'). Flag those for you to recheck once.
+          const isPartPaid = setts.length>1 || c.status==='T';
+          const copy = _clean(c);
+          if(isPartPaid) copy._recheck = true;
+          writes.push(_col('challans').doc(String(c.id)).set(copy));
+        });
+        payments.forEach(p=>{ if(p&&p.id) writes.push(_col('payments').doc(String(p.id)).set(_clean(p))); });
+        // Every settlement copied verbatim with a fully-unique id — no installment can collapse.
+        settlements.forEach(s=>{ writes.push(_col('settlements').doc(String(settlementId(s))).set(_clean(s))); });
+        writes.push(_col('meta').doc('state').set(_clean({ pC:d.pC||0, cC:d.cC||0, pyC:d.pyC||0, trash:d.trash||[], updated:new Date().toISOString() })));
+
+        // Mark done only AFTER all copies succeed. Old doc is never written to.
+        Promise.all(writes).then(function(){
+          flag.set({done:true, note:'migrated', challans:challans.length, at:new Date().toISOString()});
+          console.log('Migration complete. Old data preserved untouched at appdata/main.');
+        }).catch(function(e){ console.warn('migration write deferred (will finish when online):', e&&e.code); });
+        done(); // attach listeners now; local cache already reflects the writes
+      }).catch(function(e){ console.warn('migration probe failed:', e&&e.code); done(); });
+    }).catch(function(e){ console.warn('legacy read skipped:', e&&e.code); done(); });
+  }).catch(function(e){ console.warn('migration flag read skipped:', e&&e.code); done(); });
 }
 
 // Staff can only ever read this slim doc — it contains zero challan/payment/balance data.
@@ -1374,10 +1516,17 @@ function renderHome() {
     <div class="stat"><div class="sl">💰 Outstanding</div><div class="sv r">${fmt(totalOut)}</div></div>
     <div class="stat"><div class="sl">✅ Received</div><div class="sv g">${fmt(totalPd)}</div></div>
     <div class="stat"><div class="sl">⏳ Pending</div><div class="sv a">${pending}</div></div>`;
-  const recent = [...S.challans].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
-  document.getElementById('home-challans').innerHTML = recent.length
+  const recent = [...S.challans].sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||'')).slice(0,5);
+  const rc = recheckCount();
+  const recheckBanner = rc>0 ? `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-weight:700;color:#92400E;font-size:13px;margin-bottom:3px">⚠ ${rc} part-payment challan${rc>1?'s':''} to verify</div>
+      <div style="font-size:12px;color:#92400E;opacity:.85;margin-bottom:8px">From your migrated data. Open each to confirm the installments are correct, then tap “✓ Verified”. Your original data is safely preserved.</div>
+      <button onclick="goTab('challans')" style="background:#92400E;color:#fff;border:none;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-right:6px">Review them</button>
+      <button onclick="verifyAllPartPayments()" style="background:#fff;color:#92400E;border:1px solid #FDE68A;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Mark all verified</button>
+    </div>` : '';
+  document.getElementById('home-challans').innerHTML = recheckBanner + (recent.length
     ? recent.map(c=>challanCard(c,true)).join('')
-    : '<div class="empty"><div class="ei">📋</div><p>No challans yet. Tap + to start.</p></div>';
+    : '<div class="empty"><div class="ei">📋</div><p>No challans yet. Tap + to start.</p></div>');
 }
 
 /* ══════════════════════════════
@@ -1422,7 +1571,7 @@ function renderParties() {
 function renderPartyDetail(pid) {
   const p = S.parties.find(x=>x.id===pid); if (!p) return;
   const bal  = partyBal(pid);
-  const chs  = S.challans.filter(c=>c.pid===pid).sort((a,b)=>a.date.localeCompare(b.date));
+  const chs  = S.challans.filter(c=>c.pid===pid).sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||''));
   const pend = chs.filter(c=>c.status!=='S');
   const settl= chs.filter(c=>c.status==='S');
 
@@ -1516,8 +1665,10 @@ function renderChallans() {
   let vis = chFilter==='ALL' ? [...S.challans] : S.challans.filter(c=>c.status===map[chFilter]);
   const sortVal = document.getElementById('ch-sort')?.value || 'date-desc';
   vis.sort((a,b) => {
-    if (sortVal==='date-desc')  return b.date.localeCompare(a.date);
-    if (sortVal==='date-asc')   return a.date.localeCompare(b.date);
+    // Tiebreaker by challan number (newer = higher) so same-day bills show newest first.
+    const numCmp = (x,y)=>(y.num||'').localeCompare(x.num||''); // desc
+    if (sortVal==='date-desc')  return b.date.localeCompare(a.date) || numCmp(a,b);
+    if (sortVal==='date-asc')   return a.date.localeCompare(b.date) || (a.num||'').localeCompare(b.num||'');
     if (sortVal==='amt-desc')   return b.total - a.total;
     if (sortVal==='amt-asc')    return a.total - b.total;
     if (sortVal==='due-desc')   return (b.total-challanPaid(b.id)) - (a.total-challanPaid(a.id));
@@ -1546,7 +1697,8 @@ function challanCard(c, showParty) {
         <span class="cnum">${esc(c.num)}</span>
         <div class="cinfo">${showParty&&party?`<div class="cp">${esc(party.name)}</div>`:''}
           <div class="cd">📅 ${fmtD(c.date)}${c.remarks?` · <em style="color:#AAA">${esc(c.remarks)}</em>`:''}</div>
-          ${c.staffGenerated?`<div style="margin-top:3px"><span style="display:inline-block;background:#EDE9FE;color:#6D28D9;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">👤 Staff-generated${c.staffEmail?' · '+esc(c.staffEmail):''}</span></div>`:''}</div>
+          ${c.staffGenerated?`<div style="margin-top:3px"><span style="display:inline-block;background:#EDE9FE;color:#6D28D9;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">👤 Staff-generated${c.staffEmail?' · '+esc(c.staffEmail):''}</span></div>`:''}
+          ${c._recheck?`<div style="margin-top:3px"><span style="display:inline-block;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">⚠ Part-payment — please verify</span></div>`:''}</div>
       </div>
       <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${c.status}">${c.status==='P'?'PENDING':c.status==='T'?'PARTIAL':'SETTLED'}</span></div>
     </div>
@@ -1565,6 +1717,7 @@ function challanCard(c, showParty) {
           <button class="btn sm" onclick="downloadChallanPDF('${c.id}')" style="color:#059669;border-color:#A7F3D0;background:#ECFDF5">⬇ PDF</button>
           <button class="btn sm" onclick="openEditChallan('${c.id}')" style="color:#1A2E5A;border-color:#BFDBFE;background:#EFF6FF" title="Edit challan details">✏️ Edit Challan</button>
           <button class="btn sm" onclick="openEditSettle('${c.id}')" style="color:#D97706;border-color:#FDE68A;background:#FFFBEB" title="Edit payment settlements">💳 Payments</button>
+          ${c._recheck?`<button class="btn sm" onclick="verifyPartPayment('${c.id}')" style="color:#92400E;border-color:#FDE68A;background:#FEF3C7" title="Mark this part-payment challan as verified">✓ Verified</button>`:''}
           <button class="btn sm red" onclick="delChallan('${c.id}')">🗑</button>
         </div>
       </div>
@@ -1704,7 +1857,7 @@ function addParty() {
   if (!name) { alert('Party name is required'); return; }
   if (S.parties.find(p=>p.name.toLowerCase()===name.toLowerCase())) { alert('Party already exists'); return; }
   S.pC++;
-  S.parties.push({id:'P'+pad(S.pC),name,phone:document.getElementById('ap-phone').value.trim(),city:document.getElementById('ap-city').value.trim(),ob:+document.getElementById('ap-ob').value||0});
+  S.parties.push({id:uniqId('P'),name,phone:document.getElementById('ap-phone').value.trim(),city:document.getElementById('ap-city').value.trim(),ob:+document.getElementById('ap-ob').value||0});
   saveToCloud(); closeModal('party'); renderParties();
 }
 
@@ -1723,9 +1876,12 @@ function saveChallan() {
   const party=S.parties.find(p=>p.id===pid);
   const freight=+document.getElementById('ch-freight').value||0;
   const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0)+freight;
-  S.challans.push({id:'C'+pad(S.cC),num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
+  const newChId=uniqId('C');
+  S.challans.push({id:newChId,num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
   saveToCloud(); closeModal('challan'); renderAll();
   if (curParty===pid) renderPartyDetail(pid); else openParty(pid);
+  // Automatically open the print view for the bill that was just created.
+  setTimeout(function(){ printChallan(newChId); }, 200);
 }
 
 function savePayment() {
@@ -1736,7 +1892,7 @@ function savePayment() {
   const rmk=document.getElementById('pp-rmk').value.trim();
   if (!pid||!dt||!amt) { alert('Fill all required fields'); return; }
   S.pyC++;
-  const payId='PAY'+pad(S.pyC);
+  const payId=uniqId('PAY');
   S.payments.push({id:payId,pid,date:dt,amount:amt,mode,remarks:rmk});
   let rem=amt;
   S.challans.filter(c=>c.pid===pid&&c.status!=='S').sort((a,b)=>a.date.localeCompare(b.date)).forEach(c=>{
@@ -1788,6 +1944,41 @@ function delParty(pid) {
     saveToCloud(); closeModal('del'); goBack(); renderAll();
   };
   document.getElementById('mo-del').classList.add('open');
+}
+
+// One-tap full backup: downloads everything as a JSON file you can keep safe.
+function exportBackup(){
+  closeMenu();
+  try{
+    const data = { app:'Challan Manager', exportedAt:new Date().toISOString(),
+      parties:S.parties, challans:S.challans, payments:S.payments,
+      settlements:S.settlements, trash:S.trash, counters:{pC:S.pC,cC:S.cC,pyC:S.pyC} };
+    const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0,10);
+    a.href=url; a.download='challan-backup-'+stamp+'.json'; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 1500);
+  }catch(e){ alert('Could not export backup: '+e.message); }
+}
+
+// Clear the part-payment "recheck" flag once you've verified the challan is correct.
+function verifyPartPayment(cid){
+  const c=S.challans.find(x=>x.id===cid); if(!c) return;
+  delete c._recheck;
+  saveToCloud();
+  renderAll();
+}
+// How many challans still need verification after migration.
+function recheckCount(){ return (S.challans||[]).filter(c=>c._recheck).length; }
+// Mark every flagged challan verified at once (after you've reviewed them).
+function verifyAllPartPayments(){
+  const n=recheckCount();
+  if(!n) return;
+  if(!confirm('Mark all '+n+' part-payment challans as verified? Do this only after you have checked them.')) return;
+  (S.challans||[]).forEach(c=>{ if(c._recheck) delete c._recheck; });
+  saveToCloud();
+  renderAll();
 }
 
 function delChallan(cid) {
@@ -1862,9 +2053,9 @@ function renderDaybook(){
   if(!body)return;
   function pname(pid,fallback){const p=S.parties.find(x=>x.id===pid);return p?p.name:(fallback||'Unknown');}
 
-  // Challans created this day
+  // Challans created this day — newest first (highest challan number on top)
   const chs=(S.challans||[]).filter(c=>c.date===day)
-    .sort((a,b)=>(a.num||'').localeCompare(b.num||''));
+    .sort((a,b)=>(b.num||'').localeCompare(a.num||''));
   // Payments received this day
   const pays=(S.payments||[]).filter(p=>p.date===day)
     .sort((a,b)=>(b.amount||0)-(a.amount||0));
@@ -2158,7 +2349,7 @@ function parseExcelWorkbook(wb) {
     let isNewParty = false;
     if (!party) {
       pCtr++;
-      party = {id:'P'+pad4(pCtr), name:partyName, phone:'', city:'', ob:0};
+      party = {id:uniqId('P'), name:partyName, phone:'', city:'', ob:0};
       newParties.push(party);
       isNewParty = true;
     } else {
@@ -2234,7 +2425,7 @@ function parseExcelWorkbook(wb) {
 
       cCtr++;
       const ch = {
-        id:'C'+pad4(cCtr), num:'CH-'+pad4(cCtr),
+        id:uniqId('C'), num:'CH-'+pad4(cCtr),
         pid:party.id, pname:partyName,
         date:sc.date, items:sc.items,
         total:Math.round(total),
@@ -2249,7 +2440,7 @@ function parseExcelWorkbook(wb) {
       const existingPay = S.payments.find(p=>p.pid===party.id && p.amount===totalPaid);
       if (!existingPay) {
         pyCtr++;
-        const payId='PAY'+pad4(pyCtr);
+        const payId=uniqId('PAY');
         // Get latest date from new challans for this party
         const partyChs = newChallans.filter(c=>c.pid===party.id);
         const payDate  = partyChs.length ? partyChs[partyChs.length-1].date : today();
@@ -2645,7 +2836,7 @@ function saveESAdjustment() {
 
   // Create a new standalone payment for this adjustment
   S.pyC++;
-  const payId = 'PAY' + String(S.pyC).padStart(4,'0');
+  const payId = uniqId('PAY');
   S.payments.push({ id:payId, pid:c.pid, date:dt, amount:amt, mode:'Adjustment', remarks:rmk||'Manual adjustment' });
   S.settlements.push({ cid, payId, amount:amt, date:dt });
 
@@ -2682,7 +2873,7 @@ function saveQuickParty() {
   if (!name) { alert('Party name is required'); return; }
   if (S.parties.find(p=>p.name.toLowerCase()===name.toLowerCase())) { alert('Party already exists'); return; }
   S.pC++;
-  const newParty = {id:'P'+pad(S.pC), name, phone:document.getElementById('qp-phone').value.trim(), city:document.getElementById('qp-city').value.trim(), ob:0};
+  const newParty = {id:uniqId('P'), name, phone:document.getElementById('qp-phone').value.trim(), city:document.getElementById('qp-city').value.trim(), ob:0};
   S.parties.push(newParty);
   // Refresh the party dropdown and select the new party
   const sel = document.getElementById('ch-party');
@@ -2774,8 +2965,7 @@ function printChallan(cid) {
   const sl=c.status==='S'?'SETTLED':c.status==='T'?'PARTIAL':'PENDING';
   const iR=c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(it.name)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
   const pR=setts.length?setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join(''):`<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
+  const challanHTML=`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
 <div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 Share via WhatsApp</button><button onclick="shareNativeChallan()" style="background:#6D28D9;color:#fff">📤 Share File</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
 <div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div><div style="font-size:22px;font-weight:700;color:#1A2E5A">${esc(c.num)}</div><div style="margin-top:5px;display:inline-block;background:${sb};color:${sc};padding:2px 12px;border-radius:20px;font-size:11px;font-weight:700">${sl}</div></div></div>
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
@@ -2790,7 +2980,7 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
 
 <div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
 <div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}${c.staffGenerated?' · Billed by staff: '+esc(c.staffEmail||c.staffName||''):''}</div>
-</div></body></html>`);
+</div>`;
   const waText = encodeURIComponent(
     '*Delivery Challan - Modrobe Impex*\n' +
     '*' + (c.num||'') + '*\n' +
@@ -2803,24 +2993,15 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
   const shareText = 'Delivery Challan ' + (c.num||'') + '\nParty: ' + (party?party.name:c.pname) + '\nDate: ' + (c.date||'') + '\nTotal: Rs.' + (c.total||0).toLocaleString('en-IN') + '\nBalance: Rs.' + (due||0).toLocaleString('en-IN') + '\n\nModrobe Impex';
   const waURL = 'https://wa.me/?text=' + waText;
   var challanFileName = (c.num||'Challan').replace(/\s+/g,'-') + '_' + (party?party.name:'Party').replace(/\s+/g,'-') + '.html';
-  w.document.write('<scr'+'ipt>');
-  w.document.write('function getCleanHTML(){var clone=document.documentElement.cloneNode(true);var pb=clone.querySelector(".pb");if(pb)pb.remove();return "<!DOCTYPE html>"+clone.outerHTML;}');
-  w.document.write('function shareAsFile(title,fname){');
-  w.document.write('var html=getCleanHTML();');
-  w.document.write('var file=new File([html],fname,{type:"text/html"});');
-  w.document.write('if(navigator.canShare&&navigator.canShare({files:[file]})){');
-  w.document.write('navigator.share({title:title,files:[file]}).catch(function(){});');
-  w.document.write('}else{');
-  w.document.write('var blob=new Blob([html],{type:"text/html"});');
-  w.document.write('var url=URL.createObjectURL(blob);');
-  w.document.write('var a=document.createElement("a");a.href=url;a.download=fname;a.click();');
-  w.document.write('setTimeout(function(){URL.revokeObjectURL(url);},1000);');
-  w.document.write('}');
-  w.document.write('}');
-  w.document.write('function shareWAChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}');
-  w.document.write('function shareNativeChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}');
-  w.document.write('<\/scr'+'ipt>');
-  w.document.close();
+  var shareScript = '<scr'+'ipt>'+
+    'function getCleanHTML(){var clone=document.documentElement.cloneNode(true);var pb=clone.querySelector(".pb");if(pb)pb.remove();return "<!DOCTYPE html>"+clone.outerHTML;}'+
+    'function shareAsFile(title,fname){var html=getCleanHTML();var file=new File([html],fname,{type:"text/html"});if(navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({title:title,files:[file]}).catch(function(){});}else{var blob=new Blob([html],{type:"text/html"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=fname;a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);}}'+
+    'function shareWAChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}'+
+    'function shareNativeChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}'+
+    'window.onload=function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},350);};'+
+    '<\/scr'+'ipt>';
+  var fullHTML = challanHTML + shareScript + '</body></html>';
+  printDoc(fullHTML, esc(c.num));
 }
 
 /* ══════════════════════════════
