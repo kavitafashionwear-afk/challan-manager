@@ -411,7 +411,6 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
-  <div class="umi" onclick="exportBackup()">⬇️ Export Backup (JSON)</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi danger" onclick="doLogout()">🚪 Sign Out</div>
@@ -1944,22 +1943,6 @@ function delParty(pid) {
     saveToCloud(); closeModal('del'); goBack(); renderAll();
   };
   document.getElementById('mo-del').classList.add('open');
-}
-
-// One-tap full backup: downloads everything as a JSON file you can keep safe.
-function exportBackup(){
-  closeMenu();
-  try{
-    const data = { app:'Challan Manager', exportedAt:new Date().toISOString(),
-      parties:S.parties, challans:S.challans, payments:S.payments,
-      settlements:S.settlements, trash:S.trash, counters:{pC:S.pC,cC:S.cC,pyC:S.pyC} };
-    const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const stamp = new Date().toISOString().slice(0,10);
-    a.href=url; a.download='challan-backup-'+stamp+'.json'; a.click();
-    setTimeout(()=>URL.revokeObjectURL(url), 1500);
-  }catch(e){ alert('Could not export backup: '+e.message); }
 }
 
 // Clear the part-payment "recheck" flag once you've verified the challan is correct.
