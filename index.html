@@ -16,6 +16,7 @@
 
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;max-width:100%;overflow-x:hidden}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#F0F2F5;color:#1A1A1A;font-size:14px}
 
 /* ── SCREEN SYSTEM ── */
@@ -150,7 +151,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 /* ── MODALS ── */
 .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:flex-end;justify-content:center}
 .overlay.open{display:flex}
-.mbox{background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;animation:sup .25s ease;padding-bottom:20px}
+.mbox{background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;animation:sup .25s ease;padding-bottom:20px;box-sizing:border-box}
 @keyframes sup{from{transform:translateY(100%)}to{transform:translateY(0)}}
 .mhandle{width:40px;height:4px;background:#DDD;border-radius:2px;margin:12px auto 6px}
 .mhead{padding:8px 18px 14px;border-bottom:1px solid #F0F0F0;display:flex;justify-content:space-between;align-items:center}
@@ -801,6 +802,15 @@ auth.onAuthStateChanged(user => {
   else if (!appIsReady) { showLogin(); }
 });
 
+// Safety net: if auth never resolves within 8s (e.g. token refresh stalls on a slow mobile
+// connection), don't leave the user stuck on the "Loading…" spinner — show the login screen.
+setTimeout(function(){
+  if (!appIsReady) {
+    var pl = document.getElementById('page-loading');
+    if (pl && pl.style.display !== 'none') showLogin();
+  }
+}, 8000);
+
 function doLogin() {
   const btn = document.querySelector('.google-btn');
   const msg = document.getElementById('login-msg');
@@ -1289,9 +1299,12 @@ function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyF
 
 function subscribeData() {
   setSyncDot('busy');
-  // Run the one-time migration FIRST, then attach listeners — so the first
-  // snapshots already contain the migrated data (no flash of empty screen).
-  migrateLegacyIfNeeded(function(){ attachDataListeners(); });
+  // Attach the live data listeners IMMEDIATELY so data loads right away. On a slow/flaky mobile
+  // connection the migration's .get() calls could stall, which previously delayed or blocked the
+  // listeners and left the screen empty. The migration is copy-only and idempotent, so it runs
+  // safely in the background and the listeners pick up anything it writes.
+  attachDataListeners();
+  try { migrateLegacyIfNeeded(function(){}); } catch(e){ console.warn('migration skipped', e); }
 }
 
 function attachDataListeners(){
@@ -1395,7 +1408,7 @@ function diffWrite(coll, arr, lastIndex, keyFn){
    SAFETY:
    • COPY-ONLY — the old document is never modified or deleted; it stays as a permanent backup.
    • The "migrated" flag is stored in a SEPARATE doc (meta/migration), so the old data is untouched.
-   • Part-paid challans get _recheck:true so you can verify each one once and clear it. */
+   • Copy-only: your original data at appdata/main is never modified. */
 function migrateLegacyIfNeeded(done){
   done = done || function(){};
   const legacy = db.collection('users').doc(uid).collection('appdata').doc('main');
@@ -1424,7 +1437,6 @@ function migrateLegacyIfNeeded(done){
           // or it's marked partial (status 'T'). Flag those for you to recheck once.
           const isPartPaid = setts.length>1 || c.status==='T';
           const copy = _clean(c);
-          if(isPartPaid) copy._recheck = true;
           writes.push(_col('challans').doc(String(c.id)).set(copy));
         });
         payments.forEach(p=>{ if(p&&p.id) writes.push(_col('payments').doc(String(p.id)).set(_clean(p))); });
@@ -1516,14 +1528,7 @@ function renderHome() {
     <div class="stat"><div class="sl">✅ Received</div><div class="sv g">${fmt(totalPd)}</div></div>
     <div class="stat"><div class="sl">⏳ Pending</div><div class="sv a">${pending}</div></div>`;
   const recent = [...S.challans].sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||'')).slice(0,5);
-  const rc = recheckCount();
-  const recheckBanner = rc>0 ? `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-weight:700;color:#92400E;font-size:13px;margin-bottom:3px">⚠ ${rc} part-payment challan${rc>1?'s':''} to verify</div>
-      <div style="font-size:12px;color:#92400E;opacity:.85;margin-bottom:8px">From your migrated data. Open each to confirm the installments are correct, then tap “✓ Verified”. Your original data is safely preserved.</div>
-      <button onclick="goTab('challans')" style="background:#92400E;color:#fff;border:none;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-right:6px">Review them</button>
-      <button onclick="verifyAllPartPayments()" style="background:#fff;color:#92400E;border:1px solid #FDE68A;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Mark all verified</button>
-    </div>` : '';
-  document.getElementById('home-challans').innerHTML = recheckBanner + (recent.length
+  document.getElementById('home-challans').innerHTML = (recent.length
     ? recent.map(c=>challanCard(c,true)).join('')
     : '<div class="empty"><div class="ei">📋</div><p>No challans yet. Tap + to start.</p></div>');
 }
@@ -1697,7 +1702,6 @@ function challanCard(c, showParty) {
         <div class="cinfo">${showParty&&party?`<div class="cp">${esc(party.name)}</div>`:''}
           <div class="cd">📅 ${fmtD(c.date)}${c.remarks?` · <em style="color:#AAA">${esc(c.remarks)}</em>`:''}</div>
           ${c.staffGenerated?`<div style="margin-top:3px"><span style="display:inline-block;background:#EDE9FE;color:#6D28D9;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">👤 Staff-generated${c.staffEmail?' · '+esc(c.staffEmail):''}</span></div>`:''}
-          ${c._recheck?`<div style="margin-top:3px"><span style="display:inline-block;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">⚠ Part-payment — please verify</span></div>`:''}</div>
       </div>
       <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${c.status}">${c.status==='P'?'PENDING':c.status==='T'?'PARTIAL':'SETTLED'}</span></div>
     </div>
@@ -1716,7 +1720,6 @@ function challanCard(c, showParty) {
           <button class="btn sm" onclick="downloadChallanPDF('${c.id}')" style="color:#059669;border-color:#A7F3D0;background:#ECFDF5">⬇ PDF</button>
           <button class="btn sm" onclick="openEditChallan('${c.id}')" style="color:#1A2E5A;border-color:#BFDBFE;background:#EFF6FF" title="Edit challan details">✏️ Edit Challan</button>
           <button class="btn sm" onclick="openEditSettle('${c.id}')" style="color:#D97706;border-color:#FDE68A;background:#FFFBEB" title="Edit payment settlements">💳 Payments</button>
-          ${c._recheck?`<button class="btn sm" onclick="verifyPartPayment('${c.id}')" style="color:#92400E;border-color:#FDE68A;background:#FEF3C7" title="Mark this part-payment challan as verified">✓ Verified</button>`:''}
           <button class="btn sm red" onclick="delChallan('${c.id}')">🗑</button>
         </div>
       </div>
@@ -1945,24 +1948,10 @@ function delParty(pid) {
   document.getElementById('mo-del').classList.add('open');
 }
 
-// Clear the part-payment "recheck" flag once you've verified the challan is correct.
-function verifyPartPayment(cid){
-  const c=S.challans.find(x=>x.id===cid); if(!c) return;
-  delete c._recheck;
-  saveToCloud();
-  renderAll();
-}
-// How many challans still need verification after migration.
-function recheckCount(){ return (S.challans||[]).filter(c=>c._recheck).length; }
-// Mark every flagged challan verified at once (after you've reviewed them).
-function verifyAllPartPayments(){
-  const n=recheckCount();
-  if(!n) return;
-  if(!confirm('Mark all '+n+' part-payment challans as verified? Do this only after you have checked them.')) return;
-  (S.challans||[]).forEach(c=>{ if(c._recheck) delete c._recheck; });
-  saveToCloud();
-  renderAll();
-}
+// Part-payment verification feature has been removed per user request.
+function verifyPartPayment(cid){}
+function recheckCount(){ return 0; }
+function verifyAllPartPayments(){}
 
 function delChallan(cid) {
   const c=S.challans.find(x=>x.id===cid); if(!c) return;
