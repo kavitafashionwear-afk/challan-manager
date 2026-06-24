@@ -1701,6 +1701,7 @@ function challanCard(c, showParty) {
         <div class="cinfo">${showParty&&party?`<div class="cp">${esc(party.name)}</div>`:''}
           <div class="cd">📅 ${fmtD(c.date)}${c.remarks?` · <em style="color:#AAA">${esc(c.remarks)}</em>`:''}</div>
           ${c.staffGenerated?`<div style="margin-top:3px"><span style="display:inline-block;background:#EDE9FE;color:#6D28D9;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">👤 Staff-generated${c.staffEmail?' · '+esc(c.staffEmail):''}</span></div>`:''}
+        </div>
       </div>
       <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${c.status}">${c.status==='P'?'PENDING':c.status==='T'?'PARTIAL':'SETTLED'}</span></div>
     </div>
