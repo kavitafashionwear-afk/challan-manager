@@ -1294,6 +1294,8 @@ function _col(name){ return db.collection('users').doc(uid).collection(name); }
 function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.round((+s.amount||0)*100); }
 let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null;
+// One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
+let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
 
 function subscribeData() {
@@ -1317,23 +1319,28 @@ function attachDataListeners(){
   // One listener per collection — each rebuilds only its own array.
   _subParts = _col('parties').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.parties = snap.docs.map(d=>d.data());
-    _lastSaved.parties = _indexById(S.parties);
+    _lastSaved.parties = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     markLoaded(snap.metadata && snap.metadata.fromCache);
   }, err=>onSubErr('parties',err));
   _subCh = _col('challans').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.challans = snap.docs.map(d=>d.data());
-    _lastSaved.challans = _indexById(S.challans);
+    // Deep-copy the baseline so in-place edits (totals, status, items) are detected by diffWrite
+    // and actually written to the cloud. (Sharing references made edits silently not save.)
+    _lastSaved.challans = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     markLoaded(snap.metadata && snap.metadata.fromCache);
+    if(snap.metadata && !snap.metadata.fromCache){ _chServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('challans',err));
   _subPay = _col('payments').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.payments = snap.docs.map(d=>d.data());
-    _lastSaved.payments = _indexById(S.payments);
+    _lastSaved.payments = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     markLoaded(snap.metadata && snap.metadata.fromCache);
+    if(snap.metadata && !snap.metadata.fromCache){ _payServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('payments',err));
   _subSet = _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.settlements = snap.docs.map(d=>d.data());
-    _lastSaved.settlements = _indexById(S.settlements, settlementId);
+    _lastSaved.settlements = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), settlementId);
     markLoaded(snap.metadata && snap.metadata.fromCache);
+    if(snap.metadata && !snap.metadata.fromCache){ _setServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('settlements',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; }
@@ -2664,10 +2671,57 @@ function saveEditChallan() {
   c.freight = +document.getElementById('ec-freight').value||0;
   c.total   = items.reduce((s,i)=>s+i.amount, 0) + c.freight;
   recalcChallanStatus(cid);
+  // After changing the total, any payment money already received for this party that isn't yet
+  // allocated to a challan should flow into this challan's new balance — otherwise the party shows
+  // "clear" while the challan still shows a due. Reconcile fixes that.
+  reconcilePartySettlements(c.pid);
   saveToCloud();
   closeModal('edit-challan');
   renderAll();
   if (curParty) renderPartyDetail(curParty);
+}
+
+// Once the real server data for challans, payments AND settlements has arrived, run a one-time
+// reconciliation across every party — allocating already-received payment money to any challan
+// that still shows a balance. This corrects challans (like one edited to a higher total) that
+// read PARTIAL even though the party is fully paid. It only adds settlements for money already in.
+function tryReconcileAll(){
+  if(_reconcileDone || !_chServerLoaded || !_payServerLoaded || !_setServerLoaded) return;
+  if(!uid || !isOnline || !loadedOnce) return;
+  _reconcileDone=true;
+  var pids={}; S.challans.forEach(function(c){ if(c&&c.pid) pids[c.pid]=true; });
+  var changed=false;
+  Object.keys(pids).forEach(function(pid){ if(reconcilePartySettlements(pid)) changed=true; });
+  if(changed){ console.log('Reconciled settlements: allocated received payments to challans showing a balance.'); saveToCloud(); renderAll(); if(curParty) renderPartyDetail(curParty); }
+}
+// challan first, oldest payment first). Only ADDS settlements for money already received — never
+// removes settlements or over-allocates — so it can only bring challan status in line with what's
+// actually been paid. Returns true if anything changed.
+function reconcilePartySettlements(pid){
+  if(!pid) return false;
+  var pays = S.payments.filter(p=>p.pid===pid).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  var allocByPay={};
+  S.settlements.forEach(function(s){ if(s.payId) allocByPay[s.payId]=(allocByPay[s.payId]||0)+s.amount; });
+  var payAvail = pays.map(function(p){ return {payId:p.id, date:p.date, avail:Math.round((p.amount-(allocByPay[p.id]||0))*100)/100}; })
+                     .filter(function(x){ return x.avail>0.01; });
+  if(!payAvail.length) return false;
+  var chs = S.challans.filter(c=>c.pid===pid).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  var changed=false;
+  chs.forEach(function(c){
+    var due = Math.round((c.total - challanPaid(c.id))*100)/100;
+    while(due>0.01 && payAvail.length){
+      var pa = payAvail[0];
+      var use = Math.min(due, pa.avail);
+      if(use<=0.01){ payAvail.shift(); continue; }
+      S.settlements.push({cid:c.id, payId:pa.payId, amount:use, date:pa.date||c.date});
+      pa.avail = Math.round((pa.avail-use)*100)/100;
+      due = Math.round((due-use)*100)/100;
+      changed=true;
+      if(pa.avail<=0.01) payAvail.shift();
+    }
+    recalcChallanStatus(c.id);
+  });
+  return changed;
 }
 
 let curEditChallanId = null;
