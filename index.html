@@ -1309,12 +1309,18 @@ function subscribeData() {
 }
 
 function attachDataListeners(){
+  // Snapshot listeners fire often — once from cache, again on server ack, and once more for every
+  // optimistic local write echoing back (includeMetadataChanges). Rendering synchronously on each
+  // would rebuild the whole DOM dozens of times in a burst (319 challans), freezing the UI and
+  // collapsing any card the user opened. Coalesce them: schedule at most one render per frame-ish.
+  let _renderTimer = null;
+  const scheduleRender = ()=>{ if(_renderTimer) return; _renderTimer = setTimeout(()=>{ _renderTimer=null; renderAll(); }, 60); };
   const markLoaded = (cache)=>{
     loadedOnce = true;
     reconcileCounters();
     saveLocal();
     setSyncDot(cache ? (isOnline?'busy':'offline') : 'ok');
-    renderAll();
+    scheduleRender();
   };
   // One listener per collection — each rebuilds only its own array.
   _subParts = _col('parties').onSnapshot({includeMetadataChanges:true}, snap=>{
@@ -1390,12 +1396,22 @@ function saveToCloud() {
     diffWrite('challans',    S.challans,    _lastSaved.challans,    x=>x.id);
     diffWrite('payments',    S.payments,    _lastSaved.payments,    x=>x.id);
     diffWrite('settlements', S.settlements, _lastSaved.settlements, settlementId);
-    _col('meta').doc('state').set(_clean({ pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], updated:new Date().toISOString() }))
-      .then(function(){ setSyncDot(isOnline?'ok':'offline'); })
-      .catch(function(err){ console.warn('meta write deferred:', err&&err.code); setSyncDot(isOnline?'err':'offline'); });
+    // Only write meta when counters/trash actually changed — an unconditional write every save
+    // echoes back through the meta listener and triggers an extra re-render for no reason.
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[] };
+    const metaSig = JSON.stringify(metaObj);
+    if (metaSig !== _lastMetaSig) {
+      _lastMetaSig = metaSig;
+      _col('meta').doc('state').set(_clean(Object.assign({}, metaObj, { updated:new Date().toISOString() })))
+        .then(function(){ setSyncDot(isOnline?'ok':'offline'); })
+        .catch(function(err){ console.warn('meta write deferred:', err&&err.code); setSyncDot(isOnline?'err':'offline'); });
+    } else {
+      setSyncDot(isOnline?'ok':'offline');
+    }
   } catch(e){ console.warn('save threw:', e); setSyncDot(isOnline?'err':'offline'); }
   publishPartyDirectory();
 }
+let _lastMetaSig = null;
 
 function diffWrite(coll, arr, lastIndex, keyFn){
   const nowIndex = {};
@@ -1479,6 +1495,7 @@ function publishPartyDirectory() {
 /* ══════════════════════════════
    NAVIGATION
 ══════════════════════════════ */
+let openCards = new Set();   // challan ids the user has expanded — preserved across re-renders
 function renderAll() {
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
@@ -1716,7 +1733,7 @@ function challanCard(c, showParty) {
       </div>
       <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${c.status}">${c.status==='P'?'PENDING':c.status==='T'?'PARTIAL':'SETTLED'}</span></div>
     </div>
-    <div class="cbody" id="cb-${c.id}">
+    <div class="cbody${openCards.has(c.id)?' open':''}" id="cb-${c.id}">
       <table class="itable"><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th style="text-align:right">Amount</th></tr></thead>
       <tbody>${c.items.map(it=>`<tr><td>${esc(it.name)}</td><td>${it.qty}</td><td>${fmtR(it.rate)}</td><td style="text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody>
       <tfoot><tr style="background:#F0F4FF;font-weight:700;font-size:12px"><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#555">Subtotal</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">${c.items.reduce((s,i)=>s+i.qty,0)} pcs</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE"></td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.items.reduce((s,i)=>s+i.amount,0))}</td></tr>${c.freight?`<tr style="background:#F0F4FF;font-size:12px"><td style="padding:4px 8px;color:#555" colspan="3">🚚 Freight</td><td style="padding:4px 8px;text-align:right;font-weight:700;color:#555">+ ${fmt(c.freight)}</td></tr>`:''}<tr style="background:#EFF6FF;font-weight:700;font-size:13px"><td colspan="3" style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">TOTAL</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot>
@@ -1739,7 +1756,10 @@ function challanCard(c, showParty) {
 }
 function toggleCard(el) {
   const body = el.closest('.ccard').querySelector('.cbody');
-  if (body) body.classList.toggle('open');
+  if (!body) return;
+  body.classList.toggle('open');
+  const id = body.id.replace(/^cb-/, '');
+  if (body.classList.contains('open')) openCards.add(id); else openCards.delete(id);
 }
 
 /* ══════════════════════════════
