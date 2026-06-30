@@ -1380,9 +1380,9 @@ function saveToCloud() {
   if (!uid) return;
   if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); setSyncDot(isOnline?'err':'offline'); return; }
   // Payment history is the single source of truth. Before every write, re-derive how payments map
-  // to challans (FIFO) and refresh every status — so removing or editing a payment flows straight
-  // into the outstanding total and the PAID/PARTIAL/PENDING tags, with no manual step.
-  recomputeAllocations();
+  // to challans (FIFO) and refresh every status. Wrapped so a glitch here can never throw out of
+  // saveToCloud and leave a modal/overlay stuck open (which freezes the UI until refresh).
+  try { recomputeAllocations(); } catch(e){ console.warn('recompute skipped:', e); }
   saveLocal();
   setSyncDot(isOnline ? 'busy' : 'offline');
   try {
@@ -1907,15 +1907,10 @@ function savePayment() {
   S.pyC++;
   const payId=uniqId('PAY');
   S.payments.push({id:payId,pid,date:dt,amount:amt,mode,remarks:rmk});
-  let rem=amt;
-  S.challans.filter(c=>c.pid===pid&&c.status!=='S').sort((a,b)=>a.date.localeCompare(b.date)).forEach(c=>{
-    if(rem<=0) return;
-    const paid=challanPaid(c.id), due=c.total-paid;
-    if(rem>=due-0.01){S.settlements.push({cid:c.id,payId,amount:due,date:dt});c.sDate=dt;rem-=due;}
-    else{S.settlements.push({cid:c.id,payId,amount:rem,date:dt});rem=0;}
-    recalcChallanStatus(c.id);
-  });
-  saveToCloud(); closeModal('payment'); renderAll();
+  // Allocation to challans + status tags are derived from payment history inside saveToCloud.
+  closeModal('payment');
+  saveToCloud();
+  renderAll();
   if (curParty===pid) renderPartyDetail(pid);
 }
 
@@ -2728,7 +2723,7 @@ function recomputeAllocations(){
   const sig = a => (a||[]).map(s=>s.cid+'|'+s.payId+'|'+Math.round((s.amount||0)*100)).sort().join(';');
   let changed = sig(newSet) !== sig(S.settlements);
   S.settlements = newSet;
-  S.challans.forEach(c=>{ const prev=c.status; recalcChallanStatus(c.id); if(c.status!==prev) changed=true; });
+  S.challans.forEach(c=>{ if(!c||!c.id) return; const prev=c.status; recalcChallanStatus(c.id); if(c.status!==prev) changed=true; });
   return changed;
 }
 
