@@ -2706,7 +2706,9 @@ function reconcilePartySettlements(pid){
   S.settlements.forEach(function(s){ if(s.payId) allocByPay[s.payId]=(allocByPay[s.payId]||0)+s.amount; });
   var payAvail = pays.map(function(p){ return {payId:p.id, date:p.date, avail:Math.round((p.amount-(allocByPay[p.id]||0))*100)/100}; })
                      .filter(function(x){ return x.avail>0.01; });
-  if(!payAvail.length) return false;
+  // NOTE: do NOT early-return when payAvail is empty. Challans whose payments are already fully
+  // allocated still need their status badge recomputed — they're the ones left stale at
+  // PENDING/PARTIAL by old status logic. The allocation loop below is simply a no-op in that case.
   var chs = S.challans.filter(c=>c.pid===pid).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   var changed=false;
   chs.forEach(function(c){
