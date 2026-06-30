@@ -2705,8 +2705,18 @@ function recomputeAllocations(){
 
   const newSet=[];
   Object.keys(byParty).forEach(pid=>{
-    const ch  = byParty[pid].ch.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
-    const pay = byParty[pid].pay.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    // Sort by date first, but ALWAYS break ties with a stable, content-based key (challan number /
+    // payment id) rather than leaving it to array order. Firestore collections are read with no
+    // .orderBy(), so S.challans/S.payments can come back in a different sequence on every snapshot.
+    // Without a real tiebreaker, two challans sharing a date (very common — multiple bills entered
+    // the same day) could swap places between runs, flipping which one a payment gets allocated to,
+    // which changes settlement IDs, which triggers a write, which re-fires the listener, which
+    // recomputes again — a self-sustaining loop that froze the UI. A deterministic tiebreaker makes
+    // recompute always converge to the exact same answer, so it only ever writes once per real change.
+    const ch  = byParty[pid].ch.slice().sort((a,b)=>
+      (a.date||'').localeCompare(b.date||'') || String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
+    const pay = byParty[pid].pay.slice().sort((a,b)=>
+      (a.date||'').localeCompare(b.date||'') || String(a.id||'').localeCompare(String(b.id||'')));
     let pi=0, avail = pay.length ? Math.round((pay[0].amount||0)*100)/100 : 0;
     ch.forEach(c=>{
       let due = Math.round((c.total||0)*100)/100;
