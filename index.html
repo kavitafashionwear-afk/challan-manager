@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231A2E5A'/%3E%3Ctext x='50' y='68' font-size='56' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E%E2%82%B9%3C/text%3E%3C/svg%3E">
 <meta name="theme-color" content="#1A2E5A">
 <title>Challan Manager - Modrobe Impex</title>
 
@@ -762,6 +764,7 @@ function allocateParty(pid, data){
 
   const billTotal = {}; challans.forEach(c=>billTotal[c.id]=_r2(c.total));
   const payAmt    = {}; payments.forEach(p=>payAmt[p.id]=_r2(p.amount));
+  const payDate   = {}; payments.forEach(p=>payDate[p.id]=p.date||'');
   const paid    = {};   challans.forEach(c=>paid[c.id]=0);
   const payUsed = {};   payments.forEach(p=>payUsed[p.id]=0);
   const allocations = [];   // {cid, payId, amount, manual}
@@ -779,7 +782,7 @@ function allocateParty(pid, data){
       if (amt > 0.001){
         paid[o.cid] = _r2((paid[o.cid]||0) + amt);
         if (o.payId!=null && payUsed[o.payId]!=null) payUsed[o.payId] = _r2((payUsed[o.payId]||0) + amt);
-        allocations.push({ cid:o.cid, payId:o.payId||null, amount:amt, manual:true });
+        allocations.push({ cid:o.cid, payId:o.payId||null, amount:amt, manual:true, date:(o.payId!=null?payDate[o.payId]:null)||o.date||'' });
       }
     });
 
@@ -794,7 +797,7 @@ function allocateParty(pid, data){
       const use = _r2(Math.min(due, avail));
       paid[c.id] = _r2((paid[c.id]||0) + use);
       payUsed[pool[pi].payId] = _r2((payUsed[pool[pi].payId]||0) + use);
-      allocations.push({ cid:c.id, payId:pool[pi].payId, amount:use, manual:false });
+      allocations.push({ cid:c.id, payId:pool[pi].payId, amount:use, manual:false, date:payDate[pool[pi].payId]||'' });
       avail = _r2(avail - use);
       due   = _r2(due - use);
     }
@@ -847,19 +850,30 @@ function __validateAllocator(verbose){
   S.payments.forEach(p=>{ if(p&&p.pid) pids[p.pid]=true; });
   const ids = Object.keys(pids);
   let mismatches=[], checkedChallans=0;
+  // Legacy values computed DIRECTLY from the stored settlement records (the old engine), so this
+  // stays a genuine apples-to-apples comparison even though challanPaid/partyBal now delegate to
+  // the allocator.
+  const legacyPaid = (cid)=> _r2(S.settlements.filter(s=>s.cid===cid).reduce((a,s)=>a+s.amount,0));
   const legacyStatus = (cid)=>{ const c=S.challans.find(x=>x.id===cid); if(!c) return null;
-    const p=_r2(challanPaid(cid)), t=_r2(c.total); return p<=0.01?'P':(p>=t-0.01?'S':'T'); };
+    const p=legacyPaid(cid), t=_r2(c.total); return p<=0.01?'P':(p>=t-0.01?'S':'T'); };
+  const legacyBal = (pid)=>{
+    const party=S.parties.find(x=>x.id===pid); const ob=party&&party.ob?+party.ob:0;
+    const total=_r2(S.challans.filter(c=>c.pid===pid).reduce((s,c)=>s+c.total,0));
+    const cids=S.challans.filter(c=>c.pid===pid).map(c=>c.id);
+    const settled=_r2(S.settlements.filter(s=>cids.includes(s.cid)).reduce((s,x)=>s+x.amount,0));
+    const totalPaid=_r2(S.payments.filter(p=>p.pid===pid).reduce((s,p)=>s+p.amount,0));
+    const obPaid=Math.max(0, _r2(totalPaid-settled));
+    return _r2(total + ob - settled - obPaid);
+  };
 
   ids.forEach(pid=>{
     const a = allocateParty(pid);
-    // partyBalance vs legacy partyBal
-    const legBal = _r2(partyBal(pid));
+    const legBal = legacyBal(pid);
     if (Math.abs(legBal - a.partyBalance) > 0.01)
       mismatches.push({pid, field:'partyBalance', legacy:legBal, allocator:a.partyBalance});
-    // per-challan paid + status
     a.challanIds.forEach(cid=>{
       checkedChallans++;
-      const lpaid = _r2(challanPaid(cid));
+      const lpaid = legacyPaid(cid);
       if (Math.abs(lpaid - (a.paid[cid]||0)) > 0.01)
         mismatches.push({pid, cid, field:'paid', legacy:lpaid, allocator:a.paid[cid]});
       const lst = legacyStatus(cid);
@@ -879,20 +893,22 @@ function __validateAllocator(verbose){
 }
 try { if (typeof window!=='undefined') window.__validateAllocator = __validateAllocator; } catch(e){}
 
+/* ── Stage 2: these read-through the allocator (the single source of derived truth).
+   Names are unchanged so every existing caller now consumes allocator output. ── */
 function partyBal(pid) {
-  const party = S.parties.find(x=>x.id===pid);
-  const ob = party?.ob||0;
-  const total = S.challans.filter(c=>c.pid===pid).reduce((s,c)=>s+c.total,0);
-  const partyChallanIds = S.challans.filter(c=>c.pid===pid).map(c=>c.id);
-  // Amount settled against specific challans
-  const settledOnChallans = S.settlements.filter(s=>partyChallanIds.includes(s.cid)).reduce((s,x)=>s+x.amount,0);
-  // Total payments ever made for this party
-  const totalPaid = S.payments.filter(p=>p.pid===pid).reduce((s,p)=>s+p.amount,0);
-  // Excess = payments beyond challan settlements = applied to opening balance
-  const obPaid = Math.max(0, totalPaid - settledOnChallans);
-  return total + ob - settledOnChallans - obPaid;
+  return getAlloc(pid).partyBalance;
 }
-function challanPaid(cid) { return S.settlements.filter(s=>s.cid===cid).reduce((a,s)=>a+s.amount,0); }
+function challanPaid(cid) {
+  const pid = partyOfChallan(cid);
+  if (!pid) return 0;
+  const a = getAlloc(pid);
+  return a.paid[cid] || 0;
+}
+function challanStatus(c) {
+  if (!c) return 'P';
+  const a = getAlloc(c.pid);
+  return (a.status && a.status[c.id]) || 'P';
+}
 
 /* ══════════════════════════════
    AUTH
@@ -1667,6 +1683,7 @@ function publishPartyDirectory() {
 ══════════════════════════════ */
 let openCards = new Set();   // challan ids the user has expanded — preserved across re-renders
 function renderAll() {
+  invalidateAllAlloc();   // derived state is recomputed fresh each render pass from the ledger
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
@@ -1718,7 +1735,7 @@ function goBack() {
 function renderHome() {
   const totalOut = S.parties.reduce((s,p)=>s+Math.max(0,partyBal(p.id)),0);
   const totalPd  = S.payments.reduce((s,p)=>s+p.amount,0);
-  const pending  = S.challans.filter(c=>c.status!=='S').length;
+  const pending  = S.challans.filter(c=>challanStatus(c)!=='S').length;
   document.getElementById('home-stats').innerHTML = `
     <div class="stat"><div class="sl">📦 Challans</div><div class="sv">${S.challans.length}</div></div>
     <div class="stat"><div class="sl">💰 Outstanding</div><div class="sv r">${fmt(totalOut)}</div></div>
@@ -1749,7 +1766,7 @@ function renderParties() {
     const bal = partyBal(p.id);
     const bc  = bal>0?'r':bal<0?'g':'z';
     const ch  = S.challans.filter(c=>c.pid===p.id).length;
-    const pend= S.challans.filter(c=>c.pid===p.id&&c.status!=='S').length;
+    const pend= getAlloc(p.id).pendingCount;
     // Highlight matched text in name
     const displayName = query && p.name.toLowerCase().includes(query)
       ? p.name.replace(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi'), '<mark style="background:#FEF3C7;border-radius:3px;padding:0 2px">$1</mark>')
@@ -1771,51 +1788,23 @@ function renderParties() {
 ══════════════════════════════ */
 function renderPartyDetail(pid) {
   const p = S.parties.find(x=>x.id===pid); if (!p) return;
-  const bal  = partyBal(pid);
+  invalidateParty(pid);
+  const a    = getAlloc(pid);
+  const bal  = a.partyBalance;
   const chs  = S.challans.filter(c=>c.pid===pid).sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||''));
-  const pend = chs.filter(c=>c.status!=='S');
-  const settl= chs.filter(c=>c.status==='S');
+  const pend = chs.filter(c=>a.status[c.id]!=='S');
+  const settl= chs.filter(c=>a.status[c.id]==='S');
 
-  // Build payment history from settlements joined to payments — sorted by date descending
-  const partyChallanIds = chs.map(c=>c.id);
-  // Group settlements by payId so each payment shows as one row
-  const payMap = {};
-  S.settlements.filter(s=>partyChallanIds.includes(s.cid)).forEach(s=>{
-    const key = s.payId || ('manual-'+s.cid+'-'+s.date);
-    if (!payMap[key]) {
-      const pay = S.payments.find(x=>x.id===s.payId);
-      payMap[key] = {
-        id: key,
-        payId: s.payId,
-        date: s.date,
-        amount: 0,
-        mode: pay?.mode || 'Payment',
-        remarks: pay?.remarks || '',
-        challans: []
-      };
-    }
-    payMap[key].amount += s.amount;
-    const ch = chs.find(c=>c.id===s.cid);
-    if (ch) payMap[key].challans.push(ch.num);
-  });
-
-  // Also include payments by pid that are NOT yet linked to any settlement (unallocated)
-  S.payments.filter(x=>x.pid===pid).forEach(pay=>{
-    if (!payMap[pay.id]) {
-      payMap[pay.id] = {
-        id: pay.id,
-        payId: pay.id,
-        date: pay.date,
-        amount: pay.amount,
-        mode: pay.mode,
-        remarks: pay.remarks || '',
-        challans: []
-      };
-    }
-  });
-
-  const pmts = Object.values(payMap).sort((a,b)=>b.date.localeCompare(a.date));
-  const totalReceived = pmts.reduce((s,x)=>s+x.amount, 0);
+  // Payment history — built from the PAYMENT LEDGER (source of truth), with "applied to" taken
+  // from the allocator's allocation map. No dependency on stored settlement records.
+  const appliedByPay = {};
+  a.allocations.forEach(al=>{ if(al.payId){ (appliedByPay[al.payId]=appliedByPay[al.payId]||[]).push(al.cid); } });
+  const pmts = S.payments.filter(x=>x.pid===pid).map(pay=>({
+    id: pay.id, payId: pay.id, date: pay.date, amount: pay.amount,
+    mode: pay.mode || 'Payment', remarks: pay.remarks || '',
+    challans: (appliedByPay[pay.id]||[]).map(cid=>{ const ch=chs.find(c=>c.id===cid); return ch?ch.num:null; }).filter(Boolean)
+  })).sort((x,y)=>(y.date||'').localeCompare(x.date||''));
+  const totalReceived = a.totalPaid;
 
   const payRows = pmts.map((x,i)=>`
     <div style="background:${i%2?'#FAFAFA':'#fff'};border:1px solid #E8E8E8;border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
@@ -1863,7 +1852,7 @@ function renderChallans() {
   document.getElementById('ch-filter-bar').innerHTML = filters.map(f=>`
     <button class="btn sm ${chFilter===f?'pri':''}" onclick="setChFilter('${f}')">${f==='ALL'?'All':f.charAt(0)+f.slice(1).toLowerCase()}</button>`).join('');
   const map = {'PENDING':'P','PARTIAL':'T','SETTLED':'S'};
-  let vis = chFilter==='ALL' ? [...S.challans] : S.challans.filter(c=>c.status===map[chFilter]);
+  let vis = chFilter==='ALL' ? [...S.challans] : S.challans.filter(c=>challanStatus(c)===map[chFilter]);
   const sortVal = document.getElementById('ch-sort')?.value || 'date-desc';
   vis.sort((a,b) => {
     // Tiebreaker by challan number (newer = higher) so same-day bills show newest first.
@@ -1885,13 +1874,15 @@ function setChFilter(f) { chFilter=f; renderChallans(); }
    CHALLAN CARD
 ══════════════════════════════ */
 function challanCard(c, showParty) {
-  const paid = challanPaid(c.id);
-  const due  = c.total - paid;
-  const pct  = Math.min(100, Math.round((paid/c.total)*100));
+  const _a   = getAlloc(c.pid);
+  const paid = _a.paid[c.id] || 0;
+  const due  = _a.due[c.id] != null ? _a.due[c.id] : (c.total - paid);
+  const st   = _a.status[c.id] || 'P';
+  const pct  = Math.min(100, Math.round((paid/(c.total||1))*100));
   const party= S.parties.find(p=>p.id===c.pid);
-  const setts= S.settlements.filter(s=>s.cid===c.id);
-  const ptags= setts.map(s=>`<span class="ptag">+${fmt(s.amount)} on ${fmtD(s.date)}</span>`).join('');
-  const bmap = {P:'P',T:'T',S:'S'};
+  // Per-payment chips come from the allocator's allocation map (manual + auto), not stored settlements.
+  const setts= _a.allocations.filter(al=>al.cid===c.id);
+  const ptags= setts.map(s=>`<span class="ptag">+${fmt(s.amount)}${s.manual?' 📌':''}</span>`).join('');
   return `<div class="ccard">
     <div class="chead" onclick="toggleCard(this)">
       <div class="cleft">
@@ -1901,7 +1892,7 @@ function challanCard(c, showParty) {
           ${c.staffGenerated?`<div style="margin-top:3px"><span style="display:inline-block;background:#EDE9FE;color:#6D28D9;font-size:10px;font-weight:700;padding:1px 8px;border-radius:10px">👤 Staff-generated${c.staffEmail?' · '+esc(c.staffEmail):''}</span></div>`:''}
         </div>
       </div>
-      <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${c.status}">${c.status==='P'?'PENDING':c.status==='T'?'PARTIAL':'SETTLED'}</span></div>
+      <div class="cright"><span class="ctot">${fmt(c.total)}</span><span class="badge ${st}">${st==='P'?'PENDING':st==='T'?'PARTIAL':'SETTLED'}</span></div>
     </div>
     <div class="cbody${openCards.has(c.id)?' open':''}" id="cb-${c.id}">
       <table class="itable"><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th style="text-align:right">Amount</th></tr></thead>
@@ -1912,7 +1903,7 @@ function challanCard(c, showParty) {
       <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
       ${ptags?`<div style="margin-top:6px">${ptags}</div>`:''}
       <div class="cfoot">
-        <span>${c.status==='S'?'✅ Settled':'⏳ Due: '+fmt(due)}</span>
+        <span>${st==='S'?'✅ Settled':'⏳ Due: '+fmt(due)}</span>
         <div class="cfoot-btns">
           <button class="btn sm pur" onclick="printChallan('${c.id}')">🖨 Print</button>
           <button class="btn sm" onclick="downloadChallanPDF('${c.id}')" style="color:#059669;border-color:#A7F3D0;background:#ECFDF5">⬇ PDF</button>
@@ -2040,14 +2031,25 @@ function previewSettle() {
   if(rem>0) html+=`<div class="ibox" style="margin-top:8px">Extra ${fmt(rem)} will be credit balance.</div>`;
   html+='</div>'; box.innerHTML=html;
 }
+// Settlement preview for a NEW incoming payment, computed via THE allocator (no separate FIFO).
+// We add a synthetic payment to a copy of the data and diff the allocation before/after.
 function simulateSettle(pid,amt) {
-  const chs=S.challans.filter(c=>c.pid===pid&&c.status!=='S').sort((a,b)=>a.date.localeCompare(b.date));
-  const res=[]; let rem=amt;
+  const before = allocateParty(pid);
+  const data = {
+    parties: S.parties, challans: S.challans, overrides: S.overrides,
+    payments: S.payments.concat([{ id:'__sim__', pid, date:today(), amount:amt }])
+  };
+  const after = allocateParty(pid, data);
+  const chs = S.challans.filter(c=>c.pid===pid)
+    .sort((a,b)=>(a.date||'').localeCompare(b.date||'') || String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
+  const res=[];
   chs.forEach(c=>{
-    const paid=challanPaid(c.id), due=c.total-paid;
-    if(rem<=0){res.push({...c,act:'none',apply:0,due});return;}
-    if(rem>=due){res.push({...c,act:'full',apply:due,due});rem-=due;}
-    else{res.push({...c,act:'part',apply:rem,due});rem=0;}
+    if (before.status[c.id]==='S') return;            // already settled — not part of preview
+    const add = _r2((after.paid[c.id]||0) - (before.paid[c.id]||0));
+    const due = before.due[c.id] || 0;
+    if (add<=0.001)            res.push({...c, act:'none', apply:0,   due});
+    else if (add>=due-0.01)    res.push({...c, act:'full', apply:add, due});
+    else                       res.push({...c, act:'part', apply:add, due});
   });
   return res;
 }
@@ -2157,9 +2159,10 @@ function delChallan(cid) {
   const paid=challanPaid(cid);
   const due=c.total-paid;
   const party=S.parties.find(p=>p.id===c.pid);
-  const statusLabel=c.status==='S'?'SETTLED':c.status==='T'?'PARTIAL':'PENDING';
-  const statusColor=c.status==='S'?'#065F46':c.status==='T'?'#92400E':'#1E40AF';
-  const statusBg=c.status==='S'?'#D1FAE5':c.status==='T'?'#FEF3C7':'#DBEAFE';
+  const _st=challanStatus(c);
+  const statusLabel=_st==='S'?'SETTLED':_st==='T'?'PARTIAL':'PENDING';
+  const statusColor=_st==='S'?'#065F46':_st==='T'?'#92400E':'#1E40AF';
+  const statusBg=_st==='S'?'#D1FAE5':_st==='T'?'#FEF3C7':'#DBEAFE';
   const dueMsg = due>0
     ? `<div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:10px;padding:10px 14px;margin:10px 0;font-size:13px;color:#B91C1C">
         ⚠️ <strong>Rs.${new Intl.NumberFormat('en-IN').format(Math.round(due))} is still outstanding</strong> on this challan.
@@ -2255,9 +2258,10 @@ function renderDaybook(){
     html+=`<div style="display:flex;align-items:center;gap:8px;margin:6px 0 10px"><span style="font-size:15px;font-weight:700;color:#1A2E5A">📦 Challans / Bills</span><span style="flex:1;border-bottom:1.5px dashed #E5E0D5"></span></div>`;
     chs.forEach(c=>{
       const qty=(c.items||[]).reduce((s,i)=>s+(+i.qty||0),0);
-      const statusTxt=c.status==='S'?'PAID':c.status==='P'?'PENDING':c.status;
-      const statusCol=c.status==='S'?'#065F46':'#B45309';
-      const statusBg=c.status==='S'?'#ECFDF5':'#FFFBEB';
+      const _dst=challanStatus(c);
+      const statusTxt=_dst==='S'?'PAID':_dst==='P'?'PENDING':_dst;
+      const statusCol=_dst==='S'?'#065F46':'#B45309';
+      const statusBg=_dst==='S'?'#ECFDF5':'#FFFBEB';
       html+=`<div onclick="openParty('${c.pid}')" style="background:#fff;border:1px solid #E5E0D5;border-radius:14px;padding:13px 15px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:12px">
         <div style="width:42px;height:42px;border-radius:11px;background:#EFF6FF;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">📦</div>
         <div style="flex:1;min-width:0">
@@ -2894,6 +2898,7 @@ function partyOfChallan(cid){ const c=S.challans.find(x=>x&&x.id===cid); return 
    owes after its manual pins. Returns true if this party's settlements/status actually changed. */
 function recomputeParty(pid){
   if(!pid) return false;
+  invalidateParty(pid);   // keep allocator cache consistent with the mutation
   const round = n => Math.round((n||0)*100)/100;
   const partyChallanIds = new Set(S.challans.filter(c=>c&&c.pid===pid).map(c=>c.id));
 
@@ -3152,10 +3157,11 @@ function downloadChallanPDF(cid) {
   const paid  = challanPaid(cid);
   const due   = c.total - paid;
   const pct   = Math.min(100, Math.round((paid/c.total)*100));
-  const setts = S.settlements.filter(s=>s.cid===cid);
-  const sc = c.status==='S'?'#065F46':c.status==='T'?'#92400E':'#1E40AF';
-  const sb = c.status==='S'?'#D1FAE5':c.status==='T'?'#FEF3C7':'#DBEAFE';
-  const sl = c.status==='S'?'SETTLED':c.status==='T'?'PARTIAL':'PENDING';
+  const setts = getAlloc(c.pid).allocations.filter(s=>s.cid===cid);
+  const _st = challanStatus(c);
+  const sc = _st==='S'?'#065F46':_st==='T'?'#92400E':'#1E40AF';
+  const sb = _st==='S'?'#D1FAE5':_st==='T'?'#FEF3C7':'#DBEAFE';
+  const sl = _st==='S'?'SETTLED':_st==='T'?'PARTIAL':'PENDING';
   const iR = c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(it.name)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
   const pR = setts.length ? setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join('') : `<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
 
@@ -3218,10 +3224,11 @@ function printChallan(cid) {
   const prevBal=Math.max(0,totalPartyBal-due);
   const totalOutstanding=totalPartyBal;
   const otherPendingChallans=S.challans.filter(x=>x.pid===c.pid&&x.id!==cid&&(x.total-challanPaid(x.id))>0);
-  const setts=S.settlements.filter(s=>s.cid===cid);
-  const sc=c.status==='S'?'#065F46':c.status==='T'?'#92400E':'#1E40AF';
-  const sb=c.status==='S'?'#D1FAE5':c.status==='T'?'#FEF3C7':'#DBEAFE';
-  const sl=c.status==='S'?'SETTLED':c.status==='T'?'PARTIAL':'PENDING';
+  const setts=getAlloc(c.pid).allocations.filter(s=>s.cid===cid);
+  const _st=challanStatus(c);
+  const sc=_st==='S'?'#065F46':_st==='T'?'#92400E':'#1E40AF';
+  const sb=_st==='S'?'#D1FAE5':_st==='T'?'#FEF3C7':'#DBEAFE';
+  const sl=_st==='S'?'SETTLED':_st==='T'?'PARTIAL':'PENDING';
   const iR=c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(it.name)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
   const pR=setts.length?setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join(''):`<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
   const challanHTML=`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
@@ -3275,15 +3282,16 @@ function printStmt(pid) {
   const scMap={P:'#1E40AF',T:'#92400E',S:'#065F46'};
   const sbMap={P:'#DBEAFE',T:'#FEF3C7',S:'#D1FAE5'};
   const ob=S.parties.find(x=>x.id===pid)?.ob||0;
-  const partyChallanIds=chs.map(c=>c.id);
-  const settledOnChallans=S.settlements.filter(s=>partyChallanIds.includes(s.cid)).reduce((s,x)=>s+x.amount,0);
+  const _alloc=getAlloc(pid);
+  const settledOnChallans=_alloc.allocatedToChallans;
   const totalPmts=pmts.reduce((s,p)=>s+p.amount,0);
   const obPaidAmt=Math.max(0,totalPmts-settledOnChallans);
   const chR=chs.map((c,i)=>{
     const paid=challanPaid(c.id),due=c.total-paid;
+    const cst=challanStatus(c);
     const rowBg=i%2?'#F9F9F9':'#fff';
     // Challan header row
-    const headerRow=`<tr style="background:#EFF6FF"><td style="padding:7px 9px;border:1px solid #BFDBFE;font-weight:700;color:#1A2E5A">${esc(c.num)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;color:#555">${fmtD(c.date)}</td><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#1A2E5A;color:#fff"><th style="padding:4px 6px;text-align:left">Item</th><th style="padding:4px 6px;text-align:center;width:12%">Qty</th><th style="padding:4px 6px;text-align:right;width:14%">Rate</th><th style="padding:4px 6px;text-align:right;width:16%">Amount</th></tr></thead><tbody>${c.items.map((it,j)=>`<tr style="background:${j%2?'#F9FAFB':'#fff'}"><td style="padding:4px 6px;border-top:1px solid #F0F0F0">${esc(it.name)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:center">${it.qty}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right">${fmtR(it.rate)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE">Total</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:center">${c.items.reduce((s,it)=>s+(+it.qty||0),0)} pcs</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE"></td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table></td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;font-weight:700">${fmt(paid)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:${due>0?'#DC2626':'#059669'};font-weight:700">${fmt(due)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:center"><span style="background:${sbMap[c.status]};color:${scMap[c.status]};padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700">${slMap[c.status]}</span></td></tr>`;
+    const headerRow=`<tr style="background:#EFF6FF"><td style="padding:7px 9px;border:1px solid #BFDBFE;font-weight:700;color:#1A2E5A">${esc(c.num)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;color:#555">${fmtD(c.date)}</td><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#1A2E5A;color:#fff"><th style="padding:4px 6px;text-align:left">Item</th><th style="padding:4px 6px;text-align:center;width:12%">Qty</th><th style="padding:4px 6px;text-align:right;width:14%">Rate</th><th style="padding:4px 6px;text-align:right;width:16%">Amount</th></tr></thead><tbody>${c.items.map((it,j)=>`<tr style="background:${j%2?'#F9FAFB':'#fff'}"><td style="padding:4px 6px;border-top:1px solid #F0F0F0">${esc(it.name)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:center">${it.qty}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right">${fmtR(it.rate)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE">Total</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:center">${c.items.reduce((s,it)=>s+(+it.qty||0),0)} pcs</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE"></td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table></td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;font-weight:700">${fmt(paid)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:${due>0?'#DC2626':'#059669'};font-weight:700">${fmt(due)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:center"><span style="background:${sbMap[cst]};color:${scMap[cst]};padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700">${slMap[cst]}</span></td></tr>`;
     return headerRow;
   }).join('');
   const pR=pmts.map((p,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:7px 9px;border:1px solid #E0E0E0">${fmtD(p.date)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(p.amount)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0">${esc(p.mode)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;color:#666">${esc(p.remarks||'-')}</td></tr>`).join('');
