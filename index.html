@@ -1379,6 +1379,10 @@ function _clean(o){ const c=JSON.parse(JSON.stringify(o)); deepSanitize(c); retu
 function saveToCloud() {
   if (!uid) return;
   if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); setSyncDot(isOnline?'err':'offline'); return; }
+  // Payment history is the single source of truth. Before every write, re-derive how payments map
+  // to challans (FIFO) and refresh every status — so removing or editing a payment flows straight
+  // into the outstanding total and the PAID/PARTIAL/PENDING tags, with no manual step.
+  recomputeAllocations();
   saveLocal();
   setSyncDot(isOnline ? 'busy' : 'offline');
   try {
@@ -2672,67 +2676,61 @@ function saveEditChallan() {
   c.items   = items;
   c.freight = +document.getElementById('ec-freight').value||0;
   c.total   = items.reduce((s,i)=>s+i.amount, 0) + c.freight;
-  recalcChallanStatus(cid);
-  // After changing the total, any payment money already received for this party that isn't yet
-  // allocated to a challan should flow into this challan's new balance — otherwise the party shows
-  // "clear" while the challan still shows a due. Reconcile fixes that.
-  reconcilePartySettlements(c.pid);
+  // Allocation + status are re-derived from payment history automatically inside saveToCloud.
+  recomputeAllocations();
   saveToCloud();
   closeModal('edit-challan');
   renderAll();
   if (curParty) renderPartyDetail(curParty);
 }
 
-// Once the real server data for challans, payments AND settlements has arrived, run a one-time
-// reconciliation across every party — allocating already-received payment money to any challan
-// that still shows a balance. This corrects challans (like one edited to a higher total) that
-// read PARTIAL even though the party is fully paid. It only adds settlements for money already in.
+// Runs once after the real server data has arrived: re-derive allocations from payment history and
+// persist if anything was stale (e.g. tags left wrong by older versions). After this, every change
+// keeps itself consistent automatically via saveToCloud → recomputeAllocations.
 function tryReconcileAll(){
   if(_reconcileDone || !_chServerLoaded || !_payServerLoaded || !_setServerLoaded) return;
   if(!uid || !isOnline || !loadedOnce) return;
   _reconcileDone=true;
-  var pids={}; S.challans.forEach(function(c){ if(c&&c.pid) pids[c.pid]=true; });
-  var changed=false;
-  Object.keys(pids).forEach(function(pid){ if(reconcilePartySettlements(pid)) changed=true; });
-  if(changed){ console.log('Reconciled settlements: allocated received payments to challans showing a balance.'); saveToCloud(); renderAll(); if(curParty) renderPartyDetail(curParty); }
-}
-// challan first, oldest payment first). Only ADDS settlements for money already received — never
-// removes settlements or over-allocates — so it can only bring challan status in line with what's
-// actually been paid. Returns true if anything changed.
-function reconcilePartySettlements(pid){
-  if(!pid) return false;
-  var pays = S.payments.filter(p=>p.pid===pid).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
-  var allocByPay={};
-  S.settlements.forEach(function(s){ if(s.payId) allocByPay[s.payId]=(allocByPay[s.payId]||0)+s.amount; });
-  var payAvail = pays.map(function(p){ return {payId:p.id, date:p.date, avail:Math.round((p.amount-(allocByPay[p.id]||0))*100)/100}; })
-                     .filter(function(x){ return x.avail>0.01; });
-  // NOTE: do NOT early-return when payAvail is empty. Challans whose payments are already fully
-  // allocated still need their status badge recomputed — they're the ones left stale at
-  // PENDING/PARTIAL by old status logic. The allocation loop below is simply a no-op in that case.
-  var chs = S.challans.filter(c=>c.pid===pid).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
-  var changed=false;
-  chs.forEach(function(c){
-    var due = Math.round((c.total - challanPaid(c.id))*100)/100;
-    while(due>0.01 && payAvail.length){
-      var pa = payAvail[0];
-      var use = Math.min(due, pa.avail);
-      if(use<=0.01){ payAvail.shift(); continue; }
-      S.settlements.push({cid:c.id, payId:pa.payId, amount:use, date:pa.date||c.date});
-      pa.avail = Math.round((pa.avail-use)*100)/100;
-      due = Math.round((due-use)*100)/100;
-      changed=true;
-      if(pa.avail<=0.01) payAvail.shift();
-    }
-    // Also catch challans already fully allocated but left at PARTIAL/PENDING by old exact-float
-    // status logic — a pure status correction must persist too, not just new allocations.
-    var prevStatus = c.status;
-    recalcChallanStatus(c.id);
-    if(c.status !== prevStatus) changed=true;
-  });
-  return changed;
+  if(recomputeAllocations()){ saveToCloud(); }
+  renderAll();
+  if(curParty) renderPartyDetail(curParty);
 }
 
-let curEditChallanId = null;
+/* THE single link between payment history and balances/tags.
+   Payment records are the source of truth. This rebuilds every settlement from scratch by applying
+   each party's payments to its challans FIFO (oldest challan first, oldest payment first) and
+   refreshes every PAID/PARTIAL/PENDING status. Because saveToCloud() calls this before every write,
+   removing or editing a payment instantly and correctly flows into the outstanding total and tags —
+   no orphaned links, no manual recalculation. Leftover payment beyond billed challans stays
+   unallocated and partyBal() treats it as an advance. Returns true if anything actually changed. */
+function recomputeAllocations(){
+  const byParty={};
+  S.challans.forEach(c=>{ if(c&&c.pid){ (byParty[c.pid]=byParty[c.pid]||{ch:[],pay:[]}).ch.push(c); } });
+  S.payments.forEach(p=>{ if(p&&p.pid){ (byParty[p.pid]=byParty[p.pid]||{ch:[],pay:[]}).pay.push(p); } });
+
+  const newSet=[];
+  Object.keys(byParty).forEach(pid=>{
+    const ch  = byParty[pid].ch.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const pay = byParty[pid].pay.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    let pi=0, avail = pay.length ? Math.round((pay[0].amount||0)*100)/100 : 0;
+    ch.forEach(c=>{
+      let due = Math.round((c.total||0)*100)/100;
+      while(due>0.01 && pi<pay.length){
+        if(avail<=0.01){ pi++; if(pi<pay.length) avail=Math.round((pay[pi].amount||0)*100)/100; continue; }
+        const use = Math.min(due, avail);
+        newSet.push({cid:c.id, payId:pay[pi].id, amount:use, date:pay[pi].date||c.date});
+        avail = Math.round((avail-use)*100)/100;
+        due   = Math.round((due-use)*100)/100;
+      }
+    });
+  });
+
+  const sig = a => (a||[]).map(s=>s.cid+'|'+s.payId+'|'+Math.round((s.amount||0)*100)).sort().join(';');
+  let changed = sig(newSet) !== sig(S.settlements);
+  S.settlements = newSet;
+  S.challans.forEach(c=>{ const prev=c.status; recalcChallanStatus(c.id); if(c.status!==prev) changed=true; });
+  return changed;
+}
 
 function openEditSettle(cid) {
   curEditChallanId = cid;
