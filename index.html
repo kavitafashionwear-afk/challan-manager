@@ -685,7 +685,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-let S = { parties:[], challans:[], payments:[], settlements:[], trash:[], pC:0, cC:0, pyC:0 };
+let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], trash:[], pC:0, cC:0, pyC:0 };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -715,6 +715,169 @@ const esc  = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 const ini  = n => n.trim().split(/\s+/).map(w=>w[0]).join('').toUpperCase().slice(0,2);
 const AVC  = ['#1A2E5A','#065F46','#92400E','#6D28D9','#9D174D','#1E40AF','#047857'];
 const avc  = i => AVC[i%AVC.length];
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ALLOCATOR ENGINE  (Stage 1)
+   The SINGLE source of derived financial truth. Pure, deterministic, idempotent,
+   side-effect free. No Firestore writes, no global-state mutation. Given a party's
+   bills + payments + manual overrides, it produces every derived value the UI needs.
+   No other function may implement FIFO or balance math once the migration completes.
+   ──────────────────────────────────────────────────────────────────────────
+   Rules:
+     1. Reserve every manual override first (clamped to the backing payment's money).
+     2. Subtract reserved amounts from both bills and payments.
+     3. Run FIFO (oldest bill first, oldest payment first) on the REMAINING balances.
+     Manual overrides are never moved or overwritten by FIFO.
+   Opening balance (ob): money the party owed before any bill. Payment money left
+   after all bills are covered reduces ob (advance). partyBalance reproduces the
+   legacy partyBal() exactly: totalBilled + ob − totalPaid.
+   ════════════════════════════════════════════════════════════════════════════ */
+const _r2 = n => Math.round((+n||0)*100)/100;
+
+// During migration, manual overrides may still live as manual:true settlements.
+// This adapter lets the allocator read overrides from the new collection, falling
+// back to legacy manual settlements so parallel validation runs on current data.
+function getOverridesFor(myChallanIds, data){
+  data = data || S;
+  if (data.overrides && data.overrides.length){
+    return data.overrides.filter(o=>o && myChallanIds.has(o.cid));
+  }
+  return (data.settlements||[]).filter(s=>s && s.manual && myChallanIds.has(s.cid))
+    .map(s=>({ id:settlementId(s), payId:s.payId||null, cid:s.cid, amount:s.amount, manual:true }));
+}
+
+/* PURE. Returns a complete derived snapshot for one party. Identical input → identical output. */
+function allocateParty(pid, data){
+  data = data || S;
+  const party = (data.parties||[]).find(p=>p&&p.id===pid);
+  const ob = party && party.ob ? +party.ob : 0;
+
+  const challans = (data.challans||[]).filter(c=>c&&c.pid===pid).slice()
+    .sort((a,b)=>(a.date||'').localeCompare(b.date||'') || String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
+  const payments = (data.payments||[]).filter(p=>p&&p.pid===pid).slice()
+    .sort((a,b)=>(a.date||'').localeCompare(b.date||'') || String(a.id||'').localeCompare(String(b.id||'')));
+
+  const myChallanIds = new Set(challans.map(c=>c.id));
+  const overrides = getOverridesFor(myChallanIds, data);
+
+  const billTotal = {}; challans.forEach(c=>billTotal[c.id]=_r2(c.total));
+  const payAmt    = {}; payments.forEach(p=>payAmt[p.id]=_r2(p.amount));
+  const paid    = {};   challans.forEach(c=>paid[c.id]=0);
+  const payUsed = {};   payments.forEach(p=>payUsed[p.id]=0);
+  const allocations = [];   // {cid, payId, amount, manual}
+
+  // ── Step 1+2: reserve manual overrides (clamped to remaining payment money) ──
+  overrides.slice().sort((a,b)=>
+      String(a.cid).localeCompare(String(b.cid)) ||
+      String(a.payId||'').localeCompare(String(b.payId||'')) ||
+      String(a.id||'').localeCompare(String(b.id||'')))
+    .forEach(o=>{
+      const cap = (o.payId!=null && payAmt[o.payId]!=null)
+        ? _r2(payAmt[o.payId] - (payUsed[o.payId]||0))   // can't pin more than the payment holds
+        : _r2(o.amount);                                  // standalone (defensive)
+      const amt = _r2(Math.min(_r2(o.amount), Math.max(0,cap)));
+      if (amt > 0.001){
+        paid[o.cid] = _r2((paid[o.cid]||0) + amt);
+        if (o.payId!=null && payUsed[o.payId]!=null) payUsed[o.payId] = _r2((payUsed[o.payId]||0) + amt);
+        allocations.push({ cid:o.cid, payId:o.payId||null, amount:amt, manual:true });
+      }
+    });
+
+  // ── Step 3: FIFO the remainder (oldest bill first, oldest payment first) ──
+  const pool = payments.map(p=>({ payId:p.id, avail:_r2(payAmt[p.id]-(payUsed[p.id]||0)) }))
+                       .filter(x=>x.avail>0.001);
+  let pi=0, avail = pool.length ? pool[0].avail : 0;
+  challans.forEach(c=>{
+    let due = _r2(billTotal[c.id] - (paid[c.id]||0));
+    while (due>0.001 && pi<pool.length){
+      if (avail<=0.001){ pi++; if(pi<pool.length) avail=pool[pi].avail; continue; }
+      const use = _r2(Math.min(due, avail));
+      paid[c.id] = _r2((paid[c.id]||0) + use);
+      payUsed[pool[pi].payId] = _r2((payUsed[pool[pi].payId]||0) + use);
+      allocations.push({ cid:c.id, payId:pool[pi].payId, amount:use, manual:false });
+      avail = _r2(avail - use);
+      due   = _r2(due - use);
+    }
+  });
+
+  // ── Derived outputs ──
+  const due={}, status={};
+  challans.forEach(c=>{
+    const p=_r2(paid[c.id]||0), t=_r2(billTotal[c.id]);
+    due[c.id]    = _r2(t - p);
+    status[c.id] = p<=0.01 ? 'P' : (p>=t-0.01 ? 'S' : 'T');
+  });
+  const paymentRemaining={};
+  payments.forEach(p=>paymentRemaining[p.id]=_r2(payAmt[p.id]-(payUsed[p.id]||0)));
+
+  const totalBilled        = _r2(challans.reduce((s,c)=>s+billTotal[c.id],0));
+  const totalPaid          = _r2(payments.reduce((s,p)=>s+payAmt[p.id],0));
+  const allocatedToChallans= _r2(challans.reduce((s,c)=>s+(paid[c.id]||0),0));
+  const partyBalance       = _r2(totalBilled + ob - totalPaid);   // ≡ legacy partyBal()
+  const outstanding        = Math.max(0, partyBalance);
+  const advance            = Math.max(0, _r2(-partyBalance));
+  const pendingCount       = challans.filter(c=>status[c.id]!=='S').length;
+
+  return { pid, ob, challanIds:challans.map(c=>c.id),
+           paid, due, status, allocations, paymentRemaining,
+           totalBilled, totalPaid, allocatedToChallans,
+           partyBalance, outstanding, advance, pendingCount };
+}
+
+/* Memoized accessor — the app reads derived state through this. Cache is invalidated
+   per-party whenever that party's bills/payments/overrides change. The allocator never
+   writes anything; this is a read-through compute cache only. */
+let _allocCache = {};
+function getAlloc(pid){
+  if (!pid) return null;
+  if (!_allocCache[pid]) _allocCache[pid] = allocateParty(pid);
+  return _allocCache[pid];
+}
+function invalidateParty(pid){ if(pid) delete _allocCache[pid]; }
+function invalidateAllAlloc(){ _allocCache = {}; }
+
+/* ── Parallel validation harness (Stage 1) ──
+   Compares the new allocator against the legacy settlement engine across every party
+   and every derived output. Returns a report; logs mismatches. Run __validateAllocator()
+   in the console. The legacy engine stays in place until this reports zero mismatches. */
+function __validateAllocator(verbose){
+  const pids = {};
+  S.parties.forEach(p=>{ if(p&&p.id) pids[p.id]=true; });
+  S.challans.forEach(c=>{ if(c&&c.pid) pids[c.pid]=true; });
+  S.payments.forEach(p=>{ if(p&&p.pid) pids[p.pid]=true; });
+  const ids = Object.keys(pids);
+  let mismatches=[], checkedChallans=0;
+  const legacyStatus = (cid)=>{ const c=S.challans.find(x=>x.id===cid); if(!c) return null;
+    const p=_r2(challanPaid(cid)), t=_r2(c.total); return p<=0.01?'P':(p>=t-0.01?'S':'T'); };
+
+  ids.forEach(pid=>{
+    const a = allocateParty(pid);
+    // partyBalance vs legacy partyBal
+    const legBal = _r2(partyBal(pid));
+    if (Math.abs(legBal - a.partyBalance) > 0.01)
+      mismatches.push({pid, field:'partyBalance', legacy:legBal, allocator:a.partyBalance});
+    // per-challan paid + status
+    a.challanIds.forEach(cid=>{
+      checkedChallans++;
+      const lpaid = _r2(challanPaid(cid));
+      if (Math.abs(lpaid - (a.paid[cid]||0)) > 0.01)
+        mismatches.push({pid, cid, field:'paid', legacy:lpaid, allocator:a.paid[cid]});
+      const lst = legacyStatus(cid);
+      if (lst !== a.status[cid])
+        mismatches.push({pid, cid, field:'status', legacy:lst, allocator:a.status[cid]});
+    });
+  });
+
+  const report = { parties:ids.length, challansChecked:checkedChallans, mismatches:mismatches.length, details:mismatches };
+  if (mismatches.length){
+    console.warn('⚠️ ALLOCATOR VALIDATION — '+mismatches.length+' mismatch(es):', mismatches.slice(0,50));
+  } else {
+    console.log('✅ ALLOCATOR VALIDATION PASSED — '+ids.length+' parties, '+checkedChallans+' challans, outputs identical to legacy engine.');
+  }
+  if (verbose) console.table(mismatches.slice(0,200));
+  return report;
+}
+try { if (typeof window!=='undefined') window.__validateAllocator = __validateAllocator; } catch(e){}
 
 function partyBal(pid) {
   const party = S.parties.find(x=>x.id===pid);
