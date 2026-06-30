@@ -1163,6 +1163,12 @@ function mergeIncomingBills(bills) {
     });
   });
 
+  // Re-derive allocation for every party that received a staff bill (advance money flows in).
+  const touched = {};
+  bills.forEach(function(b){ if(b.pid && b.pid!=='NEW') touched[b.pid]=true; });
+  S.parties.forEach(function(p){ if(p.staffAdded) touched[p.id]=true; });
+  Object.keys(touched).forEach(function(pid){ recomputeParty(pid); });
+
   // 3) Persist the merged result (owner can write the main doc).
   saveToCloud();
   renderAll();
@@ -1291,7 +1297,7 @@ function flushPendingSave(){ if(uid && isOnline && isOwnerUid(uid)) saveToCloud(
 function _col(name){ return db.collection('users').doc(uid).collection(name); }
 // Settlement document id. Includes the amount so two part-payments can NEVER collapse,
 // even in the impossible case of a shared payId+challan. Fully preserves every installment.
-function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.round((+s.amount||0)*100); }
+function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.round((+s.amount||0)*100)+(s.manual?'__M':''); }
 let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
@@ -1309,48 +1315,53 @@ function subscribeData() {
 }
 
 function attachDataListeners(){
-  // Snapshot listeners fire often — once from cache, again on server ack, and once more for every
-  // optimistic local write echoing back (includeMetadataChanges). Rendering synchronously on each
-  // would rebuild the whole DOM dozens of times in a burst (319 challans), freezing the UI and
-  // collapsing any card the user opened. Coalesce them: schedule at most one render per frame-ish.
+  // Each Firestore write echoes back through these listeners (includeMetadataChanges) — first as a
+  // local "pending write" (hasPendingWrites=true), then as a server-confirmed change. We must NOT
+  // re-render on the echo of our OWN write: the action that made the change already rendered, and
+  // re-rendering on every echo is what previously rebuilt the whole DOM in a storm and froze the UI.
+  // So: keep state in sync on every snapshot, but only RENDER for confirmed/remote data and the
+  // initial load. Genuine remote edits (staff, another device) arrive with hasPendingWrites=false,
+  // so multi-device updates still appear live. A tiny debounce coalesces any burst into one render.
   let _renderTimer = null;
   const scheduleRender = ()=>{ if(_renderTimer) return; _renderTimer = setTimeout(()=>{ _renderTimer=null; renderAll(); }, 60); };
-  const markLoaded = (cache)=>{
+  const markLoaded = (meta)=>{
     loadedOnce = true;
     reconcileCounters();
     saveLocal();
-    setSyncDot(cache ? (isOnline?'busy':'offline') : 'ok');
-    scheduleRender();
+    const cache   = meta && meta.fromCache;
+    const pending = meta && meta.hasPendingWrites;
+    setSyncDot(cache ? (isOnline?'busy':'offline') : (pending ? 'busy' : 'ok'));
+    if (!pending) scheduleRender();   // skip the echo of our own optimistic write
   };
   // One listener per collection — each rebuilds only its own array.
   _subParts = _col('parties').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.parties = snap.docs.map(d=>d.data());
     _lastSaved.parties = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata && snap.metadata.fromCache);
+    markLoaded(snap.metadata);
   }, err=>onSubErr('parties',err));
   _subCh = _col('challans').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.challans = snap.docs.map(d=>d.data());
     // Deep-copy the baseline so in-place edits (totals, status, items) are detected by diffWrite
     // and actually written to the cloud. (Sharing references made edits silently not save.)
     _lastSaved.challans = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata && snap.metadata.fromCache);
+    markLoaded(snap.metadata);
     if(snap.metadata && !snap.metadata.fromCache){ _chServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('challans',err));
   _subPay = _col('payments').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.payments = snap.docs.map(d=>d.data());
     _lastSaved.payments = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata && snap.metadata.fromCache);
+    markLoaded(snap.metadata);
     if(snap.metadata && !snap.metadata.fromCache){ _payServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('payments',err));
   _subSet = _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.settlements = snap.docs.map(d=>d.data());
     _lastSaved.settlements = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), settlementId);
-    markLoaded(snap.metadata && snap.metadata.fromCache);
+    markLoaded(snap.metadata);
     if(snap.metadata && !snap.metadata.fromCache){ _setServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('settlements',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; }
-    markLoaded(snap.metadata && snap.metadata.fromCache);
+    markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
   unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
@@ -1385,10 +1396,6 @@ function _clean(o){ const c=JSON.parse(JSON.stringify(o)); deepSanitize(c); retu
 function saveToCloud() {
   if (!uid) return;
   if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); setSyncDot(isOnline?'err':'offline'); return; }
-  // Payment history is the single source of truth. Before every write, re-derive how payments map
-  // to challans (FIFO) and refresh every status. Wrapped so a glitch here can never throw out of
-  // saveToCloud and leave a modal/overlay stuck open (which freezes the UI until refresh).
-  try { recomputeAllocations(); } catch(e){ console.warn('recompute skipped:', e); }
   saveLocal();
   setSyncDot(isOnline ? 'busy' : 'offline');
   try {
@@ -1911,6 +1918,7 @@ function saveChallan() {
   const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0)+freight;
   const newChId=uniqId('C');
   S.challans.push({id:newChId,num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
+  recomputeParty(pid);
   saveToCloud(); closeModal('challan'); renderAll();
   if (curParty===pid) renderPartyDetail(pid); else openParty(pid);
   // Automatically open the print view for the bill that was just created.
@@ -1927,7 +1935,8 @@ function savePayment() {
   S.pyC++;
   const payId=uniqId('PAY');
   S.payments.push({id:payId,pid,date:dt,amount:amt,mode,remarks:rmk});
-  // Allocation to challans + status tags are derived from payment history inside saveToCloud.
+  // Re-derive only this party's FIFO allocation (manual pins preserved), then save.
+  recomputeParty(pid);
   closeModal('payment');
   saveToCloud();
   renderAll();
@@ -2016,6 +2025,7 @@ function delChallan(cid) {
     });
     S.challans=S.challans.filter(ch=>ch.id!==cid);
     S.settlements=S.settlements.filter(s=>s.cid!==cid);
+    recomputeParty(c.pid);
     saveToCloud(); closeModal('del'); renderAll();
     if(curParty) renderPartyDetail(curParty);
   };
@@ -2026,13 +2036,10 @@ function delPayment(pid) {
   document.getElementById('del-msg').innerHTML='Delete this payment? Challan statuses will update.';
   document.getElementById('del-ok').onclick=()=>{
     const pay=S.payments.find(x=>x.id===pid); if(!pay){closeModal('del');return;}
-    const aff=S.settlements.filter(s=>s.payId===pid).map(s=>s.cid);
+    const ppid=pay.pid;
     S.settlements=S.settlements.filter(s=>s.payId!==pid);
     S.payments=S.payments.filter(x=>x.id!==pid);
-    aff.forEach(cid=>{
-      const c=S.challans.find(x=>x.id===cid); if(!c) return;
-      recalcChallanStatus(cid);
-    });
+    recomputeParty(ppid);
     saveToCloud(); closeModal('del'); renderAll();
     if(curParty) renderPartyDetail(curParty);
   };
@@ -2214,7 +2221,7 @@ function restoreItem(idx) {
     // Restore challan and its settlements
     S.challans.push(item.challan);
     if (item.settlements) S.settlements.push(...item.settlements);
-    recalcChallanStatus(item.challan.id);
+    recomputeParty(item.challan.pid);
     alert(`✅ Challan ${item.challan.num} restored successfully!`);
   }
 
@@ -2224,8 +2231,7 @@ function restoreItem(idx) {
     if (item.challans)    S.challans.push(...item.challans);
     if (item.payments)    S.payments.push(...item.payments);
     if (item.settlements) S.settlements.push(...item.settlements);
-    // Recalc all restored challan statuses
-    (item.challans||[]).forEach(c=>recalcChallanStatus(c.id));
+    recomputeParty(item.party.id);
     alert(`✅ Party "${item.party.name}" and all its data restored successfully!`);
   }
 
@@ -2554,8 +2560,11 @@ async function confirmImport() {
   S.settlements = [...S.settlements, ...r.newSettlements];
   S.pC = r.pCtr; S.cC = r.cCtr; S.pyC = r.pyCtr;
 
-  // Recalc statuses for all affected challans
-  r.newChallans.forEach(c=>recalcChallanStatus(c.id));
+  // Re-derive allocation for every party touched by the import (manual pins preserved).
+  const impTouched = {};
+  r.newChallans.forEach(c=>{ if(c&&c.pid) impTouched[c.pid]=true; });
+  r.newPayments.forEach(p=>{ if(p&&p.pid) impTouched[p.pid]=true; });
+  Object.keys(impTouched).forEach(pid=>recomputeParty(pid));
 
   saveToCloud(); // saves locally instantly; cloud syncs in background
 
@@ -2691,71 +2700,92 @@ function saveEditChallan() {
   c.items   = items;
   c.freight = +document.getElementById('ec-freight').value||0;
   c.total   = items.reduce((s,i)=>s+i.amount, 0) + c.freight;
-  // Allocation + status are re-derived from payment history automatically inside saveToCloud.
-  recomputeAllocations();
+  // Re-derive only this party's allocation (manual pins preserved), then save.
+  recomputeParty(c.pid);
   saveToCloud();
   closeModal('edit-challan');
   renderAll();
   if (curParty) renderPartyDetail(curParty);
 }
 
-// Runs once after the real server data has arrived: re-derive allocations from payment history and
-// persist if anything was stale (e.g. tags left wrong by older versions). After this, every change
-// keeps itself consistent automatically via saveToCloud → recomputeAllocations.
+// Runs once after the real server data has arrived: re-derive each party's allocations and persist
+// only if something was stale (e.g. tags left wrong by an older version). After this, each party
+// keeps itself consistent by recomputing ONLY that party whenever its payments or challans change.
 function tryReconcileAll(){
   if(_reconcileDone || !_chServerLoaded || !_payServerLoaded || !_setServerLoaded) return;
   if(!uid || !isOnline || !loadedOnce) return;
   _reconcileDone=true;
-  if(recomputeAllocations()){ saveToCloud(); }
+  if(recomputeAllParties()){ saveToCloud(); }
   renderAll();
   if(curParty) renderPartyDetail(curParty);
 }
 
-/* THE single link between payment history and balances/tags.
-   Payment records are the source of truth. This rebuilds every settlement from scratch by applying
-   each party's payments to its challans FIFO (oldest challan first, oldest payment first) and
-   refreshes every PAID/PARTIAL/PENDING status. Because saveToCloud() calls this before every write,
-   removing or editing a payment instantly and correctly flows into the outstanding total and tags —
-   no orphaned links, no manual recalculation. Leftover payment beyond billed challans stays
-   unallocated and partyBal() treats it as an advance. Returns true if anything actually changed. */
-function recomputeAllocations(){
-  const byParty={};
-  S.challans.forEach(c=>{ if(c&&c.pid){ (byParty[c.pid]=byParty[c.pid]||{ch:[],pay:[]}).ch.push(c); } });
-  S.payments.forEach(p=>{ if(p&&p.pid){ (byParty[p.pid]=byParty[p.pid]||{ch:[],pay:[]}).pay.push(p); } });
+// Helper: which party a challan belongs to.
+function partyOfChallan(cid){ const c=S.challans.find(x=>x&&x.id===cid); return c?c.pid:null; }
 
-  const newSet=[];
-  Object.keys(byParty).forEach(pid=>{
-    // Sort by date first, but ALWAYS break ties with a stable, content-based key (challan number /
-    // payment id) rather than leaving it to array order. Firestore collections are read with no
-    // .orderBy(), so S.challans/S.payments can come back in a different sequence on every snapshot.
-    // Without a real tiebreaker, two challans sharing a date (very common — multiple bills entered
-    // the same day) could swap places between runs, flipping which one a payment gets allocated to,
-    // which changes settlement IDs, which triggers a write, which re-fires the listener, which
-    // recomputes again — a self-sustaining loop that froze the UI. A deterministic tiebreaker makes
-    // recompute always converge to the exact same answer, so it only ever writes once per real change.
-    const ch  = byParty[pid].ch.slice().sort((a,b)=>
-      (a.date||'').localeCompare(b.date||'') || String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
-    const pay = byParty[pid].pay.slice().sort((a,b)=>
-      (a.date||'').localeCompare(b.date||'') || String(a.id||'').localeCompare(String(b.id||'')));
-    let pi=0, avail = pay.length ? Math.round((pay[0].amount||0)*100)/100 : 0;
-    ch.forEach(c=>{
-      let due = Math.round((c.total||0)*100)/100;
-      while(due>0.01 && pi<pay.length){
-        if(avail<=0.01){ pi++; if(pi<pay.length) avail=Math.round((pay[pi].amount||0)*100)/100; continue; }
-        const use = Math.min(due, avail);
-        newSet.push({cid:c.id, payId:pay[pi].id, amount:use, date:pay[pi].date||c.date});
-        avail = Math.round((avail-use)*100)/100;
-        due   = Math.round((due-use)*100)/100;
-      }
-    });
+/* Re-derive the automatic FIFO allocation for ONE party only, preserving that party's manual pins.
+   This is the core of the safer model: a payment or bill change touches exactly one party's math —
+   never a global rebuild — so it stays fast and predictable as the data grows. Manual settlements
+   (flagged manual:true, created via the 💳 Payments override) are kept exactly as-is; the remaining
+   payment money for the party is distributed FIFO (oldest bill first) across whatever each bill still
+   owes after its manual pins. Returns true if this party's settlements/status actually changed. */
+function recomputeParty(pid){
+  if(!pid) return false;
+  const round = n => Math.round((n||0)*100)/100;
+  const partyChallanIds = new Set(S.challans.filter(c=>c&&c.pid===pid).map(c=>c.id));
+
+  // Keep: every settlement that is NOT this party's auto-allocation.
+  //  - other parties' settlements (untouched)
+  //  - this party's MANUAL settlements (pinned by the user)
+  const kept = S.settlements.filter(s=> !partyChallanIds.has(s.cid) || s.manual);
+  const myManual = S.settlements.filter(s=> partyChallanIds.has(s.cid) && s.manual);
+
+  // Money each payment has already spent on manual pins.
+  const manualByPay = {};
+  myManual.forEach(s=>{ if(s.payId) manualByPay[s.payId]=round((manualByPay[s.payId]||0)+s.amount); });
+
+  // Auto money left in each payment, oldest payment first (stable tiebreaker by id).
+  const pool = S.payments.filter(p=>p&&p.pid===pid)
+    .slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||String(a.id||'').localeCompare(String(b.id||'')))
+    .map(p=>({ payId:p.id, date:p.date, avail: round((p.amount||0)-(manualByPay[p.id]||0)) }))
+    .filter(x=>x.avail>0.01);
+
+  // Challans oldest first (stable tiebreaker by challan number), each reduced by its manual pins.
+  const chs = S.challans.filter(c=>c&&c.pid===pid)
+    .slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
+
+  const auto=[];
+  let pi=0, avail = pool.length ? pool[0].avail : 0;
+  chs.forEach(c=>{
+    const manualPaid = myManual.filter(s=>s.cid===c.id).reduce((a,s)=>a+s.amount,0);
+    let due = round((c.total||0)-manualPaid);
+    while(due>0.01 && pi<pool.length){
+      if(avail<=0.01){ pi++; if(pi<pool.length) avail=pool[pi].avail; continue; }
+      const use = Math.min(due, avail);
+      auto.push({ cid:c.id, payId:pool[pi].payId, amount:use, date:pool[pi].date||c.date });
+      avail = round(avail-use);
+      due   = round(due-use);
+    }
   });
 
-  const sig = a => (a||[]).map(s=>s.cid+'|'+s.payId+'|'+Math.round((s.amount||0)*100)).sort().join(';');
-  let changed = sig(newSet) !== sig(S.settlements);
-  S.settlements = newSet;
-  S.challans.forEach(c=>{ if(!c||!c.id) return; const prev=c.status; recalcChallanStatus(c.id); if(c.status!==prev) changed=true; });
+  const newAll = kept.concat(auto);
+  const sig = a => (a||[]).map(s=>s.cid+'|'+(s.payId||'')+'|'+Math.round((s.amount||0)*100)+'|'+(s.manual?'M':'A')).sort().join(';');
+  let changed = sig(newAll) !== sig(S.settlements);
+  S.settlements = newAll;
+  chs.forEach(c=>{ const prev=c.status; recalcChallanStatus(c.id); if(c.status!==prev) changed=true; });
   return changed;
 }
+
+// One-time / import use only: recompute every party. Never called on the per-save path.
+function recomputeAllParties(){
+  let changed=false;
+  const pids = {};
+  S.challans.forEach(c=>{ if(c&&c.pid) pids[c.pid]=true; });
+  S.payments.forEach(p=>{ if(p&&p.pid) pids[p.pid]=true; });
+  Object.keys(pids).forEach(pid=>{ if(recomputeParty(pid)) changed=true; });
+  return changed;
+}
+
 
 function openEditSettle(cid) {
   curEditChallanId = cid;
@@ -2840,6 +2870,8 @@ function editSettleAmount(cid, payId, currentAmt, currentDate) {
 
   const oldAmt = S.settlements[idx].amount;
   S.settlements[idx].amount = amt;
+  S.settlements[idx].manual = true;   // editing a settlement is a manual override — pin it
+  const epid = partyOfChallan(cid);
 
   // Update linked payment amount too
   if (payId) {
@@ -2855,11 +2887,11 @@ function editSettleAmount(cid, payId, currentAmt, currentDate) {
   }
 
   if (amt === 0) {
-    S.settlements.splice(idx, 1);
+    const i2 = S.settlements.findIndex(s=>s.cid===cid && s.payId===payId);
+    if (i2 !== -1) S.settlements.splice(i2, 1);
   }
 
-  // Recalculate challan status
-  recalcChallanStatus(cid);
+  recomputeParty(epid);
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
@@ -2874,8 +2906,9 @@ function deleteSettlement(cid, payId) {
   const ok = confirm(`Remove this payment of ${fmt(s.amount)} from this challan?\n\nThe payment record will remain but will no longer be applied to this challan.`);
   if (!ok) return;
 
+  const dpid = partyOfChallan(cid);
   S.settlements = S.settlements.filter(x=>!(x.cid===cid && x.payId===payId));
-  recalcChallanStatus(cid);
+  recomputeParty(dpid);
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
@@ -2891,13 +2924,14 @@ function saveESAdjustment() {
   const rmk = document.getElementById('es-rmk').value.trim();
   if (!amt || !dt) { alert('Please enter amount and date'); return; }
 
-  // Create a new standalone payment for this adjustment
+  // Create a new standalone payment for this adjustment, pinned MANUALLY to this challan so the
+  // per-party FIFO pass never moves it.
   S.pyC++;
   const payId = uniqId('PAY');
   S.payments.push({ id:payId, pid:c.pid, date:dt, amount:amt, mode:'Adjustment', remarks:rmk||'Manual adjustment' });
-  S.settlements.push({ cid, payId, amount:amt, date:dt });
+  S.settlements.push({ cid, payId, amount:amt, date:dt, manual:true });
 
-  recalcChallanStatus(cid);
+  recomputeParty(c.pid);
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
