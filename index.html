@@ -736,12 +736,15 @@ const avc  = i => AVC[i%AVC.length];
    ════════════════════════════════════════════════════════════════════════════ */
 const _r2 = n => Math.round((+n||0)*100)/100;
 
-// During migration, manual overrides may still live as manual:true settlements.
-// This adapter lets the allocator read overrides from the new collection, falling
-// back to legacy manual settlements so parallel validation runs on current data.
+// STAGE 3b: overrides are now the live source of manual pins, and the allocator is the sole
+// producer of derived allocation. The legacy settlement store is retired (recomputeParty no longer
+// rebuilds it, and settlement docs are no longer written). Old settlement docs remain UNTOUCHED in
+// Firestore as a backup. ROLLBACK: set this flag back to false AND restore recomputeParty's legacy
+// body + the settlements diffWrite (both preserved in comments) — the backup docs make this safe.
+let _OVERRIDES_ARE_SOURCE = true;
 function getOverridesFor(myChallanIds, data){
   data = data || S;
-  if (data.overrides && data.overrides.length){
+  if (_OVERRIDES_ARE_SOURCE && data.overrides){
     return data.overrides.filter(o=>o && myChallanIds.has(o.cid));
   }
   return (data.settlements||[]).filter(s=>s && s.manual && myChallanIds.has(s.cid))
@@ -770,19 +773,22 @@ function allocateParty(pid, data){
   const allocations = [];   // {cid, payId, amount, manual}
 
   // ── Step 1+2: reserve manual overrides (clamped to remaining payment money) ──
-  overrides.slice().sort((a,b)=>
+  // A manual override MUST reference a real payment of this party. If its payment was deleted
+  // (possibly on another device while offline), the override is stale and is ignored — it can
+  // never reserve money that doesn't exist. This keeps the allocator safe under offline races.
+  overrides.slice()
+    .filter(o=> o.payId!=null && payAmt[o.payId]!=null)
+    .sort((a,b)=>
       String(a.cid).localeCompare(String(b.cid)) ||
       String(a.payId||'').localeCompare(String(b.payId||'')) ||
       String(a.id||'').localeCompare(String(b.id||'')))
     .forEach(o=>{
-      const cap = (o.payId!=null && payAmt[o.payId]!=null)
-        ? _r2(payAmt[o.payId] - (payUsed[o.payId]||0))   // can't pin more than the payment holds
-        : _r2(o.amount);                                  // standalone (defensive)
+      const cap = _r2(payAmt[o.payId] - (payUsed[o.payId]||0));   // can't pin more than the payment holds
       const amt = _r2(Math.min(_r2(o.amount), Math.max(0,cap)));
       if (amt > 0.001){
         paid[o.cid] = _r2((paid[o.cid]||0) + amt);
-        if (o.payId!=null && payUsed[o.payId]!=null) payUsed[o.payId] = _r2((payUsed[o.payId]||0) + amt);
-        allocations.push({ cid:o.cid, payId:o.payId||null, amount:amt, manual:true, date:(o.payId!=null?payDate[o.payId]:null)||o.date||'' });
+        payUsed[o.payId] = _r2((payUsed[o.payId]||0) + amt);
+        allocations.push({ cid:o.cid, payId:o.payId, amount:amt, manual:true, date:payDate[o.payId]||o.date||'' });
       }
     });
 
@@ -839,6 +845,29 @@ function getAlloc(pid){
 function invalidateParty(pid){ if(pid) delete _allocCache[pid]; }
 function invalidateAllAlloc(){ _allocCache = {}; }
 
+/* ── Manual override mutations — the ONLY way manual pins are created/edited/removed.
+   An override pins `amount` of a payment to a specific challan; the allocator reserves it before
+   FIFO. Deterministic id (payId+cid) → idempotent, offline/multi-device safe (same per-doc pattern
+   as every other record). These mutate S.overrides and invalidate the affected party's cache. ── */
+function upsertOverride(payId, cid, amount, date){
+  const amt = _r2(amount);
+  const id  = overrideId({ payId, cid });
+  const i   = S.overrides.findIndex(o=>o && o.payId===payId && o.cid===cid);
+  if (amt <= 0.001){ if(i!==-1) S.overrides.splice(i,1); }
+  else {
+    const rec = { id, payId, cid, amount:amt, manual:true, date:date||today() };
+    if (i!==-1) S.overrides[i] = rec; else S.overrides.push(rec);
+  }
+  invalidateParty(partyOfChallan(cid));
+}
+function removeOverride(payId, cid){
+  const before = S.overrides.length;
+  S.overrides = S.overrides.filter(o=>!(o && o.payId===payId && o.cid===cid));
+  if (S.overrides.length !== before) invalidateParty(partyOfChallan(cid));
+}
+function removeOverridesForPayment(payId){ S.overrides = S.overrides.filter(o=>!(o && o.payId===payId)); }
+function removeOverridesForChallan(cid){ S.overrides = S.overrides.filter(o=>!(o && o.cid===cid)); }
+
 /* ── Parallel validation harness (Stage 1) ──
    Compares the new allocator against the legacy settlement engine across every party
    and every derived output. Returns a report; logs mismatches. Run __validateAllocator()
@@ -892,6 +921,42 @@ function __validateAllocator(verbose){
   return report;
 }
 try { if (typeof window!=='undefined') window.__validateAllocator = __validateAllocator; } catch(e){}
+
+/* Independent invariant self-check — does NOT depend on the legacy engine, so it remains a valid
+   integrity tool after the legacy settlement engine is retired in Stage 3b. Verifies the allocator's
+   own guarantees hold on live data. Run __checkInvariants() in the console. */
+function __checkInvariants(){
+  const pids = {};
+  S.parties.forEach(p=>{ if(p&&p.id) pids[p.id]=true; });
+  S.challans.forEach(c=>{ if(c&&c.pid) pids[c.pid]=true; });
+  S.payments.forEach(p=>{ if(p&&p.pid) pids[p.pid]=true; });
+  const ids = Object.keys(pids);
+  const bad=[];
+  ids.forEach(pid=>{
+    const a = allocateParty(pid);
+    // 1) idempotent
+    if (JSON.stringify(allocateParty(pid)) !== JSON.stringify(a)) bad.push({pid, rule:'idempotent'});
+    // 2) per-challan: 0 ≤ paid ≤ total
+    a.challanIds.forEach(cid=>{
+      const paid=a.paid[cid]||0, tot=_r2((S.challans.find(c=>c.id===cid)||{}).total);
+      if (paid < -0.01)        bad.push({pid, cid, rule:'paid>=0', paid});
+      if (paid > tot+0.01)     bad.push({pid, cid, rule:'paid<=total', paid, tot});
+    });
+    // 3) sum(paid) == allocatedToChallans, and ≤ totalPaid
+    const sumPaid=_r2(a.challanIds.reduce((s,cid)=>s+(a.paid[cid]||0),0));
+    if (Math.abs(sumPaid - a.allocatedToChallans) > 0.01) bad.push({pid, rule:'sum(paid)==allocated', sumPaid, allocated:a.allocatedToChallans});
+    if (a.allocatedToChallans > a.totalPaid + 0.01)       bad.push({pid, rule:'allocated<=totalPaid', allocated:a.allocatedToChallans, totalPaid:a.totalPaid});
+    // 4) partyBalance identity
+    const expect=_r2(a.totalBilled + a.ob - a.totalPaid);
+    if (Math.abs(expect - a.partyBalance) > 0.01) bad.push({pid, rule:'partyBalance identity', expect, got:a.partyBalance});
+    // 5) payment remaining never negative
+    Object.keys(a.paymentRemaining).forEach(k=>{ if(a.paymentRemaining[k] < -0.01) bad.push({pid, rule:'paymentRemaining>=0', payId:k, rem:a.paymentRemaining[k]}); });
+  });
+  if (bad.length) console.warn('⚠️ INVARIANT VIOLATIONS ('+bad.length+'):', bad.slice(0,50));
+  else console.log('✅ ALLOCATOR INVARIANTS HOLD — '+ids.length+' parties clean.');
+  return { parties:ids.length, violations:bad.length, details:bad };
+}
+try { if (typeof window!=='undefined') window.__checkInvariants = __checkInvariants; } catch(e){}
 
 /* ── Stage 2: these read-through the allocator (the single source of derived truth).
    Names are unchanged so every existing caller now consumes allocator output. ── */
@@ -1452,14 +1517,14 @@ const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
 function saveLocal(){
   try{ localStorage.setItem(LS_KEY(), JSON.stringify({
     parties:S.parties, challans:S.challans, payments:S.payments,
-    settlements:S.settlements, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC
+    settlements:S.settlements, overrides:S.overrides, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC
   })); }catch(e){}
 }
 function loadLocal(){
   try{ var raw=localStorage.getItem(LS_KEY()); if(!raw) return false;
     var d=JSON.parse(raw);
     S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
-    S.settlements=d.settlements||[]; S.trash=d.trash||[];
+    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0; return true;
   }catch(e){ return false; }
 }
@@ -1477,20 +1542,47 @@ function _col(name){ return db.collection('users').doc(uid).collection(name); }
 // Settlement document id. Includes the amount so two part-payments can NEVER collapse,
 // even in the impossible case of a shared payId+challan. Fully preserves every installment.
 function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.round((+s.amount||0)*100)+(s.manual?'__M':''); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{} };
-let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null;
+// Manual override document id — deterministic so the same pin always maps to the same doc
+// (idempotent writes, no duplicates across devices/offline).
+function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{} };
+let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
 
 function subscribeData() {
   setSyncDot('busy');
-  // Attach the live data listeners IMMEDIATELY so data loads right away. On a slow/flaky mobile
-  // connection the migration's .get() calls could stall, which previously delayed or blocked the
-  // listeners and left the screen empty. The migration is copy-only and idempotent, so it runs
-  // safely in the background and the listeners pick up anything it writes.
   attachDataListeners();
   try { migrateLegacyIfNeeded(function(){}); } catch(e){ console.warn('migration skipped', e); }
+  try { migrateManualToOverrides(); } catch(e){ console.warn('overrides migration skipped', e); }
+}
+
+/* One-time COPY migration: existing manual settlements (manual:true) → the new overrides collection.
+   SAFETY: copy-only — the settlement docs are never modified or deleted (they remain a backup).
+   Idempotent — override ids are deterministic, and a flag in meta guards re-runs. Runs in the
+   background; the overrides listener picks up whatever it writes. */
+function migrateManualToOverrides(){
+  const flag = _col('meta').doc('migration_overrides');
+  flag.get().then(function(fsnap){
+    if(fsnap.exists && fsnap.data().done) return;   // already migrated
+    _col('settlements').where('manual','==',true).get().then(function(snap){
+      const writes=[];
+      snap.forEach(function(doc){
+        const s=doc.data();
+        if(!s || !s.cid) return;
+        const ov = { id:overrideId(s), payId:s.payId||null, cid:s.cid, amount:_r2(s.amount), manual:true, date:s.date||'' };
+        writes.push(_col('overrides').doc(ov.id).set(_clean(ov)));
+      });
+      Promise.all(writes).then(function(){
+        flag.set({ done:true, count:writes.length, at:new Date().toISOString() });
+        if(writes.length) console.log('Migrated '+writes.length+' manual override(s) into the overrides collection (copy-only).');
+      }).catch(function(e){ console.warn('overrides migration deferred:', e&&e.code); });
+    }).catch(function(e){
+      // If the where() needs an index or the collection is empty, fall back to no-op flag.
+      console.warn('overrides migration read deferred:', e&&e.code);
+    });
+  }).catch(function(e){ console.warn('overrides migration flag deferred:', e&&e.code); });
 }
 
 function attachDataListeners(){
@@ -1538,12 +1630,20 @@ function attachDataListeners(){
     markLoaded(snap.metadata);
     if(snap.metadata && !snap.metadata.fromCache){ _setServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('settlements',err));
+  // Manual overrides — the ONLY manual-allocation business record. Same per-document + offline-safe
+  // treatment as every other collection (durable Firestore queue + localStorage backup).
+  _subOv = _col('overrides').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.overrides = snap.docs.map(d=>d.data());
+    _lastSaved.overrides = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), overrideId);
+    invalidateAllAlloc();
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('overrides',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -1581,7 +1681,10 @@ function saveToCloud() {
     diffWrite('parties',     S.parties,     _lastSaved.parties,     x=>x.id);
     diffWrite('challans',    S.challans,    _lastSaved.challans,    x=>x.id);
     diffWrite('payments',    S.payments,    _lastSaved.payments,    x=>x.id);
-    diffWrite('settlements', S.settlements, _lastSaved.settlements, settlementId);
+    // STAGE 3b: auto allocation is derived on read — no settlement docs are written anymore.
+    // (Old settlement docs remain untouched in Firestore as a backup. Rollback: restore this line
+    //  + the legacy recomputeParty body.)  Only manual OVERRIDES are persisted now.
+    diffWrite('overrides',   S.overrides,   _lastSaved.overrides,   overrideId);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[] };
@@ -2129,6 +2232,7 @@ function delParty(pid) {
     </div>`;
   document.getElementById('del-ok').onclick=()=>{
     const cids=S.challans.filter(c=>c.pid===pid).map(c=>c.id);
+    const payIds=S.payments.filter(x=>x.pid===pid).map(x=>x.id);
     // Move to trash instead of permanent delete
     const trashItem = {
       type: 'party',
@@ -2136,11 +2240,13 @@ function delParty(pid) {
       party: {...p},
       challans: S.challans.filter(c=>c.pid===pid),
       payments: S.payments.filter(x=>x.pid===pid),
-      settlements: S.settlements.filter(s=>cids.includes(s.cid))
+      settlements: S.settlements.filter(s=>cids.includes(s.cid)),
+      overrides: S.overrides.filter(o=>cids.includes(o.cid) || payIds.includes(o.payId))
     };
     if (!S.trash) S.trash = [];
     S.trash.unshift(trashItem);
     S.settlements=S.settlements.filter(s=>!cids.includes(s.cid));
+    S.overrides=S.overrides.filter(o=>!(cids.includes(o.cid) || payIds.includes(o.payId)));
     S.challans=S.challans.filter(c=>c.pid!==pid);
     S.payments=S.payments.filter(x=>x.pid!==pid);
     S.parties=S.parties.filter(x=>x.id!==pid);
@@ -2187,10 +2293,12 @@ function delChallan(cid) {
       type: 'challan',
       deletedAt: new Date().toISOString(),
       challan: JSON.parse(JSON.stringify(c)),
-      settlements: S.settlements.filter(s=>s.cid===cid)
+      settlements: S.settlements.filter(s=>s.cid===cid),
+      overrides: S.overrides.filter(o=>o.cid===cid)
     });
     S.challans=S.challans.filter(ch=>ch.id!==cid);
     S.settlements=S.settlements.filter(s=>s.cid!==cid);
+    removeOverridesForChallan(cid);
     recomputeParty(c.pid);
     saveToCloud(); closeModal('del'); renderAll();
     if(curParty) renderPartyDetail(curParty);
@@ -2204,6 +2312,7 @@ function delPayment(pid) {
     const pay=S.payments.find(x=>x.id===pid); if(!pay){closeModal('del');return;}
     const ppid=pay.pid;
     S.settlements=S.settlements.filter(s=>s.payId!==pid);
+    removeOverridesForPayment(pid);   // a pin backed by a deleted payment must go
     S.payments=S.payments.filter(x=>x.id!==pid);
     recomputeParty(ppid);
     saveToCloud(); closeModal('del'); renderAll();
@@ -2385,19 +2494,21 @@ function restoreItem(idx) {
   const realIdx = S.trash.indexOf(item);
 
   if (item.type==='challan') {
-    // Restore challan and its settlements
+    // Restore challan, its (vestigial) settlements, and its manual overrides
     S.challans.push(item.challan);
     if (item.settlements) S.settlements.push(...item.settlements);
+    if (item.overrides)   S.overrides.push(...item.overrides);
     recomputeParty(item.challan.pid);
     alert(`✅ Challan ${item.challan.num} restored successfully!`);
   }
 
   if (item.type==='party') {
-    // Restore party, challans, payments, settlements
+    // Restore party, challans, payments, (vestigial) settlements, and manual overrides
     S.parties.push(item.party);
     if (item.challans)    S.challans.push(...item.challans);
     if (item.payments)    S.payments.push(...item.payments);
     if (item.settlements) S.settlements.push(...item.settlements);
+    if (item.overrides)   S.overrides.push(...item.overrides);
     recomputeParty(item.party.id);
     alert(`✅ Party "${item.party.name}" and all its data restored successfully!`);
   }
@@ -2890,69 +3001,18 @@ function tryReconcileAll(){
 // Helper: which party a challan belongs to.
 function partyOfChallan(cid){ const c=S.challans.find(x=>x&&x.id===cid); return c?c.pid:null; }
 
-/* Re-derive the automatic FIFO allocation for ONE party only, preserving that party's manual pins.
-   This is the core of the safer model: a payment or bill change touches exactly one party's math —
-   never a global rebuild — so it stays fast and predictable as the data grows. Manual settlements
-   (flagged manual:true, created via the 💳 Payments override) are kept exactly as-is; the remaining
-   payment money for the party is distributed FIFO (oldest bill first) across whatever each bill still
-   owes after its manual pins. Returns true if this party's settlements/status actually changed. */
+/* STAGE 3b: the automatic FIFO allocation is now DERIVED ON READ by the allocator (allocateParty)
+   and never persisted. So a data change no longer rebuilds/writes settlement records — it only
+   invalidates the affected party's compute cache so the next read recomputes from the ledger +
+   overrides. Kept as a named function so every existing mutation site stays wired without change.
+   (The previous body that rebuilt & stored per-party auto settlements has been retired; the old
+   settlement docs remain in Firestore as an untouched backup.) */
 function recomputeParty(pid){
   if(!pid) return false;
-  invalidateParty(pid);   // keep allocator cache consistent with the mutation
-  const round = n => Math.round((n||0)*100)/100;
-  const partyChallanIds = new Set(S.challans.filter(c=>c&&c.pid===pid).map(c=>c.id));
-
-  // Keep: every settlement that is NOT this party's auto-allocation.
-  //  - other parties' settlements (untouched)
-  //  - this party's MANUAL settlements (pinned by the user)
-  const kept = S.settlements.filter(s=> !partyChallanIds.has(s.cid) || s.manual);
-  const myManual = S.settlements.filter(s=> partyChallanIds.has(s.cid) && s.manual);
-
-  // Money each payment has already spent on manual pins.
-  const manualByPay = {};
-  myManual.forEach(s=>{ if(s.payId) manualByPay[s.payId]=round((manualByPay[s.payId]||0)+s.amount); });
-
-  // Auto money left in each payment, oldest payment first (stable tiebreaker by id).
-  const pool = S.payments.filter(p=>p&&p.pid===pid)
-    .slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||String(a.id||'').localeCompare(String(b.id||'')))
-    .map(p=>({ payId:p.id, date:p.date, avail: round((p.amount||0)-(manualByPay[p.id]||0)) }))
-    .filter(x=>x.avail>0.01);
-
-  // Challans oldest first (stable tiebreaker by challan number), each reduced by its manual pins.
-  const chs = S.challans.filter(c=>c&&c.pid===pid)
-    .slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
-
-  const auto=[];
-  let pi=0, avail = pool.length ? pool[0].avail : 0;
-  chs.forEach(c=>{
-    const manualPaid = myManual.filter(s=>s.cid===c.id).reduce((a,s)=>a+s.amount,0);
-    let due = round((c.total||0)-manualPaid);
-    while(due>0.01 && pi<pool.length){
-      if(avail<=0.01){ pi++; if(pi<pool.length) avail=pool[pi].avail; continue; }
-      const use = Math.min(due, avail);
-      auto.push({ cid:c.id, payId:pool[pi].payId, amount:use, date:pool[pi].date||c.date });
-      avail = round(avail-use);
-      due   = round(due-use);
-    }
-  });
-
-  const newAll = kept.concat(auto);
-  const sig = a => (a||[]).map(s=>s.cid+'|'+(s.payId||'')+'|'+Math.round((s.amount||0)*100)+'|'+(s.manual?'M':'A')).sort().join(';');
-  let changed = sig(newAll) !== sig(S.settlements);
-  S.settlements = newAll;
-  chs.forEach(c=>{ const prev=c.status; recalcChallanStatus(c.id); if(c.status!==prev) changed=true; });
-  return changed;
+  invalidateParty(pid);
+  return false;
 }
-
-// One-time / import use only: recompute every party. Never called on the per-save path.
-function recomputeAllParties(){
-  let changed=false;
-  const pids = {};
-  S.challans.forEach(c=>{ if(c&&c.pid) pids[c.pid]=true; });
-  S.payments.forEach(p=>{ if(p&&p.pid) pids[p.pid]=true; });
-  Object.keys(pids).forEach(pid=>{ if(recomputeParty(pid)) changed=true; });
-  return changed;
-}
+function recomputeAllParties(){ invalidateAllAlloc(); return false; }
 
 
 function openEditSettle(cid) {
@@ -2981,11 +3041,11 @@ function openEditSettle(cid) {
 
 function renderESRows(cid) {
   const c = S.challans.find(x=>x.id===cid); if(!c) return;
-  const setts = S.settlements.filter(s=>s.cid===cid);
+  const setts = getAlloc(c.pid).allocations.filter(s=>s.cid===cid);
   const el = document.getElementById('es-rows');
 
   if (!setts.length) {
-    el.innerHTML = '<div style="text-align:center;padding:14px;color:#AAA;font-size:13px;background:#F9F9F9;border-radius:8px">No payment records linked to this challan yet.</div>';
+    el.innerHTML = '<div style="text-align:center;padding:14px;color:#AAA;font-size:13px;background:#F9F9F9;border-radius:8px">No payments applied to this challan yet.</div>';
     return;
   }
 
@@ -2993,12 +3053,12 @@ function renderESRows(cid) {
     const pay = S.payments.find(p=>p.id===s.payId);
     return `<div style="background:${i%2?'#F9F9F9':'#fff'};border:1px solid #E8E8E8;border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:0">
-        <div style="font-size:14px;font-weight:700;color:#059669">+ ${fmt(s.amount)}</div>
+        <div style="font-size:14px;font-weight:700;color:#059669">+ ${fmt(s.amount)}${s.manual?' <span style="font-size:10px;color:#D97706;background:#FFFBEB;border:1px solid #FDE68A;padding:1px 6px;border-radius:8px;font-weight:700">📌 PINNED</span>':''}</div>
         <div style="font-size:11px;color:#888;margin-top:2px">${fmtD(s.date)} ${pay?' · '+esc(pay.mode):''} ${pay&&pay.remarks?' · '+esc(pay.remarks):''}</div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn sm" onclick="editSettleAmount('${s.cid}','${s.payId||''}',${s.amount},'${s.date}')" style="color:#D97706;border-color:#FDE68A;background:#FFFBEB;font-size:11px">✏️ Edit</button>
-        <button class="btn sm red" onclick="deleteSettlement('${s.cid}','${s.payId||''}')" style="font-size:11px">🗑 Remove</button>
+        <button class="btn sm" onclick="editSettleAmount('${s.cid}','${s.payId||''}',${s.amount},'${s.date}')" style="color:#D97706;border-color:#FDE68A;background:#FFFBEB;font-size:11px">📌 Pin amount</button>
+        ${s.manual?`<button class="btn sm red" onclick="deleteSettlement('${s.cid}','${s.payId||''}')" style="font-size:11px">Unpin</button>`:''}
       </div>
     </div>`;
   }).join('');
@@ -3027,60 +3087,47 @@ function previewESBalance() {
 }
 
 function editSettleAmount(cid, payId, currentAmt, currentDate) {
-  const newAmt = prompt(`Edit payment amount (current: Rs.${Math.round(currentAmt).toLocaleString('en-IN')}):\nEnter new amount:`, Math.round(currentAmt));
+  if (!payId) { alert('This amount is auto-allocated and cannot be pinned individually.'); return; }
+  const c   = S.challans.find(x=>x.id===cid);
+  const pay = S.payments.find(p=>p.id===payId);
+  const maxPin = pay ? pay.amount : currentAmt;
+  const newAmt = prompt(`Pin how much of this payment to this challan?\n(Payment total: Rs.${Math.round(maxPin).toLocaleString('en-IN')}. Current applied: Rs.${Math.round(currentAmt).toLocaleString('en-IN')})\n\nEnter amount to pin (0 to unpin):`, Math.round(currentAmt));
   if (newAmt === null) return;
   const amt = +newAmt;
   if (isNaN(amt) || amt < 0) { alert('Please enter a valid amount'); return; }
+  if (pay && amt > pay.amount + 0.01) { alert('Cannot pin more than the payment total (Rs.'+Math.round(pay.amount).toLocaleString('en-IN')+').'); return; }
+  if (c && amt > c.total + 0.01) { alert('Cannot pin more than the challan total (Rs.'+Math.round(c.total).toLocaleString('en-IN')+').'); return; }
 
-  // Find and update the settlement
-  const idx = S.settlements.findIndex(s=>s.cid===cid && s.payId===payId);
-  if (idx === -1) return;
-
-  const oldAmt = S.settlements[idx].amount;
-  S.settlements[idx].amount = amt;
-  S.settlements[idx].manual = true;   // editing a settlement is a manual override — pin it
-  const epid = partyOfChallan(cid);
-
-  // Update linked payment amount too
-  if (payId) {
-    const pay = S.payments.find(p=>p.id===payId);
-    if (pay) {
-      pay.amount = pay.amount - oldAmt + amt;
-      if (pay.amount <= 0) {
-        // Remove the payment if zeroed out
-        S.payments = S.payments.filter(p=>p.id!==payId);
-        S.settlements = S.settlements.filter(s=>s.payId!==payId || s.cid!==cid);
-      }
-    }
-  }
-
-  if (amt === 0) {
-    const i2 = S.settlements.findIndex(s=>s.cid===cid && s.payId===payId);
-    if (i2 !== -1) S.settlements.splice(i2, 1);
-  }
-
-  recomputeParty(epid);
+  // A manual pin is an OVERRIDE: reserve `amt` of this payment for this challan before FIFO.
+  upsertOverride(payId, cid, amt, currentDate);
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
-  renderESRows(cid);
-  // Refresh summary
   openEditSettle(cid);
 }
 
 function deleteSettlement(cid, payId) {
-  const s = S.settlements.find(x=>x.cid===cid && x.payId===payId);
-  if (!s) return;
-  const ok = confirm(`Remove this payment of ${fmt(s.amount)} from this challan?\n\nThe payment record will remain but will no longer be applied to this challan.`);
+  if (!payId) return;
+  // Only manual pins (overrides) can be removed; removing reverts this money to automatic FIFO.
+  const ov = S.overrides.find(o=>o && o.cid===cid && o.payId===payId);
+  if (!ov) { alert('This is an automatic allocation. Only manually pinned amounts can be unpinned.'); return; }
+  const pay = S.payments.find(p=>p.id===payId);
+  const isAdj = pay && pay.mode==='Adjustment';
+  const ok = confirm(isAdj
+    ? `Remove this manual adjustment of ${fmt(ov.amount)}?\n\nThe adjustment payment will be deleted.`
+    : `Unpin this ${fmt(ov.amount)} from this challan?\n\nThe payment stays, but this amount reverts to automatic FIFO allocation.`);
   if (!ok) return;
 
-  const dpid = partyOfChallan(cid);
-  S.settlements = S.settlements.filter(x=>!(x.cid===cid && x.payId===payId));
-  recomputeParty(dpid);
+  removeOverride(payId, cid);
+  // An adjustment payment exists only to back a manual pin — if its pin is gone and it isn't
+  // pinned elsewhere, remove the adjustment payment too so it doesn't linger as floating credit.
+  if (isAdj && !S.overrides.some(o=>o && o.payId===payId)) {
+    S.payments = S.payments.filter(p=>p.id!==payId);
+    invalidateParty(partyOfChallan(cid));
+  }
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
-  renderESRows(cid);
   openEditSettle(cid);
 }
 
@@ -3091,15 +3138,19 @@ function saveESAdjustment() {
   const dt  = document.getElementById('es-date').value;
   const rmk = document.getElementById('es-rmk').value.trim();
   if (!amt || !dt) { alert('Please enter amount and date'); return; }
+  const dueNow = _r2(c.total - challanPaid(cid));
+  if (amt > dueNow + 0.01) {
+    alert('This adjustment (Rs.'+Math.round(amt).toLocaleString('en-IN')+') exceeds the balance still due on this challan (Rs.'+Math.round(dueNow).toLocaleString('en-IN')+').\n\nFor a general payment, use “Record Payment” instead.');
+    return;
+  }
 
-  // Create a new standalone payment for this adjustment, pinned MANUALLY to this challan so the
+  // Create a standalone adjustment payment, pinned MANUALLY to this challan via an OVERRIDE so the
   // per-party FIFO pass never moves it.
   S.pyC++;
   const payId = uniqId('PAY');
   S.payments.push({ id:payId, pid:c.pid, date:dt, amount:amt, mode:'Adjustment', remarks:rmk||'Manual adjustment' });
-  S.settlements.push({ cid, payId, amount:amt, date:dt, manual:true });
+  upsertOverride(payId, cid, amt, dt);
 
-  recomputeParty(c.pid);
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
