@@ -376,7 +376,8 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
         <button onclick="staffToggleNewParty()" id="st-newbtn" style="background:#EFF6FF;border:1.5px solid #BFDBFE;color:#1A2E5A;border-radius:10px;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">+ New</button>
       </div>
       <div id="st-newparty" style="display:none;background:#F8FAFF;border:1px solid #DDE7F5;border-radius:10px;padding:12px;margin-bottom:10px">
-        <input id="st-np-name" placeholder="Party name *" style="width:100%;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">
+        <input id="st-np-name" placeholder="Party name *" style="width:100%;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box" oninput="partySuggest('st-np-name','st-np-name-hint',null,staffParties)">
+        <div id="st-np-name-hint" style="display:none"></div>
         <div style="display:flex;gap:8px">
           <input id="st-np-phone" placeholder="Phone" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">
           <input id="st-np-city" placeholder="City" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">
@@ -482,7 +483,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 <div class="mbox"><div class="mhandle"></div>
   <div class="mhead"><h3>Add New Party</h3><button class="xbtn" onclick="closeModal('party')">✕</button></div>
   <div class="mbody">
-    <div class="fg"><label>Party Name *</label><input id="ap-name" placeholder="e.g. Raju Garments" autocomplete="off"></div>
+    <div class="fg"><label>Party Name *</label><input id="ap-name" placeholder="e.g. Raju Garments" autocomplete="off" oninput="partySuggest('ap-name','ap-name-hint')"><div id="ap-name-hint" style="display:none"></div></div>
     <div class="fr"><div><label>Phone</label><input id="ap-phone" type="tel" placeholder="9876543210"></div><div><label>City</label><input id="ap-city" placeholder="Delhi"></div></div>
     <div class="fg">
       <label>Previous Outstanding Balance (Rs.)</label>
@@ -504,7 +505,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     <button class="xbtn" onclick="closeModal('edit-party')">✕</button>
   </div>
   <div class="mbody">
-    <div class="fg"><label>Party Name *</label><input id="ep-name" placeholder="e.g. Raju Garments" autocomplete="off"></div>
+    <div class="fg"><label>Party Name *</label><input id="ep-name" placeholder="e.g. Raju Garments" autocomplete="off" oninput="partySuggest('ep-name','ep-name-hint',curEditPartyId)"><div id="ep-name-hint" style="display:none"></div></div>
     <div class="fr">
       <div><label>Phone</label><input id="ep-phone" type="tel" placeholder="9876543210"></div>
       <div><label>City</label><input id="ep-city" placeholder="Delhi"></div>
@@ -536,7 +537,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     <!-- Quick Add Party (inline, hidden by default) -->
     <div id="quick-party-box" style="display:none;background:#F0F4FF;border:1.5px solid #BFDBFE;border-radius:10px;padding:12px;margin-bottom:12px">
       <div style="font-size:12px;font-weight:700;color:#1A2E5A;margin-bottom:10px">➕ Quick Add Party</div>
-      <div class="fg"><label>Party Name *</label><input id="qp-name" placeholder="e.g. Raju Garments" autocomplete="off"></div>
+      <div class="fg"><label>Party Name *</label><input id="qp-name" placeholder="e.g. Raju Garments" autocomplete="off" oninput="partySuggest('qp-name','qp-name-hint')"><div id="qp-name-hint" style="display:none"></div></div>
       <div class="fr"><div><label>Phone</label><input id="qp-phone" type="tel" placeholder="9876543210"></div><div><label>City</label><input id="qp-city" placeholder="Delhi"></div></div>
       <div style="display:flex;gap:8px;margin-top:4px">
         <button class="btn sm" onclick="closeQuickParty()" style="flex:1;justify-content:center">Cancel</button>
@@ -1265,6 +1266,11 @@ function staffCreateBill() {
   if (newBox.style.display!=='none') {
     pname=document.getElementById('st-np-name').value.trim();
     if(!pname){alert('Enter the new party name.');return;}
+    var sdup=findDupParty(pname, staffParties);
+    if(sdup){
+      alert('A party named "'+sdup.name+'"'+(sdup.phone?' ('+sdup.phone+')':'')+' already exists.\n\nSelect it from the party list instead of creating a new one.\nIf this is really a DIFFERENT person, add something extra to the name (area / firm) to differentiate.');
+      return;
+    }
     pphone=document.getElementById('st-np-phone').value.trim();
     pcity=document.getElementById('st-np-city').value.trim();
     pid='NEW';
@@ -1382,7 +1388,7 @@ function mergeIncomingBills(bills) {
     // 1) Resolve or create the party.
     var party=null;
     if (b.pid && b.pid!=='NEW') party=S.parties.find(function(p){return p.id===b.pid;});
-    if (!party && b.pname) party=S.parties.find(function(p){return (p.name||'').trim().toLowerCase()===String(b.pname).trim().toLowerCase();});
+    if (!party && b.pname) party=S.parties.find(function(p){return normPName(p.name)===normPName(b.pname);});
     if (!party) {
       S.pC++;
       party={ id:uniqId('P'), name:b.pname||'(Unnamed)', phone:b.pphone||'', city:b.pcity||'', ob:0,
@@ -2160,10 +2166,49 @@ function simulateSettle(pid,amt) {
 /* ══════════════════════════════
    ACTIONS
 ══════════════════════════════ */
+/* ── Duplicate-party protection ──
+   Names are compared case-insensitively with whitespace collapsed ("Hardik" ≡ "hardik " ≡ "HARDIK").
+   Exact match → creation/rename is BLOCKED (regardless of phone); user is told to add a
+   differentiator. While typing, similar existing parties are suggested live. */
+function normPName(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function findDupParty(name, list, excludeId){
+  const n=normPName(name); if(!n) return null;
+  return (list||S.parties).find(p=>p && p.id!==excludeId && normPName(p.name)===n) || null;
+}
+function similarParties(name, list, excludeId){
+  const n=normPName(name); if(n.length<2) return [];
+  return (list||S.parties).filter(p=>{
+    if(!p || p.id===excludeId) return false;
+    const pn=normPName(p.name);
+    return pn===n || pn.includes(n) || n.includes(pn);
+  }).slice(0,5);
+}
+function dupPartyMsg(dup){
+  return 'A party named "'+dup.name+'"'+(dup.phone?' ('+dup.phone+')':'')+' already exists.\n\n'
+    + 'Two parties cannot have the same name.\n'
+    + 'If this is really a DIFFERENT person, add something extra to the name to tell them apart — e.g. "'+dup.name+' – Karol Bagh" or "'+dup.name+' (KF)".';
+}
+function partySuggest(inputId, hintId, excludeId, list){
+  const el=document.getElementById(inputId), box=document.getElementById(hintId);
+  if(!el||!box) return;
+  const val=el.value;
+  const sims=similarParties(val, list, excludeId);
+  if(!sims.length){ box.style.display='none'; box.innerHTML=''; return; }
+  const exact=findDupParty(val, list, excludeId);
+  box.style.display='block';
+  box.innerHTML='<div style="margin-top:6px;background:'+(exact?'#FEF2F2':'#FFFBEB')+';border:1.5px solid '+(exact?'#FCA5A5':'#FDE68A')+';border-radius:8px;padding:8px 10px;font-size:12px;color:'+(exact?'#B91C1C':'#92400E')+'">'
+    +(exact?'<strong>⛔ This exact name already exists — it will not be saved.</strong> Add something extra (area / firm) to differentiate.'
+           :'<strong>⚠️ Similar part'+(sims.length>1?'ies':'y')+' already exist'+(sims.length>1?'':'s')+':</strong>')
+    +'<div style="margin-top:4px">'+sims.map(p=>'• '+esc(p.name)+(p.phone?' · '+esc(p.phone):'')+(p.city?' · '+esc(p.city):'')).join('<br>')+'</div>'
+    +(exact?'':'<div style="margin-top:4px;color:#666">Check you are not creating a duplicate account.</div>')
+    +'</div>';
+}
+
 function addParty() {
   const name=document.getElementById('ap-name').value.trim();
   if (!name) { alert('Party name is required'); return; }
-  if (S.parties.find(p=>p.name.toLowerCase()===name.toLowerCase())) { alert('Party already exists'); return; }
+  const dup=findDupParty(name);
+  if (dup) { alert(dupPartyMsg(dup)); return; }
   S.pC++;
   S.parties.push({id:uniqId('P'),name,phone:document.getElementById('ap-phone').value.trim(),city:document.getElementById('ap-city').value.trim(),ob:+document.getElementById('ap-ob').value||0});
   saveToCloud(); closeModal('party'); renderParties();
@@ -2879,9 +2924,9 @@ function saveEditParty() {
   const newName = document.getElementById('ep-name').value.trim();
   if (!newName) { alert('Party name is required'); return; }
 
-  // Check duplicate name (excluding current party)
-  const duplicate = S.parties.find(x=>x.id!==pid && x.name.toLowerCase()===newName.toLowerCase());
-  if (duplicate) { alert('Another party with this name already exists'); return; }
+  // Check duplicate name (excluding current party) — normalized, so "hardik" ≡ "Hardik "
+  const duplicate = findDupParty(newName, null, pid);
+  if (duplicate) { alert(dupPartyMsg(duplicate)); return; }
 
   const oldName = p.name;
   p.name  = newName;
@@ -3186,7 +3231,8 @@ function closeQuickParty() {
 function saveQuickParty() {
   const name = document.getElementById('qp-name').value.trim();
   if (!name) { alert('Party name is required'); return; }
-  if (S.parties.find(p=>p.name.toLowerCase()===name.toLowerCase())) { alert('Party already exists'); return; }
+  const qdup=findDupParty(name);
+  if (qdup) { alert(dupPartyMsg(qdup)); return; }
   S.pC++;
   const newParty = {id:uniqId('P'), name, phone:document.getElementById('qp-phone').value.trim(), city:document.getElementById('qp-city').value.trim(), ob:0};
   S.parties.push(newParty);
