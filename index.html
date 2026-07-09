@@ -415,6 +415,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
+  <div class="umi" onclick="openItemMaster()">📦 Item Master</div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi danger" onclick="doLogout()">🚪 Sign Out</div>
 </div>
@@ -553,6 +554,30 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
   <div class="mfoot"><button class="btn full pri" onclick="saveChallan()">✓ Create Challan</button></div>
 </div></div>
 
+<!-- Item Master Modal -->
+<div class="overlay" id="mo-items">
+<div class="mbox" style="max-height:92vh"><div class="mhandle"></div>
+  <div class="mhead"><h3>📦 Item Master</h3><button class="xbtn" onclick="closeModal('items')">✕</button></div>
+  <div class="mbody" style="overflow-y:auto">
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <input id="im-search" placeholder="Search by name or code..." autocomplete="off" oninput="renderItemList()" style="flex:1">
+      <button class="btn sm pri" onclick="itemFormShow()" style="flex-shrink:0">+ Add Item</button>
+    </div>
+    <div id="im-form" style="display:none;background:#F8FAFF;border:1.5px solid #BFDBFE;border-radius:12px;padding:12px;margin-bottom:10px">
+      <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" autocomplete="off" oninput="itemDupHint()"><div id="im-name-hint" style="display:none"></div></div>
+      <div class="fr">
+        <div><label>Item Code</label><input id="im-code" placeholder="Optional e.g. CK101" autocomplete="off"></div>
+        <div><label>Default Rate (Rs.) *</label><input id="im-rate" type="number" inputmode="decimal" placeholder="0"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="btn sm" onclick="itemFormHide()" style="flex:1;justify-content:center">Cancel</button>
+        <button class="btn sm pri" onclick="itemFormSave()" style="flex:1;justify-content:center" id="im-save-btn">✓ Save Item</button>
+      </div>
+    </div>
+    <div id="im-list"></div>
+  </div>
+</div></div>
+
 <!-- Record Payment -->
 <div class="overlay" id="mo-payment">
 <div class="mbox"><div class="mhandle"></div>
@@ -688,7 +713,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], trash:[], pC:0, cC:0, pyC:0 };
+let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], trash:[], pC:0, cC:0, pyC:0 };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1523,14 +1548,14 @@ const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
 function saveLocal(){
   try{ localStorage.setItem(LS_KEY(), JSON.stringify({
     parties:S.parties, challans:S.challans, payments:S.payments,
-    settlements:S.settlements, overrides:S.overrides, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC
+    settlements:S.settlements, overrides:S.overrides, items:S.items, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC
   })); }catch(e){}
 }
 function loadLocal(){
   try{ var raw=localStorage.getItem(LS_KEY()); if(!raw) return false;
     var d=JSON.parse(raw);
     S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
-    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.trash=d.trash||[];
+    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0; return true;
   }catch(e){ return false; }
 }
@@ -1551,8 +1576,8 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{} };
-let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null;
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{} };
+let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null,_subItems=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
@@ -1644,12 +1669,18 @@ function attachDataListeners(){
     invalidateAllAlloc();
     markLoaded(snap.metadata);
   }, err=>onSubErr('overrides',err));
+  // Item Master — same per-document + deep-copy-baseline treatment as every other collection.
+  _subItems = _col('items').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.items = snap.docs.map(d=>d.data());
+    _lastSaved.items = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('items',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -1691,6 +1722,7 @@ function saveToCloud() {
     // (Old settlement docs remain untouched in Firestore as a backup. Rollback: restore this line
     //  + the legacy recomputeParty body.)  Only manual OVERRIDES are persisted now.
     diffWrite('overrides',   S.overrides,   _lastSaved.overrides,   overrideId);
+    diffWrite('items',       S.items,       _lastSaved.items,       x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[] };
@@ -2070,6 +2102,142 @@ function openPayFor(pid) {
   previewSettle();
 }
 
+
+/* ══════════════════════════════
+   ITEM MASTER
+   Items live in their own Firestore collection (users/{uid}/items/{id}) with the
+   same per-document diffWrite + deep-copy baseline as every other collection.
+   Challans NEVER reference these docs — saveChallan/saveEditChallan snapshot the
+   actual name/code/rate values into the challan, so later master edits can never
+   change an existing bill.
+══════════════════════════════ */
+let _imEditId = null;
+function normIName(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function findItemDup(name, excludeId){
+  const n = normIName(name); if(!n) return null;
+  return (S.items||[]).find(it => it.id!==excludeId && normIName(it.name)===n) || null;
+}
+const IM_RECENT_KEY = function(){ return 'challan_recent_items_' + (uid||'anon'); };
+function _imRecents(){ try{ return JSON.parse(localStorage.getItem(IM_RECENT_KEY()))||[]; }catch(e){ return []; } }
+function touchRecentItem(id){
+  if(!id) return;
+  try{
+    let r = _imRecents().filter(x=>x!==id); r.unshift(id); r = r.slice(0,15);
+    localStorage.setItem(IM_RECENT_KEY(), JSON.stringify(r));
+  }catch(e){}
+}
+function sortedItems(){
+  const rec = _imRecents(); const pos = {}; rec.forEach((id,i)=>pos[id]=i);
+  return (S.items||[]).slice().sort((a,b)=>{
+    const ra = (a.id in pos)?pos[a.id]:1e9, rb = (b.id in pos)?pos[b.id]:1e9;
+    if(ra!==rb) return ra-rb;
+    return String(a.name||'').localeCompare(String(b.name||''));
+  });
+}
+function itemOptionsHtml(){
+  return '<option value="">— Select item —</option>' + sortedItems().map(it=>
+    `<option value="${it.id}">${esc(it.name)}${it.code?' ('+esc(it.code)+')':''}</option>`).join('');
+}
+function openItemMaster(){
+  closeMenu();
+  document.getElementById('im-search').value='';
+  itemFormHide();
+  renderItemList();
+  document.getElementById('mo-items').classList.add('open');
+}
+function renderItemList(){
+  const q = normIName(document.getElementById('im-search').value);
+  const list = sortedItems().filter(it => !q || normIName(it.name).includes(q) || normIName(it.code).includes(q));
+  const box = document.getElementById('im-list');
+  if(!list.length){ box.innerHTML = '<div style="text-align:center;color:#999;padding:24px 0;font-size:13px">'+((S.items||[]).length?'No items match your search.':'No items yet. Tap “+ Add Item” to create your first item.')+'</div>'; return; }
+  box.innerHTML = list.map(it=>`
+    <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #E5E0D5;border-radius:12px;padding:10px 12px;margin-bottom:7px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:600;color:#1A2E5A">${esc(it.name)}</div>
+        <div style="font-size:11px;color:#888;margin-top:1px">${it.code?esc(it.code)+' · ':''}Rate: ${fmt(+it.rate||0)}</div>
+      </div>
+      <button class="btn sm" onclick="itemFormShow('${it.id}')" style="color:#059669;border-color:#A7F3D0;background:#F0FFF4">✏️</button>
+      <button class="btn sm" onclick="deleteItem('${it.id}')" style="color:#DC2626;border-color:#FECACA;background:#FEF2F2">🗑️</button>
+    </div>`).join('');
+}
+function itemFormShow(editId){
+  _imEditId = editId || null;
+  const it = editId ? (S.items||[]).find(x=>x.id===editId) : null;
+  document.getElementById('im-name').value = it ? (it.name||'') : '';
+  document.getElementById('im-code').value = it ? (it.code||'') : '';
+  document.getElementById('im-rate').value = it ? (it.rate||'') : '';
+  document.getElementById('im-name-hint').style.display='none';
+  document.getElementById('im-save-btn').textContent = it ? '✓ Update Item' : '✓ Save Item';
+  document.getElementById('im-form').style.display='block';
+  document.getElementById('im-name').focus();
+}
+function itemFormHide(){ _imEditId=null; document.getElementById('im-form').style.display='none'; }
+function itemDupHint(){
+  const hint = document.getElementById('im-name-hint');
+  const dup = findItemDup(document.getElementById('im-name').value, _imEditId);
+  if(dup){
+    hint.style.cssText='display:block;background:#FEF2F2;color:#B91C1C;border:1px solid #FECACA;border-radius:8px;padding:7px 10px;font-size:12px;margin-top:5px';
+    hint.textContent='⚠️ “'+dup.name+'” already exists. Add a differentiating detail (e.g. fabric, size) to use a new name.';
+  } else hint.style.display='none';
+}
+function itemFormSave(){
+  const name = document.getElementById('im-name').value.trim();
+  const code = document.getElementById('im-code').value.trim();
+  const rate = +document.getElementById('im-rate').value;
+  if(!name){ alert('Item name is required'); return; }
+  if(!rate || rate<=0){ alert('Default rate is required'); return; }
+  const dup = findItemDup(name, _imEditId);
+  if(dup){ alert('An item named "'+dup.name+'" already exists (names are matched case-insensitively). Use a different name.'); return; }
+  if(_imEditId){
+    const it = (S.items||[]).find(x=>x.id===_imEditId); if(!it) return;
+    it.name=name; it.code=code; it.rate=rate;
+  } else {
+    S.items.push({ id:uniqId('IT'), name:name, code:code, rate:rate, created:new Date().toISOString() });
+  }
+  saveToCloud();
+  itemFormHide();
+  renderItemList();
+  refreshItemSelects();
+}
+function deleteItem(id){
+  const it=(S.items||[]).find(x=>x.id===id); if(!it) return;
+  document.getElementById('del-msg').innerHTML = 'Delete item <strong>'+esc(it.name)+'</strong> from the Item Master?<br><br><span style="font-size:12px;color:#888">Existing challans are NOT affected — they store their own copy of the item values.</span>';
+  document.getElementById('del-ok').onclick = function(){
+    S.items = S.items.filter(x=>x.id!==id);
+    saveToCloud(); closeModal('del'); renderItemList(); refreshItemSelects();
+  };
+  document.getElementById('mo-del').classList.add('open');
+}
+// Refresh every item dropdown currently in the DOM (keeps user-typed rows untouched).
+function refreshItemSelects(){
+  document.querySelectorAll('select.item-sel').forEach(sel=>{
+    const v=sel.value; sel.innerHTML=itemOptionsHtml(); sel.value=v;
+  });
+}
+// Dropdown pick → snapshot name+rate into the row inputs (code kept on the card).
+// The master is only READ here; the challan will save copied values, never a reference.
+function pickItem(rowId){
+  const card=document.getElementById(rowId); if(!card) return;
+  const sel=card.querySelector('select.item-sel');
+  const it=(S.items||[]).find(x=>x.id===sel.value);
+  const inputs=card.querySelectorAll('input');
+  if(it){
+    inputs[0].value=it.name;
+    inputs[2].value=it.rate;
+    card.dataset.code=it.code||'';
+    card.dataset.itemId=it.id;
+    inputs[1].focus();
+  } else { card.dataset.code=''; card.dataset.itemId=''; }
+  const isEC = rowId.indexOf('ecr')===0;
+  if(isEC) calcECItem(rowId); else calcItem(rowId);
+}
+// Manual name edit breaks the association with the master item (code no longer applies).
+function itemNameEdited(rowId){
+  const card=document.getElementById(rowId); if(!card) return;
+  card.dataset.code=''; card.dataset.itemId='';
+  const sel=card.querySelector('select.item-sel'); if(sel) sel.value='';
+}
+
 /* ══════════════════════════════
    ITEM ROWS
 ══════════════════════════════ */
@@ -2078,7 +2246,8 @@ function addItemRow() {
   const div=document.createElement('div');
   div.className='icard'; div.id=id;
   div.innerHTML=`<button class="deli" onclick="document.getElementById('${id}').remove();calcTotal()">✕</button>
-    <input type="text" placeholder="Item name e.g. Lower, Kurta" oninput="calcTotal()">
+    <select class="item-sel" onchange="pickItem('${id}')" style="width:100%;margin-bottom:5px">${itemOptionsHtml()}</select>
+    <input type="text" placeholder="Item name e.g. Lower, Kurta" oninput="itemNameEdited('${id}');calcTotal()">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" oninput="calcItem('${id}')"></div>
       <div><label style="font-size:10px">Rate</label><input type="number" placeholder="0" inputmode="decimal" oninput="calcItem('${id}')"></div>
@@ -2222,7 +2391,8 @@ function saveChallan() {
   document.querySelectorAll('#item-rows .icard').forEach(card=>{
     const inp=card.querySelectorAll('input');
     const name=inp[0].value.trim(), qty=+inp[1].value, rate=+inp[2].value, amount=qty*rate;
-    if(name&&qty&&rate) items.push({name,qty,rate,amount});
+    // Snapshot the VALUES into the challan (incl. code) — never a reference to the Item Master.
+    if(name&&qty&&rate){ items.push({name,qty,rate,amount,code:card.dataset.code||''}); touchRecentItem(card.dataset.itemId); }
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
   S.cC++;
@@ -2973,12 +3143,14 @@ function addECItemRow(item) {
   const amt = item ? item.amount : 0;
   div.innerHTML = `
     <button class="deli" onclick="document.getElementById('${id}').remove();calcECTotal()">✕</button>
-    <input type="text" placeholder="Item name e.g. Lower, Kurta" value="${item?esc(item.name):''}" oninput="calcECItem('${id}')">
+    <select class="item-sel" onchange="pickItem('${id}')" style="width:100%;margin-bottom:5px">${itemOptionsHtml()}</select>
+    <input type="text" placeholder="Item name e.g. Lower, Kurta" value="${item?esc(item.name):''}" oninput="itemNameEdited('${id}');calcECItem('${id}')">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" value="${item?item.qty:''}" oninput="calcECItem('${id}')"></div>
       <div><label style="font-size:10px">Rate (Rs.)</label><input type="number" placeholder="0" inputmode="decimal" value="${item?item.rate:''}" oninput="calcECItem('${id}')"></div>
       <div><label style="font-size:10px">Amount</label><div class="iamt" id="${id}-a" data-v="${amt||''}">${amt?fmt(amt):'-'}</div></div>
     </div>`;
+  if(item && item.code) div.dataset.code = item.code;
   document.getElementById('ec-item-rows').appendChild(div);
 }
 
@@ -3013,7 +3185,8 @@ function saveEditChallan() {
   document.querySelectorAll('#ec-item-rows .icard').forEach(card=>{
     const inputs = card.querySelectorAll('input');
     const name=inputs[0].value.trim(), qty=+inputs[1].value, rate=+inputs[2].value;
-    if (name && qty && rate) items.push({name, qty, rate, amount:Math.round(qty*rate)});
+    // Snapshot the VALUES into the challan (incl. code) — never a reference to the Item Master.
+    if (name && qty && rate){ items.push({name, qty, rate, amount:Math.round(qty*rate), code:card.dataset.code||''}); touchRecentItem(card.dataset.itemId); }
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
   c.pid     = newPid;
