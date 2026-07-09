@@ -328,6 +328,32 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     </div>
   </div>
 
+  <!-- ITEM MASTER PAGE -->
+  <div class="cscreen" id="cs-items">
+    <div class="pg">
+      <div style="background:#F0F4FF;border:1px solid #BFDBFE;border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#1A2E5A;display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">📦</span>
+        <div>Master list of items with default rates. New challans auto-fill from here. <strong>Existing challans are never affected</strong> — they keep their own saved values.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input id="im-search" placeholder="Search by name or code..." autocomplete="off" oninput="renderItemList()" style="flex:1">
+        <button class="btn sm pri" onclick="itemFormShow()" style="flex-shrink:0">+ Add Item</button>
+      </div>
+      <div id="im-form" style="display:none;background:#F8FAFF;border:1.5px solid #BFDBFE;border-radius:12px;padding:12px;margin-bottom:10px">
+        <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" autocomplete="off" oninput="itemDupHint()"><div id="im-name-hint" style="display:none"></div></div>
+        <div class="fr">
+          <div><label>Item Code</label><input id="im-code" placeholder="Optional e.g. CK101" autocomplete="off"></div>
+          <div><label>Default Rate (Rs.) *</label><input id="im-rate" type="number" inputmode="decimal" placeholder="0"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="btn sm" onclick="itemFormHide()" style="flex:1;justify-content:center">Cancel</button>
+          <button class="btn sm pri" onclick="itemFormSave()" style="flex:1;justify-content:center" id="im-save-btn">✓ Save Item</button>
+        </div>
+      </div>
+      <div id="im-list"></div>
+    </div>
+  </div>
+
   <!-- Bottom Nav -->
   <nav class="bottom-nav">
     <button class="nav-tab on" id="nt-home" onclick="goTab('home')"><div class="ni">🏠</div><div>Home</div></button>
@@ -552,30 +578,6 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     <div id="ch-total" style="display:none" class="ibox"></div>
   </div>
   <div class="mfoot"><button class="btn full pri" onclick="saveChallan()">✓ Create Challan</button></div>
-</div></div>
-
-<!-- Item Master Modal -->
-<div class="overlay" id="mo-items">
-<div class="mbox" style="max-height:92vh"><div class="mhandle"></div>
-  <div class="mhead"><h3>📦 Item Master</h3><button class="xbtn" onclick="closeModal('items')">✕</button></div>
-  <div class="mbody" style="overflow-y:auto">
-    <div style="display:flex;gap:8px;margin-bottom:10px">
-      <input id="im-search" placeholder="Search by name or code..." autocomplete="off" oninput="renderItemList()" style="flex:1">
-      <button class="btn sm pri" onclick="itemFormShow()" style="flex-shrink:0">+ Add Item</button>
-    </div>
-    <div id="im-form" style="display:none;background:#F8FAFF;border:1.5px solid #BFDBFE;border-radius:12px;padding:12px;margin-bottom:10px">
-      <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" autocomplete="off" oninput="itemDupHint()"><div id="im-name-hint" style="display:none"></div></div>
-      <div class="fr">
-        <div><label>Item Code</label><input id="im-code" placeholder="Optional e.g. CK101" autocomplete="off"></div>
-        <div><label>Default Rate (Rs.) *</label><input id="im-rate" type="number" inputmode="decimal" placeholder="0"></div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:6px">
-        <button class="btn sm" onclick="itemFormHide()" style="flex:1;justify-content:center">Cancel</button>
-        <button class="btn sm pri" onclick="itemFormSave()" style="flex:1;justify-content:center" id="im-save-btn">✓ Save Item</button>
-      </div>
-    </div>
-    <div id="im-list"></div>
-  </div>
 </div></div>
 
 <!-- Record Payment -->
@@ -1830,6 +1832,7 @@ function renderAll() {
   if (curTab==='challans') renderChallans();
   if (curTab==='daybook')  renderDaybook();
   if (curTab==='trash')    renderTrash();
+  refreshItemPageIfOpen();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
   const cnt = (S.trash||[]).length;
@@ -2140,10 +2143,20 @@ function itemOptionsHtml(){
 }
 function openItemMaster(){
   closeMenu();
+  navStack.push(curTab);
+  document.querySelectorAll('.cscreen').forEach(s=>s.classList.remove('on'));
+  document.querySelectorAll('.nav-tab').forEach(x=>x.classList.remove('on'));
+  document.getElementById('cs-items').classList.add('on');
+  document.getElementById('back-btn').classList.add('show');
+  document.getElementById('fab').style.display='none';
+  document.getElementById('topbar-title').textContent='📦 Item Master';
   document.getElementById('im-search').value='';
   itemFormHide();
   renderItemList();
-  document.getElementById('mo-items').classList.add('open');
+}
+function refreshItemPageIfOpen(){
+  var cs=document.getElementById('cs-items');
+  if(cs && cs.classList.contains('on')) renderItemList();
 }
 function renderItemList(){
   const q = normIName(document.getElementById('im-search').value);
