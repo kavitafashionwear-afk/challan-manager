@@ -2630,7 +2630,7 @@ function svgHeatmap(fyYear,daily){
   let lastM=-1;
   for(let i=0;i<days;i++){
     const d=new Date(start.getTime()+i*864e5);
-    const key=d.toISOString().slice(0,10);
+    const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     const col=Math.floor((i+startOffset)/7), row=(i+startOffset)%7;
     const v=daily[key]||{s:0,r:0};
     const lvl=v.s<=0?0:Math.min(4,1+Math.floor(v.s/max*3.999));
@@ -2801,7 +2801,8 @@ function renderReports(){
   /* ── weekday analysis ── */
   const WD=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   const wdCount=Array(7).fill(0);
-  for(let t=Math.max(from,fyStart).getTime();t<=Math.min(to,fyEnd).getTime();t+=864e5) wdCount[(new Date(t).getDay()+6)%7]++;
+  const wStart=Math.max(from.getTime(),fyStart.getTime()), wEnd=Math.min(to.getTime(),fyEnd.getTime());
+  for(let t=wStart;t<=wEnd;t+=864e5) wdCount[(new Date(t).getDay()+6)%7]++;
   const wdAvgS=d.wdS.map((v,i)=>wdCount[i]?Math.round(v/wdCount[i]):0);
   const wdAvgR=d.wdR.map((v,i)=>wdCount[i]?Math.round(v/wdCount[i]):0);
 
