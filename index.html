@@ -419,13 +419,27 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
-  <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports</div>
+  <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi danger" onclick="doLogout()">🚪 Sign Out</div>
 </div>
 
 <!-- ══ MODALS ══ -->
+
+<!-- SEASON MANAGER MODAL -->
+<div class="overlay" id="mo-seasons">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead"><h3>🗓️ Seasons</h3><button class="xbtn" onclick="closeModal('seasons')">✕</button></div>
+  <div class="mbody">
+    <div style="font-size:12px;color:#888;margin-bottom:10px">Seasons tag your challans (e.g. Summer 2026, Festive 2026, Wedding 2027). New challans default to the <strong>current</strong> season. Reports can be filtered by season.</div>
+    <div id="season-list"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <input id="season-new-name" placeholder="e.g. Festive 2026" style="flex:1">
+      <button class="btn sm pri" onclick="addSeason()" style="flex-shrink:0">+ Add</button>
+    </div>
+  </div>
+</div></div>
 
 <!-- IMPORT EXCEL MODAL -->
 <div class="overlay" id="mo-import">
@@ -551,6 +565,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
       </div>
     </div>
     <div class="fg"><label>Date *</label><input id="ch-date" type="date"></div>
+    <div class="fg"><label>Season</label><select id="ch-season"></select></div>
     <div class="fg"><label>Remarks</label><input id="ch-rmk" placeholder="Optional"></div>
     <div class="fg"><label>Items</label><div id="item-rows"></div><button class="btn sm" onclick="addItemRow()" style="width:100%;justify-content:center;margin-top:4px">+ Add Item</button></div>
     <div class="fg"><label>Freight / Transport (Rs.)</label><input id="ch-freight" type="number" inputmode="decimal" placeholder="0" oninput="calcTotal()"></div>
@@ -592,6 +607,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
       <div><label>Party *</label><select id="ec-party"></select></div>
       <div><label>Date *</label><input id="ec-date" type="date"></div>
     </div>
+    <div class="fg"><label>Season</label><select id="ec-season"></select></div>
     <div class="fg"><label>Remarks</label><input id="ec-rmk" placeholder="Optional"></div>
     <div class="fg">
       <label>Items</label>
@@ -694,7 +710,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], trash:[], pC:0, cC:0, pyC:0 };
+let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'' };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1412,6 +1428,7 @@ function mergeIncomingBills(bills) {
       pid:party.id, pname:party.name, date:b.date||today(),
       items:items, freight:freight, total:total, status:'P',
       remarks:b.remarks||'',
+      season:S.curSeason||'',
       staffGenerated:true,
       staffEmail:(b.createdBy&&b.createdBy.email)||'',
       staffName:(b.createdBy&&b.createdBy.name)||'',
@@ -1529,7 +1546,8 @@ const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
 function saveLocal(){
   try{ localStorage.setItem(LS_KEY(), JSON.stringify({
     parties:S.parties, challans:S.challans, payments:S.payments,
-    settlements:S.settlements, overrides:S.overrides, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC
+    settlements:S.settlements, overrides:S.overrides, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
+    seasons:S.seasons, curSeason:S.curSeason
   })); }catch(e){}
 }
 function loadLocal(){
@@ -1537,7 +1555,8 @@ function loadLocal(){
     var d=JSON.parse(raw);
     S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
     S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.trash=d.trash||[];
-    S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0; return true;
+    S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
+    S.seasons=d.seasons||[]; S.curSeason=d.curSeason||''; return true;
   }catch(e){ return false; }
 }
 function flushPendingSave(){ if(uid && isOnline && isOwnerUid(uid)) saveToCloud(); }
@@ -1651,7 +1670,7 @@ function attachDataListeners(){
     markLoaded(snap.metadata);
   }, err=>onSubErr('overrides',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
-    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; }
+    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
@@ -1699,7 +1718,7 @@ function saveToCloud() {
     diffWrite('overrides',   S.overrides,   _lastSaved.overrides,   overrideId);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[] };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'' };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -1853,11 +1872,26 @@ function renderHome() {
   const totalOut = S.parties.reduce((s,p)=>s+Math.max(0,partyBal(p.id)),0);
   const totalPd  = S.payments.reduce((s,p)=>s+p.amount,0);
   const pending  = S.challans.filter(c=>challanStatus(c)!=='S').length;
+  const tdy=today(), fyNow=fyOf(tdy), mNow=tdy.slice(0,7);
+  const todaySales=S.challans.filter(c=>c.date===tdy).reduce((s,c)=>s+(+c.total||0),0);
+  const monthSales=S.challans.filter(c=>(c.date||'').slice(0,7)===mNow).reduce((s,c)=>s+(+c.total||0),0);
+  const fySales=S.challans.filter(c=>fyOf(c.date)===fyNow).reduce((s,c)=>s+(+c.total||0),0);
+  const fyDays=Math.max(1,Math.round((Date.now()-new Date(fyNow,3,1).getTime())/864e5)+1);
   document.getElementById('home-stats').innerHTML = `
+    <div class="stat" style="grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer" onclick="goTab('reports')">
+      <span style="background:#EEF2FF;color:#1A2E5A;font-size:11px;font-weight:800;padding:3px 10px;border-radius:12px">${fyLbl(fyNow)}</span>
+      ${S.curSeason?`<span style="background:#F0FDF4;color:#059669;font-size:11px;font-weight:800;padding:3px 10px;border-radius:12px">🗓️ ${esc(S.curSeason)}</span>`:''}
+      <span style="flex:1"></span>
+      <span style="color:#1A2E5A;font-size:12px;font-weight:800">📊 View Reports →</span>
+    </div>
     <div class="stat"><div class="sl">📦 Challans</div><div class="sv">${S.challans.length}</div></div>
     <div class="stat"><div class="sl">💰 Outstanding</div><div class="sv r">${fmt(totalOut)}</div></div>
     <div class="stat"><div class="sl">✅ Received</div><div class="sv g">${fmt(totalPd)}</div></div>
-    <div class="stat"><div class="sl">⏳ Pending</div><div class="sv a">${pending}</div></div>`;
+    <div class="stat"><div class="sl">⏳ Pending</div><div class="sv a">${pending}</div></div>
+    <div class="stat"><div class="sl">📅 Today's Sales</div><div class="sv">${fmt(todaySales)}</div></div>
+    <div class="stat"><div class="sl">🗓️ This Month</div><div class="sv">${fmt(monthSales)}</div></div>
+    <div class="stat"><div class="sl">📈 Avg Daily (${fyLbl(fyNow).replace('FY ','')})</div><div class="sv">${fmt(Math.round(fySales/fyDays))}</div></div>
+    <div class="stat"><div class="sl">💼 FY Sales</div><div class="sv">${fmt(fySales)}</div></div>`;
   const recent = [...S.challans].sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||'')).slice(0,5);
   document.getElementById('home-challans').innerHTML = (recent.length
     ? recent.map(c=>challanCard(c,true)).join('')
@@ -2047,6 +2081,7 @@ function openModal(type) {
   if (type==='challan') {
     document.getElementById('ch-party').innerHTML='<option value="">Select party...</option>'+S.parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
     document.getElementById('ch-date').value=today();
+    document.getElementById('ch-season').innerHTML=seasonOptions(S.curSeason);
     document.getElementById('ch-rmk').value='';
     document.getElementById('item-rows').innerHTML='';
     document.getElementById('ch-freight').value='';
@@ -2238,7 +2273,7 @@ function saveChallan() {
   const freight=+document.getElementById('ch-freight').value||0;
   const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0)+freight;
   const newChId=uniqId('C');
-  S.challans.push({id:newChId,num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim()});
+  S.challans.push({id:newChId,num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim(),season:document.getElementById('ch-season').value||''});
   recomputeParty(pid);
   saveToCloud(); closeModal('challan'); renderAll();
   if (curParty===pid) renderPartyDetail(pid); else openParty(pid);
@@ -2455,12 +2490,56 @@ function renderDaybook(){
   body.innerHTML=html;
 }
 
+/* ── Season management ──
+   Seasons are business tags on challans (Summer 2026, Festive 2026 …), stored in the synced meta
+   doc like the counters. `S.curSeason` is the default applied to new challans (owner + staff-merge).
+   FY, by contrast, is ALWAYS derived from the challan date — never stored, never editable — so
+   financial reports can never contradict the bill dates. */
+function seasonOptions(sel){
+  return '<option value="">— No season —</option>'+(S.seasons||[]).map(s=>`<option value="${esc(s)}" ${s===sel?'selected':''}>${esc(s)}${s===S.curSeason?' (current)':''}</option>`).join('');
+}
+function openSeasons(){ renderSeasonList(); document.getElementById('mo-seasons').classList.add('open'); }
+function renderSeasonList(){
+  const el=document.getElementById('season-list');
+  if(!(S.seasons||[]).length){ el.innerHTML='<div style="color:#999;font-size:12px;text-align:center;padding:10px">No seasons yet. Add your first one below.</div>'; return; }
+  el.innerHTML=S.seasons.map(s=>{
+    const used=S.challans.filter(c=>c.season===s).length;
+    const cur=s===S.curSeason;
+    return `<div style="display:flex;align-items:center;gap:8px;background:${cur?'#F0FDF4':'#F9F9F9'};border:1px solid ${cur?'#BBF7D0':'#ECECEC'};border-radius:9px;padding:9px 11px;margin-bottom:6px">
+      <div style="flex:1;font-size:13px;font-weight:700;color:#1A2E5A">${esc(s)} ${cur?'<span style="font-size:10px;color:#059669;font-weight:800">● CURRENT</span>':''}<div style="font-size:10px;color:#999;font-weight:500">${used} challan${used===1?'':'s'}</div></div>
+      ${cur?'':`<button class="btn sm" onclick="setCurSeason('${esc(s)}')" style="font-size:11px">Set current</button>`}
+      ${used?'':`<button class="btn sm red" onclick="delSeason('${esc(s)}')" style="font-size:11px">✕</button>`}
+    </div>`;}).join('');
+}
+function addSeason(){
+  const el=document.getElementById('season-new-name');
+  const name=(el.value||'').trim(); if(!name){alert('Enter a season name');return;}
+  if((S.seasons||[]).some(s=>s.toLowerCase()===name.toLowerCase())){alert('This season already exists');return;}
+  S.seasons.push(name);
+  if(!S.curSeason) S.curSeason=name;
+  el.value='';
+  saveToCloud(); renderSeasonList();
+}
+function setCurSeason(name){ S.curSeason=name; saveToCloud(); renderSeasonList(); }
+function delSeason(name){
+  if(S.challans.some(c=>c.season===name)){alert('This season is used by challans and cannot be deleted.');return;}
+  S.seasons=S.seasons.filter(s=>s!==name);
+  if(S.curSeason===name) S.curSeason=S.seasons[0]||'';
+  saveToCloud(); renderSeasonList();
+}
+
 /* ══════════════════════════════
    REPORTS  (fiscal year Apr–Mar)
    Sales = challan totals (business events). Received = payment amounts.
    All derived on read from the ledger — nothing stored. Charts are inline SVG (offline-safe).
 ══════════════════════════════ */
-let repFY = null;   // selected FY start-year (e.g. 2026 = FY 2026-27); null = latest with data
+let repFY = null;        // selected FY start-year (2026 = FY 2026-27); null = latest with data
+let repSeason = '';      // '' = whole fiscal year
+let repParty  = '';      // '' = all parties
+let repFrom = '', repTo = '';          // optional date range (within data)
+let repTrend = 'sales';                // trend graph metric
+let repPartyMode = 'sales';            // party analytics view
+let repMonthCmp = 0;                   // month comparison (0=Apr … 11=Mar)
 
 function fyOf(dateStr){ const d=new Date(dateStr); if(isNaN(d)) return null; return d.getMonth()>=3 ? d.getFullYear() : d.getFullYear()-1; }
 function fyLbl(y){ return 'FY '+y+'-'+String((y+1)%100).padStart(2,'0'); }
@@ -2472,103 +2551,345 @@ function fmtSh(n){ n=+n||0; const a=Math.abs(n);
   if(a>=1e3) return Math.round(n/1e3)+'K';
   return String(Math.round(n)); }
 
-function repData(){
+/* Filtered business events. Season lives on challans only — when a season filter is on,
+   sales/items/party-sales are season-scoped; collections stay date/party-scoped (payments carry
+   no season) and the UI says so. */
+function repSets(){
+  const chs=S.challans.filter(c=>c && (!repSeason||c.season===repSeason) && (!repParty||c.pid===repParty) && (!repFrom||c.date>=repFrom) && (!repTo||c.date<=repTo));
+  const pays=S.payments.filter(p=>p && (!repParty||p.pid===repParty) && (!repFrom||p.date>=repFrom) && (!repTo||p.date<=repTo));
+  return {chs,pays};
+}
+function repData(chs,pays){
   const fys={};
-  const add=(y)=>fys[y]=fys[y]||{sales:0,recv:0,bills:0,mSales:Array(12).fill(0),mRecv:Array(12).fill(0),byParty:{}};
-  S.challans.forEach(c=>{ const y=fyOf(c.date); if(y==null) return; add(y);
-    fys[y].sales+=(+c.total||0); fys[y].bills++; fys[y].mSales[fyMonthIdx(c.date)]+=(+c.total||0);
-    fys[y].byParty[c.pid]=(fys[y].byParty[c.pid]||0)+(+c.total||0); });
-  S.payments.forEach(p=>{ const y=fyOf(p.date); if(y==null) return; add(y);
-    fys[y].recv+=(+p.amount||0); fys[y].mRecv[fyMonthIdx(p.date)]+=(+p.amount||0); });
+  const add=y=>fys[y]=fys[y]||{sales:0,recv:0,bills:0,payN:0,qty:0,mSales:Array(12).fill(0),mRecv:Array(12).fill(0),mBills:Array(12).fill(0),mPayN:Array(12).fill(0),byParty:{},byPartyRecv:{},daily:{},wdS:Array(7).fill(0),wdR:Array(7).fill(0),modes:{},parties:{}};
+  chs.forEach(c=>{ const y=fyOf(c.date); if(y==null) return; add(y); const f=fys[y],m=fyMonthIdx(c.date);
+    f.sales+=(+c.total||0); f.bills++; f.mSales[m]+=(+c.total||0); f.mBills[m]++;
+    f.byParty[c.pid]=(f.byParty[c.pid]||0)+(+c.total||0); f.parties[c.pid]=1;
+    (c.items||[]).forEach(it=>f.qty+=(+it.qty||0));
+    (f.daily[c.date]=f.daily[c.date]||{s:0,r:0}).s+=(+c.total||0);
+    const wd=new Date(c.date).getDay(); f.wdS[(wd+6)%7]+=(+c.total||0); });
+  pays.forEach(p=>{ const y=fyOf(p.date); if(y==null) return; add(y); const f=fys[y],m=fyMonthIdx(p.date);
+    f.recv+=(+p.amount||0); f.payN++; f.mRecv[m]+=(+p.amount||0); f.mPayN[m]++;
+    f.byPartyRecv[p.pid]=(f.byPartyRecv[p.pid]||0)+(+p.amount||0);
+    (f.daily[p.date]=f.daily[p.date]||{s:0,r:0}).r+=(+p.amount||0);
+    const wd=new Date(p.date).getDay(); f.wdR[(wd+6)%7]+=(+p.amount||0);
+    const md=String(p.mode||'Other').trim()||'Other'; f.modes[md]=(f.modes[md]||0)+(+p.amount||0); });
   return fys;
 }
 
-/* ── SVG helpers ── */
-function svgBars(mSales,mRecv){
-  const W=680,H=240,padL=44,padB=26,padT=14;
-  const max=Math.max(1,...mSales,...mRecv);
-  const cw=(W-padL-8)/12, bw=cw*0.36;
+/* ── SVG helpers (inline, offline-safe) ── */
+function svgBars(labels,a,b,colA,colB,ttlA,ttlB){
+  colA=colA||'#1A2E5A'; colB=colB||'#059669';
+  const n=labels.length,W=680,H=240,padL=46,padB=26,padT=14;
+  const max=Math.max(1,...a,...(b||[]));
+  const cw=(W-padL-8)/n, bw=b?cw*0.36:cw*0.6;
   let g='';
-  for(let t=0;t<=4;t++){ const v=max*t/4, y=H-padB-(H-padB-padT)*t/4;
+  for(let t=0;t<=4;t++){ const v=max*t/4,y=H-padB-(H-padB-padT)*t/4;
     g+=`<line x1="${padL}" y1="${y}" x2="${W-4}" y2="${y}" stroke="#EEE"/><text x="${padL-6}" y="${y+4}" text-anchor="end" font-size="10" fill="#999">${fmtSh(v)}</text>`; }
-  mSales.forEach((v,i)=>{ const x=padL+i*cw;
-    const h1=(H-padB-padT)*v/max, h2=(H-padB-padT)*mRecv[i]/max;
-    g+=`<rect x="${x+cw*0.08}" y="${H-padB-h1}" width="${bw}" height="${Math.max(h1,0.5)}" rx="2" fill="#1A2E5A"><title>${FY_MONTHS[i]} sales: ${fmt(v)}</title></rect>`;
-    g+=`<rect x="${x+cw*0.08+bw+2}" y="${H-padB-h2}" width="${bw}" height="${Math.max(h2,0.5)}" rx="2" fill="#059669"><title>${FY_MONTHS[i]} received: ${fmt(mRecv[i])}</title></rect>`;
-    g+=`<text x="${x+cw/2}" y="${H-8}" text-anchor="middle" font-size="10" fill="#777">${FY_MONTHS[i]}</text>`; });
+  a.forEach((v,i)=>{ const x=padL+i*cw, h1=(H-padB-padT)*v/max;
+    g+=`<rect x="${x+cw*0.08}" y="${H-padB-h1}" width="${bw}" height="${Math.max(h1,0.5)}" rx="2" fill="${colA}"><title>${labels[i]} ${ttlA||''}: ${fmt(v)}</title></rect>`;
+    if(b){ const h2=(H-padB-padT)*b[i]/max;
+      g+=`<rect x="${x+cw*0.08+bw+2}" y="${H-padB-h2}" width="${bw}" height="${Math.max(h2,0.5)}" rx="2" fill="${colB}"><title>${labels[i]} ${ttlB||''}: ${fmt(b[i])}</title></rect>`; }
+    g+=`<text x="${x+cw/2}" y="${H-8}" text-anchor="middle" font-size="10" fill="#777">${labels[i]}</text>`; });
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${g}</svg>`;
 }
-function svgLines(cur,prev,curLbl,prevLbl){
-  const W=680,H=220,padL=44,padB=24,padT=12;
+function svgLines(labels,cur,prev,curLbl,fmtFn){
+  const F=fmtFn||fmt;
+  const n=labels.length,W=680,H=220,padL=46,padB=24,padT=12;
   const max=Math.max(1,...cur,...(prev||[]));
-  const X=i=>padL+i*(W-padL-10)/11, Y=v=>H-padB-(H-padB-padT)*v/max;
+  const X=i=>padL+i*(W-padL-10)/(n-1||1), Y=v=>H-padB-(H-padB-padT)*v/max;
   let g='';
   for(let t=0;t<=4;t++){ const v=max*t/4,y=Y(v);
     g+=`<line x1="${padL}" y1="${y}" x2="${W-4}" y2="${y}" stroke="#EEE"/><text x="${padL-6}" y="${y+4}" text-anchor="end" font-size="10" fill="#999">${fmtSh(v)}</text>`; }
-  FY_MONTHS.forEach((m,i)=>g+=`<text x="${X(i)}" y="${H-6}" text-anchor="middle" font-size="10" fill="#777">${m}</text>`);
+  labels.forEach((m,i)=>g+=`<text x="${X(i)}" y="${H-6}" text-anchor="middle" font-size="10" fill="#777">${m}</text>`);
   if(prev) g+=`<polyline points="${prev.map((v,i)=>X(i)+','+Y(v)).join(' ')}" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/>`;
   g+=`<polyline points="${cur.map((v,i)=>X(i)+','+Y(v)).join(' ')}" fill="none" stroke="#1A2E5A" stroke-width="2.5"/>`;
-  cur.forEach((v,i)=>g+=`<circle cx="${X(i)}" cy="${Y(v)}" r="3" fill="#1A2E5A"><title>${FY_MONTHS[i]} ${curLbl}: ${fmt(v)}</title></circle>`);
+  cur.forEach((v,i)=>g+=`<circle cx="${X(i)}" cy="${Y(v)}" r="3.2" fill="#1A2E5A"><title>${labels[i]} ${curLbl||''}: ${F(v)}</title></circle>`);
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${g}</svg>`;
 }
-const PIE_COLORS=['#1A2E5A','#2563EB','#059669','#D97706','#DC2626','#7C3AED','#0891B2','#DB2777','#94A3B8'];
-function svgPie(slices){ // [{label,val}]
+const PIE_COLORS=['#1A2E5A','#2563EB','#059669','#D97706','#DC2626','#7C3AED','#0891B2','#DB2777','#65A30D','#0D9488','#94A3B8'];
+function svgPie(slices){
   const tot=slices.reduce((s,x)=>s+x.val,0)||1; const R=70,CX=85,CY=85;
   let a0=-Math.PI/2,g='';
   slices.forEach((s,i)=>{ const a1=a0+2*Math.PI*s.val/tot;
     const x0=CX+R*Math.cos(a0),y0=CY+R*Math.sin(a0),x1=CX+R*Math.cos(a1),y1=CY+R*Math.sin(a1);
     const big=(a1-a0)>Math.PI?1:0;
-    g+=`<path d="M${CX},${CY} L${x0.toFixed(1)},${y0.toFixed(1)} A${R},${R} 0 ${big} 1 ${x1.toFixed(1)},${y1.toFixed(1)} Z" fill="${PIE_COLORS[i%PIE_COLORS.length]}"><title>${esc(s.label)}: ${fmt(s.val)} (${Math.round(s.val/tot*100)}%)</title></path>`;
+    if(s.val>0) g+=`<path d="M${CX},${CY} L${x0.toFixed(1)},${y0.toFixed(1)} A${R},${R} 0 ${big} 1 ${x1.toFixed(1)},${y1.toFixed(1)} Z" fill="${PIE_COLORS[i%PIE_COLORS.length]}" stroke="#fff" stroke-width="1"><title>${esc(s.label)}: ${fmt(s.val)} (${Math.round(s.val/tot*100)}%)</title></path>`;
     a0=a1; });
-  const legend=slices.map((s,i)=>`<div style="display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:5px"><span style="width:11px;height:11px;border-radius:3px;background:${PIE_COLORS[i%PIE_COLORS.length]};flex-shrink:0"></span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.label)}</span><strong style="flex-shrink:0">${Math.round(s.val/tot*100)}%</strong></div>`).join('');
-  return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><svg viewBox="0 0 170 170" style="width:150px;height:150px;flex-shrink:0">${g}</svg><div style="flex:1;min-width:150px">${legend}</div></div>`;
+  const legend=slices.map((s,i)=>`<div style="display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:5px"><span style="width:11px;height:11px;border-radius:3px;background:${PIE_COLORS[i%PIE_COLORS.length]};flex-shrink:0"></span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.label)}</span><span style="color:#999;flex-shrink:0">${fmtSh(s.val)}</span><strong style="flex-shrink:0;width:36px;text-align:right">${Math.round(s.val/tot*100)}%</strong></div>`).join('');
+  return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><svg viewBox="0 0 170 170" style="width:150px;height:150px;flex-shrink:0">${g}</svg><div style="flex:1;min-width:160px">${legend}</div></div>`;
 }
+function svgHeatmap(fyYear,daily){
+  const start=new Date(fyYear,3,1), end=new Date(fyYear+1,2,31);
+  const max=Math.max(1,...Object.keys(daily).map(k=>daily[k].s));
+  const cell=11,gap=2,rows=7;
+  const startOffset=(start.getDay()+6)%7;  // Mon-first
+  const days=Math.round((end-start)/864e5)+1;
+  const weeks=Math.ceil((days+startOffset)/7);
+  let g='',monthLbls='';
+  let lastM=-1;
+  for(let i=0;i<days;i++){
+    const d=new Date(start.getTime()+i*864e5);
+    const key=d.toISOString().slice(0,10);
+    const col=Math.floor((i+startOffset)/7), row=(i+startOffset)%7;
+    const v=daily[key]||{s:0,r:0};
+    const lvl=v.s<=0?0:Math.min(4,1+Math.floor(v.s/max*3.999));
+    const cols=['#F1F3F6','#C7D6F2','#8FAEE3','#4A6FB8','#1A2E5A'];
+    g+=`<rect x="${col*(cell+gap)}" y="${row*(cell+gap)+14}" width="${cell}" height="${cell}" rx="2" fill="${cols[lvl]}"><title>${fmtD(key)} · Sales ${fmt(v.s)} · Received ${fmt(v.r)}</title></rect>`;
+    if(d.getMonth()!==lastM){ lastM=d.getMonth(); monthLbls+=`<text x="${col*(cell+gap)}" y="9" font-size="9" fill="#888">${FY_MONTHS[(d.getMonth()+9)%12]}</text>`; }
+  }
+  const W=weeks*(cell+gap);
+  return `<div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${rows*(cell+gap)+16}" style="min-width:${W}px;height:${rows*(cell+gap)+16}px">${monthLbls}${g}</svg></div>
+    <div style="font-size:10px;color:#999;margin-top:4px">Darker = higher sales that day. Hover any square for details.</div>`;
+}
+
+/* ── UI atoms ── */
+function repCard(t,v,sub,col){ return `<div style="flex:1;min-width:130px;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 13px"><div style="font-size:10.5px;color:#888;font-weight:600">${t}</div><div style="font-size:17px;font-weight:800;color:${col||'#1A2E5A'};margin-top:3px">${v}</div>${sub?`<div style="font-size:10.5px;color:#999;margin-top:2px">${sub}</div>`:''}</div>`; }
+function repSect(t,body,right){ return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-top:12px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap"><div style="font-size:13px;font-weight:800;color:#1A2E5A;flex:1">${t}</div>${right||''}</div>${body}</div>`; }
+const repTh=(t,align)=>`<th style="text-align:${align||'right'};padding:6px;color:#888;font-size:10.5px;white-space:nowrap">${t}</th>`;
+const repTd=(v,opts)=>`<td style="padding:7px 6px;text-align:${(opts&&opts.align)||'right'};${(opts&&opts.style)||''};white-space:nowrap">${v}</td>`;
+function growthCell(g){ return g==null?'<span style="color:#999">—</span>':`<span style="font-weight:700;color:${g>=0?'#059669':'#DC2626'}">${g>=0?'▲':'▼'} ${Math.abs(g).toFixed(1)}%</span>`; }
 
 function renderReports(){
   const el=document.getElementById('reports-content'); if(!el) return;
-  const fys=repData(); const years=Object.keys(fys).map(Number).sort((a,b)=>b-a);
-  if(!years.length){ el.innerHTML='<div style="text-align:center;padding:50px 20px;color:#999">No data yet.<br>Create challans and record payments to see reports.</div>'; return; }
-  if(repFY==null || !fys[repFY]) repFY=years[0];
-  const d=fys[repFY], prev=fys[repFY-1]||null;
-  const growth = prev&&prev.sales>0 ? ((d.sales-prev.sales)/prev.sales*100) : null;
+  const {chs,pays}=repSets();
+  const fys=repData(chs,pays);
+  const yearsAll=Object.keys(repData(S.challans,S.payments)).map(Number);   // unfiltered FY list
+  const curFYnow=fyOf(today());
+  if(yearsAll.indexOf(curFYnow)<0) yearsAll.push(curFYnow);
+  yearsAll.sort((a,b)=>b-a);
+  if(!S.challans.length && !S.payments.length){ el.innerHTML='<div style="text-align:center;padding:50px 20px;color:#999">No data yet.<br>Create challans and record payments to see reports.</div>'; return; }
+  if(repFY==null || yearsAll.indexOf(repFY)<0) repFY=yearsAll.indexOf(curFYnow)>=0?curFYnow:yearsAll[0];
+  const Z={sales:0,recv:0,bills:0,payN:0,qty:0,mSales:Array(12).fill(0),mRecv:Array(12).fill(0),mBills:Array(12).fill(0),mPayN:Array(12).fill(0),byParty:{},byPartyRecv:{},daily:{},wdS:Array(7).fill(0),wdR:Array(7).fill(0),modes:{},parties:{}};
+  const d=fys[repFY]||Z, prev=fys[repFY-1]||null;
+  const growth = prev&&prev.sales>0 ? (d.sales-prev.sales)/prev.sales*100 : null;
+
+  /* period bounds for averages: FY start .. min(today, FY end), respecting date-range filter */
+  const fyStart=new Date(repFY,3,1), fyEnd=new Date(repFY+1,2,31);
+  const from=repFrom?new Date(repFrom):fyStart, to=repTo?new Date(repTo):new Date(Math.min(Date.now(),fyEnd.getTime()));
+  const daysElapsed=Math.max(1,Math.round((Math.min(to,new Date())-Math.max(from,fyStart))/864e5)+1);
+  const monthsElapsed=Math.max(1,Math.min(12,Math.ceil(daysElapsed/30.4)));
+
+  /* outstanding (current, from the allocator — never stored) */
   const outstanding=S.parties.reduce((s,p)=>s+Math.max(0,getAlloc(p.id).partyBalance),0);
+  const pendingOnFY=chs.filter(c=>fyOf(c.date)===repFY).reduce((s,c)=>{const a=getAlloc(c.pid);return s+Math.max(0,(a.due&&a.due[c.id])||0);},0);
 
-  // top parties pie (top 7 + others)
+  /* new vs active parties */
+  const firstBill={};
+  S.challans.forEach(c=>{ if(!firstBill[c.pid]||c.date<firstBill[c.pid]) firstBill[c.pid]=c.date; });
+  const newParties=Object.keys(firstBill).filter(pid=>fyOf(firstBill[pid])===repFY && (!repParty||pid===repParty)).length;
+  const activeParties=Object.keys(d.parties).length;
+
+  /* ── summary cards ── */
+  const cards=[
+    repCard('TOTAL SALES · '+fyLbl(repFY), fmt(d.sales), d.bills+' challans'),
+    repCard('TOTAL COLLECTION', fmt(d.recv), d.payN+' payments'+(repSeason?' · not season-scoped':''), '#059669'),
+    repCard('CURRENT OUTSTANDING', fmt(outstanding), 'all-time, all parties', '#D97706'),
+    repCard('PENDING ON '+fyLbl(repFY)+' BILLS', fmt(pendingOnFY), 'due today on this FY\'s challans', '#DC2626'),
+    repCard('AVG DAILY SALES', fmt(Math.round(d.sales/daysElapsed)), daysElapsed+' days'),
+    repCard('AVG MONTHLY SALES', fmt(Math.round(d.sales/monthsElapsed)), monthsElapsed+' months'),
+    repCard('AVG BILL VALUE', fmt(d.bills?Math.round(d.sales/d.bills):0), ''),
+    repCard('TOTAL QTY SOLD', d.qty.toLocaleString('en-IN'), 'pieces'),
+    repCard('ACTIVE PARTIES', activeParties, 'billed this period'),
+    repCard('NEW PARTIES', newParties, 'first bill in '+fyLbl(repFY), '#2563EB'),
+    repCard('COLLECTION EFFICIENCY', (d.sales>0?Math.round(d.recv/d.sales*100):0)+'%', 'collection ÷ sales', '#059669'),
+    repCard('OUTSTANDING %', (d.sales>0?Math.round(pendingOnFY/d.sales*100):0)+'%', 'pending ÷ sales', '#D97706')
+  ].join('');
+
+  /* ── monthly table ── */
+  let mRows='',cumPend=0;
+  for(let i=0;i<12;i++){
+    if(!d.mSales[i]&&!d.mRecv[i]&&!d.mBills[i]) continue;
+    const gm=i>0&&d.mSales[i-1]>0?(d.mSales[i]-d.mSales[i-1])/d.mSales[i-1]*100:null;
+    const pend=chs.filter(c=>fyOf(c.date)===repFY&&fyMonthIdx(c.date)===i).reduce((s,c)=>{const a=getAlloc(c.pid);return s+Math.max(0,(a.due&&a.due[c.id])||0);},0);
+    cumPend+=pend;
+    mRows+=`<tr style="border-bottom:1px solid #F0F0F0">${repTd(FY_MONTHS[i]+' '+(i<9?repFY:repFY+1),{align:'left',style:'font-weight:700;color:#1A2E5A'})}${repTd(fmt(d.mSales[i]))}${repTd(fmt(d.mRecv[i]),{style:'color:#059669'})}${repTd(d.mBills[i])}${repTd(fmt(d.mBills[i]?Math.round(d.mSales[i]/d.mBills[i]):0))}${repTd(fmt(d.mPayN[i]?Math.round(d.mRecv[i]/d.mPayN[i]):0))}${repTd(growthCell(gm))}${repTd(fmt(pend),{style:'color:#D97706;font-weight:700'})}</tr>`;
+  }
+  const monthlyTable=`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+    <tr style="border-bottom:2px solid #E8E8E8">${repTh('MONTH','left')}${repTh('SALES')}${repTh('COLLECTION')}${repTh('BILLS')}${repTh('AVG BILL')}${repTh('AVG COLLECTION')}${repTh('GROWTH')}${repTh('PENDING NOW')}</tr>
+    ${mRows||'<tr><td colspan="8" style="padding:14px;text-align:center;color:#999">No data in this period.</td></tr>'}
+    ${mRows?`<tr style="border-top:2px solid #E8E8E8;font-weight:800;color:#1A2E5A">${repTd('TOTAL',{align:'left'})}${repTd(fmt(d.sales))}${repTd(fmt(d.recv),{style:'color:#059669'})}${repTd(d.bills)}${repTd(fmt(d.bills?Math.round(d.sales/d.bills):0))}${repTd(fmt(d.payN?Math.round(d.recv/d.payN):0))}${repTd(growthCell(growth))}${repTd(fmt(cumPend),{style:'color:#D97706'})}</tr>`:''}
+  </table></div>`;
+
+  /* ── trend graph ── */
+  const trendDefs={
+    sales:{lbl:'Sales',arr:d.mSales,F:fmt}, collection:{lbl:'Collection',arr:d.mRecv,F:fmt},
+    bills:{lbl:'No. of Challans',arr:d.mBills,F:v=>v+' bills'},
+    avgbill:{lbl:'Avg Bill',arr:d.mSales.map((v,i)=>d.mBills[i]?Math.round(v/d.mBills[i]):0),F:fmt},
+    avgdaily:{lbl:'Avg Daily Sale',arr:d.mSales.map((v,i)=>{const dim=new Date(i<9?repFY:repFY+1,(i+3)%12+1,0).getDate();return Math.round(v/dim);}),F:fmt},
+    pending:{lbl:'Pending (bills of that month)',arr:FY_MONTHS.map((_,i)=>chs.filter(c=>fyOf(c.date)===repFY&&fyMonthIdx(c.date)===i).reduce((s,c)=>{const a=getAlloc(c.pid);return s+Math.max(0,(a.due&&a.due[c.id])||0);},0)),F:fmt}
+  };
+  const tsel=Object.keys(trendDefs).map(k=>`<button class="btn sm ${repTrend===k?'pri':''}" onclick="repTrend='${k}';renderReports()" style="font-size:11px">${trendDefs[k].lbl}</button>`).join('');
+  const T=trendDefs[repTrend]||trendDefs.sales;
+  const prevArr=prev?(repTrend==='sales'?prev.mSales:repTrend==='collection'?prev.mRecv:null):null;
+
+  /* ── FY comparison ── */
+  const cmpYears=yearsAll.slice().sort((a,b)=>a-b).filter(y=>fys[y]);
+  const fyCmpRows=cmpYears.slice().reverse().map(y=>{const f=fys[y],pv=fys[y-1];
+    const g=pv&&pv.sales>0?(f.sales-pv.sales)/pv.sales*100:null;
+    return `<tr style="border-bottom:1px solid #F0F0F0">${repTd(fyLbl(y),{align:'left',style:'font-weight:700;color:#1A2E5A'})}${repTd(fmt(f.sales))}${repTd(fmt(f.recv),{style:'color:#059669'})}${repTd(f.bills)}${repTd(fmt(f.bills?Math.round(f.sales/f.bills):0))}${repTd((f.sales>0?Math.round(f.recv/f.sales*100):0)+'%')}${repTd(growthCell(g))}</tr>`;}).join('');
+  const fyCmpGraph=cmpYears.length?svgBars(cmpYears.map(fyLbl),cmpYears.map(y=>fys[y].sales),cmpYears.map(y=>fys[y].recv),'#1A2E5A','#059669','sales','collection'):'';
+
+  /* ── month comparison ── */
+  const mcSel=`<select onchange="repMonthCmp=+this.value;renderReports()" style="padding:6px 9px;border:1.5px solid #DDD;border-radius:8px;font-size:12px;font-weight:700;color:#1A2E5A">${FY_MONTHS.map((m,i)=>`<option value="${i}" ${i===repMonthCmp?'selected':''}>${m}</option>`).join('')}</select>`;
+  const mi=repMonthCmp;
+  const mcRows=cmpYears.slice().reverse().map(y=>{const f=fys[y],pv=fys[y-1];
+    const g=pv&&pv.mSales[mi]>0?(f.mSales[mi]-pv.mSales[mi])/pv.mSales[mi]*100:null;
+    return `<tr style="border-bottom:1px solid #F0F0F0">${repTd(FY_MONTHS[mi]+' '+(mi<9?y:y+1),{align:'left',style:'font-weight:700;color:#1A2E5A'})}${repTd(fmt(f.mSales[mi]))}${repTd(fmt(f.mRecv[mi]),{style:'color:#059669'})}${repTd(f.mBills[mi])}${repTd(fmt(f.mBills[mi]?Math.round(f.mSales[mi]/f.mBills[mi]):0))}${repTd(growthCell(g))}</tr>`;}).join('');
+
+  /* ── party analytics ── */
+  const pStats=Object.keys(Object.assign({},d.byParty,d.byPartyRecv)).map(pid=>{
+    const p=S.parties.find(x=>x.id===pid);
+    const sales=d.byParty[pid]||0, recv=d.byPartyRecv[pid]||0;
+    const bills=chs.filter(c=>c.pid===pid&&fyOf(c.date)===repFY).length;
+    const out=p?Math.max(0,getAlloc(pid).partyBalance):0;
+    const prevSales=prev?(prev.byParty[pid]||0):0;
+    return {pid,name:p?p.name:'(deleted)',sales,recv,bills,out,eff:sales>0?recv/sales*100:(recv>0?100:0),avg:bills?sales/bills:0,growth:prevSales>0?(sales-prevSales)/prevSales*100:null};
+  });
+  const lastBillDate={}; S.challans.forEach(c=>{ if(!lastBillDate[c.pid]||c.date>lastBillDate[c.pid]) lastBillDate[c.pid]=c.date; });
+  const inactive=S.parties.filter(p=>lastBillDate[p.id]&&fyOf(lastBillDate[p.id])<repFY).map(p=>({pid:p.id,name:p.name,sales:0,recv:d.byPartyRecv[p.id]||0,bills:0,out:Math.max(0,getAlloc(p.id).partyBalance),eff:0,avg:0,growth:null,last:lastBillDate[p.id]}));
+  const pModes={sales:{lbl:'Top by Sales',rows:pStats.filter(x=>x.sales>0).sort((a,b)=>b.sales-a.sales)},
+    collection:{lbl:'Top by Collection',rows:pStats.filter(x=>x.recv>0).sort((a,b)=>b.recv-a.recv)},
+    outstanding:{lbl:'Highest Outstanding',rows:pStats.filter(x=>x.out>0).sort((a,b)=>b.out-a.out)},
+    fast:{lbl:'Fast Paying (best collection %)',rows:pStats.filter(x=>x.sales>0).sort((a,b)=>b.eff-a.eff)},
+    slow:{lbl:'Slow Paying (worst collection %)',rows:pStats.filter(x=>x.sales>0).sort((a,b)=>a.eff-b.eff)},
+    growthp:{lbl:'Highest Growth',rows:pStats.filter(x=>x.growth!=null).sort((a,b)=>b.growth-a.growth)},
+    inactive:{lbl:'Inactive (no bill this FY)',rows:inactive.sort((a,b)=>b.out-a.out)}};
+  const pSel=Object.keys(pModes).map(k=>`<button class="btn sm ${repPartyMode===k?'pri':''}" onclick="repPartyMode='${k}';renderReports()" style="font-size:11px">${pModes[k].lbl.split(' (')[0]}</button>`).join('');
+  const PM=pModes[repPartyMode]||pModes.sales;
+  const pRows=PM.rows.slice(0,15).map(x=>`<tr style="border-bottom:1px solid #F0F0F0">
+    ${repTd(esc(x.name)+(x.last?` <span style="color:#999;font-size:10px">last: ${fmtD(x.last)}</span>`:''),{align:'left',style:'font-weight:600;color:#1A2E5A;max-width:150px;overflow:hidden;text-overflow:ellipsis'})}
+    ${repTd(fmt(x.sales))}${repTd(fmt(x.recv),{style:'color:#059669'})}${repTd(fmt(x.out),{style:'color:#D97706'})}${repTd(Math.round(x.eff)+'%')}${repTd(x.bills)}${repTd(fmt(Math.round(x.avg)))}${repTd(growthCell(x.growth))}</tr>`).join('');
+  const partyTable=`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+    <tr style="border-bottom:2px solid #E8E8E8">${repTh('PARTY','left')}${repTh('SALES')}${repTh('COLLECTION')}${repTh('OUTSTANDING')}${repTh('COLL %')}${repTh('BILLS')}${repTh('AVG BILL')}${repTh('GROWTH')}</tr>
+    ${pRows||'<tr><td colspan="8" style="padding:14px;text-align:center;color:#999">Nothing to show.</td></tr>'}</table></div>`;
+
+  /* ── party pie (top 10 + others) ── */
   const byP=Object.keys(d.byParty).map(pid=>({label:(S.parties.find(p=>p.id===pid)||{}).name||'(deleted)',val:d.byParty[pid]})).sort((a,b)=>b.val-a.val);
-  const top=byP.slice(0,7); const rest=byP.slice(7).reduce((s,x)=>s+x.val,0);
-  if(rest>0) top.push({label:'Others ('+(byP.length-7)+')',val:rest});
+  const topP=byP.slice(0,10); const restP=byP.slice(10).reduce((s,x)=>s+x.val,0);
+  if(restP>0) topP.push({label:'Others ('+(byP.length-10)+')',val:restP});
 
-  const card=(t,v,sub,col)=>`<div style="flex:1;min-width:140px;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:13px 14px"><div style="font-size:11px;color:#888;font-weight:600">${t}</div><div style="font-size:19px;font-weight:800;color:${col||'#1A2E5A'};margin-top:3px">${v}</div>${sub?`<div style="font-size:11px;color:#999;margin-top:2px">${sub}</div>`:''}</div>`;
-  const sect=(t,body)=>`<div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-top:12px"><div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">${t}</div>${body}</div>`;
+  /* ── outstanding aging (all-time, allocator due per challan) ── */
+  const buckets=[{lbl:'0–30 days',a:0,p:{}},{lbl:'31–60 days',a:0,p:{}},{lbl:'61–90 days',a:0,p:{}},{lbl:'90+ days',a:0,p:{}}];
+  const now=Date.now();
+  S.challans.forEach(c=>{ const al=getAlloc(c.pid); const due=Math.max(0,(al.due&&al.due[c.id])||0); if(due<=0.01) return;
+    const age=Math.floor((now-new Date(c.date).getTime())/864e5);
+    const b=age<=30?0:age<=60?1:age<=90?2:3;
+    buckets[b].a+=due; buckets[b].p[c.pid]=1; });
+  const agTot=buckets.reduce((s,b)=>s+b.a,0)||1;
+  const agingRows=buckets.map((b,i)=>`<tr style="border-bottom:1px solid #F0F0F0">${repTd(b.lbl,{align:'left',style:'font-weight:700;color:'+['#059669','#D97706','#EA580C','#DC2626'][i]})}${repTd(fmt(b.a))}${repTd(Math.round(b.a/agTot*100)+'%')}${repTd(Object.keys(b.p).length)}</tr>`).join('');
+  const agingBar=`<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;margin-bottom:10px">${buckets.map((b,i)=>b.a>0?`<div style="width:${b.a/agTot*100}%;background:${['#059669','#D97706','#EA580C','#DC2626'][i]}" title="${b.lbl}: ${fmt(b.a)}"></div>`:'').join('')}</div>`;
 
-  const yearRows=years.map(y=>{ const f=fys[y], pv=fys[y-1];
-    const g=pv&&pv.sales>0?((f.sales-pv.sales)/pv.sales*100):null;
-    return `<tr style="border-bottom:1px solid #F0F0F0">
-      <td style="padding:8px 6px;font-weight:700;color:#1A2E5A">${fyLbl(y)}</td>
-      <td style="padding:8px 6px;text-align:right">${fmt(f.sales)}</td>
-      <td style="padding:8px 6px;text-align:right;color:#059669">${fmt(f.recv)}</td>
-      <td style="padding:8px 6px;text-align:right">${f.bills}</td>
-      <td style="padding:8px 6px;text-align:right;font-weight:700;color:${g==null?'#999':g>=0?'#059669':'#DC2626'}">${g==null?'—':(g>=0?'▲ ':'▼ ')+Math.abs(g).toFixed(1)+'%'}</td></tr>`; }).join('');
+  /* ── item analytics ── */
+  const items={};
+  chs.filter(c=>fyOf(c.date)===repFY).forEach(c=>(c.items||[]).forEach(it=>{
+    const k=String(it.name||'').trim().toLowerCase(); if(!k) return;
+    const o=items[k]=items[k]||{name:it.name,qty:0,rev:0,n:0};
+    o.qty+=(+it.qty||0); o.rev+=(+it.amount||(+it.qty||0)*(+it.rate||0)); o.n++; }));
+  const itemArr=Object.values(items);
+  const topQty=itemArr.slice().sort((a,b)=>b.qty-a.qty).slice(0,10);
+  const topRev=itemArr.slice().sort((a,b)=>b.rev-a.rev).slice(0,10);
+  const topFrq=itemArr.slice().sort((a,b)=>b.n-a.n).slice(0,5);
+  const itemRows=topRev.map(x=>`<tr style="border-bottom:1px solid #F0F0F0">${repTd(esc(x.name),{align:'left',style:'font-weight:600;color:#1A2E5A'})}${repTd(x.qty.toLocaleString('en-IN'))}${repTd(fmt(x.rev))}${repTd(fmt(x.qty?Math.round(x.rev/x.qty):0))}${repTd(x.n)}</tr>`).join('');
+  const itemGraph=topRev.length?svgBars(topRev.map(x=>x.name.length>8?x.name.slice(0,7)+'…':x.name),topRev.map(x=>x.rev),null,'#1A2E5A',null,'revenue'):'';
+  const itemTable=`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+    <tr style="border-bottom:2px solid #E8E8E8">${repTh('ITEM','left')}${repTh('QTY SOLD')}${repTh('REVENUE')}${repTh('AVG PRICE')}${repTh('TIMES SOLD')}</tr>
+    ${itemRows||'<tr><td colspan="5" style="padding:14px;text-align:center;color:#999">No item data in this period.</td></tr>'}</table></div>
+    ${topQty.length?`<div style="font-size:11px;color:#888;margin-top:8px"><strong>Top by quantity:</strong> ${topQty.slice(0,5).map(x=>esc(x.name)+' ('+x.qty.toLocaleString('en-IN')+')').join(' · ')}</div>`:''}
+    ${topFrq.length?`<div style="font-size:11px;color:#888;margin-top:4px"><strong>Most frequently sold:</strong> ${topFrq.map(x=>esc(x.name)+' ('+x.n+'×)').join(' · ')}</div>`:''}`;
 
-  el.innerHTML=`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-      <div style="font-size:15px;font-weight:800;color:#1A2E5A;flex:1">📊 Business Report</div>
-      <select onchange="repFY=+this.value;renderReports()" style="padding:8px 10px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;font-weight:700;color:#1A2E5A">
-        ${years.map(y=>`<option value="${y}" ${y===repFY?'selected':''}>${fyLbl(y)}</option>`).join('')}
-      </select>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${card('TOTAL SALES · '+fyLbl(repFY), fmt(d.sales), d.bills+' challans')}
-      ${card('RECEIVED · '+fyLbl(repFY), fmt(d.recv), d.sales>0?Math.round(d.recv/d.sales*100)+'% of sales':'', '#059669')}
-      ${card('GROWTH vs '+(prev?fyLbl(repFY-1):'—'), growth==null?'—':(growth>=0?'▲ ':'▼ ')+Math.abs(growth).toFixed(1)+'%', prev?'prev sales '+fmtSh(prev.sales):'no previous year', growth==null?'#999':growth>=0?'#059669':'#DC2626')}
-      ${card('CURRENT OUTSTANDING', fmt(outstanding), 'all-time, across all parties', '#D97706')}
-    </div>
-    ${sect('Month-wise Performance · '+fyLbl(repFY)+' <span style="font-weight:600;color:#888;font-size:11px">&nbsp;■ <span style="color:#1A2E5A">Sales</span> &nbsp;<span style="color:#059669">■ Received</span></span>', svgBars(d.mSales,d.mRecv))}
-    ${sect('Sales Comparison: '+fyLbl(repFY)+(prev?' vs '+fyLbl(repFY-1)+' <span style="font-weight:600;color:#888;font-size:11px">&nbsp;— current &nbsp;<span style="color:#94A3B8">- - previous</span></span>':''), svgLines(d.mSales, prev?prev.mSales:null, fyLbl(repFY), prev?fyLbl(repFY-1):''))}
-    ${sect('Party-wise Sales Share · '+fyLbl(repFY), top.length?svgPie(top):'<div style="color:#999;font-size:12px">No sales this year.</div>')}
-    ${sect('Yearly Report (Fiscal Years)', `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <tr style="border-bottom:2px solid #E8E8E8;color:#888;font-size:11px"><th style="text-align:left;padding:6px">YEAR</th><th style="text-align:right;padding:6px">SALES</th><th style="text-align:right;padding:6px">RECEIVED</th><th style="text-align:right;padding:6px">CHALLANS</th><th style="text-align:right;padding:6px">GROWTH</th></tr>
-      ${yearRows}</table></div>`)}`;
+  /* ── weekday analysis ── */
+  const WD=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const wdCount=Array(7).fill(0);
+  for(let t=Math.max(from,fyStart).getTime();t<=Math.min(to,fyEnd).getTime();t+=864e5) wdCount[(new Date(t).getDay()+6)%7]++;
+  const wdAvgS=d.wdS.map((v,i)=>wdCount[i]?Math.round(v/wdCount[i]):0);
+  const wdAvgR=d.wdR.map((v,i)=>wdCount[i]?Math.round(v/wdCount[i]):0);
+
+  /* ── payment modes pie ── */
+  const modeSlices=Object.keys(d.modes).sort((a,b)=>d.modes[b]-d.modes[a]).map(m=>({label:m,val:d.modes[m]}));
+
+  /* ── yearly summary table ── */
+  const yFysAll=repData(S.challans,S.payments);
+  const yRows=Object.keys(yFysAll).map(Number).sort((a,b)=>b-a).map(y=>{const f=yFysAll[y],pv=yFysAll[y-1];
+    const g=pv&&pv.sales>0?(f.sales-pv.sales)/pv.sales*100:null;
+    const yDays=(y===curFYnow)?Math.max(1,Math.round((Date.now()-new Date(y,3,1))/864e5)+1):365;
+    const yMon=(y===curFYnow)?Math.max(1,Math.ceil(yDays/30.4)):12;
+    return `<tr style="border-bottom:1px solid #F0F0F0">${repTd(fyLbl(y)+(y===curFYnow?' <span style="font-size:9px;color:#059669;font-weight:800">CURRENT</span>':y>curFYnow?' <span style="font-size:9px;color:#2563EB;font-weight:800">UPCOMING</span>':' <span style="font-size:9px;color:#999;font-weight:700">ARCHIVED</span>'),{align:'left',style:'font-weight:700;color:#1A2E5A'})}${repTd(fmt(f.sales))}${repTd(fmt(f.recv),{style:'color:#059669'})}${repTd(f.bills)}${repTd(fmt(Math.round(f.sales/yDays)))}${repTd(fmt(Math.round(f.sales/yMon)))}${repTd(fmt(f.bills?Math.round(f.sales/f.bills):0))}${repTd((f.sales>0?Math.round(f.recv/f.sales*100):0)+'%')}${repTd(growthCell(g))}</tr>`;}).join('');
+
+  /* ── filter bar ── */
+  const filterBar=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+    <div style="font-size:15px;font-weight:800;color:#1A2E5A;flex:1;min-width:150px">📊 Reports &amp; Analytics</div>
+    <select onchange="repFY=+this.value;renderReports()" style="padding:8px 10px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;font-weight:700;color:#1A2E5A">${yearsAll.map(y=>`<option value="${y}" ${y===repFY?'selected':''}>${fyLbl(y)}${y===curFYnow?' (current)':''}</option>`).join('')}</select>
+    <select onchange="repSeason=this.value;renderReports()" style="padding:8px 10px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;color:#1A2E5A"><option value="">All seasons</option>${(S.seasons||[]).map(s=>`<option value="${esc(s)}" ${s===repSeason?'selected':''}>${esc(s)}</option>`).join('')}</select>
+    <button class="btn sm" onclick="openSeasons()" style="font-size:11px">🗓️ Manage</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+    <select onchange="repParty=this.value;renderReports()" style="padding:7px 9px;border:1.5px solid #DDD;border-radius:8px;font-size:12px;flex:1;min-width:130px"><option value="">All parties</option>${[...S.parties].sort((a,b)=>a.name.localeCompare(b.name)).map(p=>`<option value="${p.id}" ${p.id===repParty?'selected':''}>${esc(p.name)}</option>`).join('')}</select>
+    <input type="date" value="${repFrom}" onchange="repFrom=this.value;renderReports()" style="padding:7px;border:1.5px solid #DDD;border-radius:8px;font-size:12px" title="From date">
+    <input type="date" value="${repTo}" onchange="repTo=this.value;renderReports()" style="padding:7px;border:1.5px solid #DDD;border-radius:8px;font-size:12px" title="To date">
+    ${(repSeason||repParty||repFrom||repTo)?`<button class="btn sm red" onclick="repSeason='';repParty='';repFrom='';repTo='';renderReports()" style="font-size:11px">✕ Clear</button>`:''}
+    <span style="flex:1"></span>
+    <button class="btn sm" onclick="exportReportPrint()" style="font-size:11px">🖨️ Print / PDF</button>
+    <button class="btn sm" onclick="exportReportCSV()" style="font-size:11px">📥 Excel (CSV)</button>
+  </div>`;
+
+  el.innerHTML=filterBar
+    +`<div style="display:flex;gap:8px;flex-wrap:wrap">${cards}</div>`
+    +repSect('Monthly Performance · '+fyLbl(repFY)+(repSeason?' · '+esc(repSeason):''), monthlyTable)
+    +repSect('Sales Trend · '+fyLbl(repFY), `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${tsel}</div>`+svgLines(FY_MONTHS,T.arr,prevArr,T.lbl,T.F)+(prevArr?`<div style="font-size:10px;color:#999;margin-top:4px">— ${fyLbl(repFY)} &nbsp; - - ${fyLbl(repFY-1)}</div>`:''))
+    +repSect('Fiscal Year Comparison', fyCmpGraph+`<div style="overflow-x:auto;margin-top:10px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="border-bottom:2px solid #E8E8E8">${repTh('YEAR','left')}${repTh('SALES')}${repTh('COLLECTION')}${repTh('BILLS')}${repTh('AVG BILL')}${repTh('COLL EFF')}${repTh('GROWTH')}</tr>${fyCmpRows}</table></div>`)
+    +repSect('Month Comparison Across Years', `<div style="margin-bottom:10px">${mcSel}</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="border-bottom:2px solid #E8E8E8">${repTh('MONTH','left')}${repTh('SALES')}${repTh('COLLECTION')}${repTh('BILLS')}${repTh('AVG BILL')}${repTh('GROWTH YoY')}</tr>${mcRows||'<tr><td colspan="6" style="padding:12px;text-align:center;color:#999">No data.</td></tr>'}</table></div>`)
+    +repSect('Party Analytics · '+PM.lbl, `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${pSel}</div>`+partyTable)
+    +repSect('Party-wise Sales Share · '+fyLbl(repFY), topP.length?svgPie(topP):'<div style="color:#999;font-size:12px">No sales this period.</div>')
+    +repSect('Outstanding Ageing (all-time)', agingBar+`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="border-bottom:2px solid #E8E8E8">${repTh('AGE','left')}${repTh('AMOUNT')}${repTh('SHARE')}${repTh('PARTIES')}</tr>${agingRows}</table></div>`)
+    +repSect('Item Analytics · '+fyLbl(repFY), (itemGraph?itemGraph:'')+itemTable)
+    +repSect('Daily Sales Heatmap · '+fyLbl(repFY), svgHeatmap(repFY,d.daily))
+    +repSect('Weekly Pattern (avg per day) · '+fyLbl(repFY), svgBars(WD,wdAvgS,wdAvgR,'#1A2E5A','#059669','avg sales','avg collection')+`<div style="font-size:10px;color:#999;margin-top:4px">■ Avg sales &nbsp; <span style="color:#059669">■ Avg collection</span> — per occurrence of that weekday in the period.</div>`)
+    +repSect('Payment Modes · '+fyLbl(repFY), modeSlices.length?svgPie(modeSlices):'<div style="color:#999;font-size:12px">No payments this period.</div>')
+    +repSect('Yearly Summary (Fiscal Years)', `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="border-bottom:2px solid #E8E8E8">${repTh('YEAR','left')}${repTh('SALES')}${repTh('COLLECTION')}${repTh('BILLS')}${repTh('AVG DAILY')}${repTh('AVG MONTHLY')}${repTh('AVG BILL')}${repTh('COLL EFF')}${repTh('GROWTH')}</tr>${yRows}</table></div>
+      <div style="font-size:10.5px;color:#999;margin-top:8px">Fiscal years are derived automatically from challan dates (Apr–Mar). New fiscal years appear automatically — old years stay fully accessible above. Nothing to create or archive manually.</div>`);
+}
+
+/* ── exports ── */
+function exportReportPrint(){
+  const el=document.getElementById('reports-content'); if(!el) return;
+  const w=window.open('','_blank');
+  w.document.write(`<html><head><title>Business Report — ${fyLbl(repFY)}</title><style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#222;padding:24px;max-width:900px;margin:0 auto}
+    table{border-collapse:collapse}td,th{border-bottom:1px solid #E8E8E8}
+    button,select,input{display:none!important}
+    svg{max-width:100%}
+    @media print{.no-print{display:none}}
+  </style></head><body>
+  <div style="border-bottom:3px solid #1A2E5A;padding-bottom:10px;margin-bottom:16px">
+    <div style="font-size:20px;font-weight:800;color:#1A2E5A">Modrobe Impex — Business Report</div>
+    <div style="font-size:12px;color:#666">${fyLbl(repFY)}${repSeason?' · '+esc(repSeason):''}${repParty?' · '+esc((S.parties.find(p=>p.id===repParty)||{}).name||''):''} · Generated ${fmtD(today())}</div>
+  </div>${el.innerHTML}
+  <script>window.onload=function(){window.print();}<\/script></body></html>`);
+  w.document.close();
+}
+function exportReportCSV(){
+  const {chs,pays}=repSets(); const fys=repData(chs,pays);
+  const Zc={sales:0,recv:0,bills:0,payN:0,qty:0,mSales:Array(12).fill(0),mRecv:Array(12).fill(0),mBills:Array(12).fill(0),mPayN:Array(12).fill(0),byParty:{},byPartyRecv:{}};
+  const d=fys[repFY]||Zc;
+  const q=s=>'"'+String(s).replace(/"/g,'""')+'"';
+  let csv='Business Report,'+fyLbl(repFY)+(repSeason?','+repSeason:'')+'\n\n';
+  csv+='MONTHLY PERFORMANCE\nMonth,Sales,Collection,Bills,Avg Bill\n';
+  for(let i=0;i<12;i++){ if(!d.mSales[i]&&!d.mRecv[i]&&!d.mBills[i]) continue;
+    csv+=[q(FY_MONTHS[i]+' '+(i<9?repFY:repFY+1)),d.mSales[i],d.mRecv[i],d.mBills[i],d.mBills[i]?Math.round(d.mSales[i]/d.mBills[i]):0].join(',')+'\n'; }
+  csv+='Total,'+d.sales+','+d.recv+','+d.bills+','+(d.bills?Math.round(d.sales/d.bills):0)+'\n\n';
+  csv+='PARTY-WISE ('+fyLbl(repFY)+')\nParty,Sales,Collection,Current Outstanding\n';
+  Object.keys(d.byParty).sort((a,b)=>(d.byParty[b]||0)-(d.byParty[a]||0)).forEach(pid=>{
+    const p=S.parties.find(x=>x.id===pid);
+    csv+=[q(p?p.name:'(deleted)'),d.byParty[pid]||0,d.byPartyRecv[pid]||0,p?Math.max(0,Math.round(getAlloc(pid).partyBalance)):0].join(',')+'\n'; });
+  csv+='\nYEARLY SUMMARY\nFiscal Year,Sales,Collection,Bills,Avg Bill,Collection %\n';
+  const all=repData(S.challans,S.payments);
+  Object.keys(all).map(Number).sort((a,b)=>b-a).forEach(y=>{const f=all[y];
+    csv+=[q(fyLbl(y)),f.sales,f.recv,f.bills,f.bills?Math.round(f.sales/f.bills):0,f.sales>0?Math.round(f.recv/f.sales*100):0].join(',')+'\n'; });
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='report_'+fyLbl(repFY).replace(/\s/g,'_')+'.csv'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
 }
 
 function renderTrash() {
@@ -3078,6 +3399,7 @@ function openEditChallan(cid) {
   const sel = document.getElementById('ec-party');
   sel.innerHTML = S.parties.map(p=>`<option value="${p.id}"${p.id===c.pid?' selected':''}>${esc(p.name)}</option>`).join('');
   document.getElementById('ec-date').value = c.date;
+  document.getElementById('ec-season').innerHTML = seasonOptions(c.season||'');
   document.getElementById('ec-rmk').value  = c.remarks || '';
   document.getElementById('ec-subtitle').textContent = c.num + ' — ' + (S.parties.find(p=>p.id===c.pid)?.name || c.pname);
   const container = document.getElementById('ec-item-rows');
@@ -3143,6 +3465,7 @@ function saveEditChallan() {
   c.pid     = newPid;
   c.pname   = S.parties.find(p=>p.id===newPid)?.name || c.pname;
   c.date    = newDate;
+  c.season  = document.getElementById('ec-season').value||'';
   c.remarks = newRmk;
   c.items   = items;
   c.freight = +document.getElementById('ec-freight').value||0;
