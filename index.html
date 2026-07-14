@@ -328,6 +328,11 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
     </div>
   </div>
 
+  <!-- ITEM MASTER -->
+  <div class="cscreen" id="cs-items">
+    <div id="items-content" style="padding-bottom:20px"></div>
+  </div>
+
   <!-- REPORTS -->
   <div class="cscreen" id="cs-reports">
     <div id="reports-content" style="padding-bottom:20px"></div>
@@ -419,6 +424,7 @@ input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
+  <div class="umi" onclick="goTab('items');closeMenu()">📦 Item Master</div>
   <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
@@ -710,7 +716,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'' };
+let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'' };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1546,7 +1552,7 @@ const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
 function saveLocal(){
   try{ localStorage.setItem(LS_KEY(), JSON.stringify({
     parties:S.parties, challans:S.challans, payments:S.payments,
-    settlements:S.settlements, overrides:S.overrides, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
+    settlements:S.settlements, overrides:S.overrides, items:S.items, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
     seasons:S.seasons, curSeason:S.curSeason
   })); }catch(e){}
 }
@@ -1554,7 +1560,7 @@ function loadLocal(){
   try{ var raw=localStorage.getItem(LS_KEY()); if(!raw) return false;
     var d=JSON.parse(raw);
     S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
-    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.trash=d.trash||[];
+    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||''; return true;
   }catch(e){ return false; }
@@ -1576,8 +1582,8 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{} };
-let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null;
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{} };
+let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
@@ -1669,12 +1675,17 @@ function attachDataListeners(){
     invalidateAllAlloc();
     markLoaded(snap.metadata);
   }, err=>onSubErr('overrides',err));
+  _subItems = _col('items').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.items = snap.docs.map(d=>d.data());
+    _lastSaved.items = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('items',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -1716,6 +1727,7 @@ function saveToCloud() {
     // (Old settlement docs remain untouched in Firestore as a backup. Rollback: restore this line
     //  + the legacy recomputeParty body.)  Only manual OVERRIDES are persisted now.
     diffWrite('overrides',   S.overrides,   _lastSaved.overrides,   overrideId);
+    diffWrite('items',       S.items,       _lastSaved.items,       x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'' };
@@ -1747,7 +1759,9 @@ function diffWrite(coll, arr, lastIndex, keyFn){
     if (!(id in nowIndex)) _col(coll).doc(String(id)).delete().catch(e=>console.warn(coll+' delete deferred:', e&&e.code));
   });
   Object.keys(lastIndex).forEach(k=>{ delete lastIndex[k]; });
-  Object.assign(lastIndex, nowIndex);
+  // Baseline must be SNAPSHOTS, not live references — otherwise an in-place edit mutates the
+  // baseline too, the JSON diff sees "no change", and the write is silently skipped.
+  Object.assign(lastIndex, JSON.parse(JSON.stringify(nowIndex)));
 }
 
 /* One-time migration from the old single-doc (appdata/main) layout. Calls done() when finished.
@@ -1823,6 +1837,7 @@ function renderAll() {
   if (curTab==='challans') renderChallans();
   if (curTab==='daybook')  renderDaybook();
   if (curTab==='reports')  renderReports();
+  if (curTab==='items')    renderItems();
   if (curTab==='trash')    renderTrash();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
@@ -1838,13 +1853,14 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   const nt=document.getElementById('nt-'+tab); if(nt) nt.classList.add('on');   // reports has no bottom-nav tab
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports') ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
     tab==='challans' ? '📋 Challans' :
     tab==='daybook'  ? '📅 Daybook' :
-    tab==='reports'  ? '📊 Reports' : '🗑️ Recycle Bin';
+    tab==='reports'  ? '📊 Reports' :
+    tab==='items'    ? '📦 Item Master' : '🗑️ Recycle Bin';
   renderAll();
 }
 
@@ -2121,6 +2137,7 @@ function addItemRow() {
   const div=document.createElement('div');
   div.className='icard'; div.id=id;
   div.innerHTML=`<button class="deli" onclick="document.getElementById('${id}').remove();calcTotal()">✕</button>
+    ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',false)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
     <input type="text" placeholder="Item name e.g. Lower, Kurta" oninput="calcTotal()">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" oninput="calcItem('${id}')"></div>
@@ -2527,6 +2544,107 @@ function delSeason(name){
   if(S.curSeason===name) S.curSeason=S.seasons[0]||'';
   saveToCloud(); renderSeasonList();
 }
+
+/* ══════════════════════════════
+   ITEM MASTER
+   Items (name, code, default rate) live in their own synced `items` collection. Challans always
+   SNAPSHOT item values at save time — changing the Item Master later NEVER modifies saved challans.
+══════════════════════════════ */
+let itemSearch='', itemEditId=null;
+
+function normIName(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function findDupItem(name, excludeId){
+  const n=normIName(name); if(!n) return null;
+  return (S.items||[]).find(it=>it && it.id!==excludeId && normIName(it.name)===n) || null;
+}
+/* Recently-used ordering: derived from challans (latest challan date containing the item name). */
+function itemsByRecency(){
+  const lastUsed={};
+  S.challans.forEach(c=>(c.items||[]).forEach(it=>{
+    const k=normIName(it.name); if(!k) return;
+    if(!lastUsed[k]||c.date>lastUsed[k]) lastUsed[k]=c.date; }));
+  return (S.items||[]).slice().sort((a,b)=>{
+    const la=lastUsed[normIName(a.name)]||'', lb=lastUsed[normIName(b.name)]||'';
+    return lb.localeCompare(la) || a.name.localeCompare(b.name);
+  });
+}
+function itemOptions(){
+  return '<option value="">— pick item —</option>'+itemsByRecency().map(it=>
+    `<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('');
+}
+
+function renderItems(){
+  const el=document.getElementById('items-content'); if(!el) return;
+  const q=normIName(itemSearch);
+  const list=(S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name))
+    .filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code).includes(q));
+  const ed=itemEditId?S.items.find(x=>x.id===itemEditId):null;
+  el.innerHTML=`
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">${ed?'✏️ Edit Item':'➕ Add Item'}</div>
+      <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" value="${ed?esc(ed.name):''}"></div>
+      <div class="fr">
+        <div><label>Item Code</label><input id="im-code" placeholder="e.g. CK101" value="${ed?esc(ed.code||''):''}"></div>
+        <div><label>Default Rate (Rs.) *</label><input id="im-rate" type="number" inputmode="decimal" placeholder="0" value="${ed?(+ed.rate||''):''}"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        ${ed?'<button class="btn" style="flex:1;justify-content:center" onclick="itemEditId=null;renderItems()">Cancel</button>':''}
+        <button class="btn pri" style="flex:1;justify-content:center" onclick="itemFormSave()">✓ ${ed?'Save Changes':'Add Item'}</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input placeholder="🔍 Search by name or code…" value="${esc(itemSearch)}" oninput="itemSearch=this.value;renderItems();this.focus();this.setSelectionRange(this.value.length,this.value.length)" style="flex:1">
+      <span style="font-size:11px;color:#999;flex-shrink:0">${list.length} item${list.length===1?'':'s'}</span>
+    </div>
+    ${list.length?list.map(it=>`
+      <div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">${esc(it.name)} ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Default rate: <strong style="color:#059669">${fmt(+it.rate||0)}</strong></div>
+        </div>
+        <button class="btn sm" onclick="itemEditId='${it.id}';renderItems();window.scrollTo(0,0)" style="font-size:11px">✏️ Edit</button>
+        <button class="btn sm red" onclick="delItem('${it.id}')" style="font-size:11px">🗑</button>
+      </div>`).join('')
+    :'<div style="text-align:center;padding:36px 16px;color:#999">'+(q?'No items match "'+esc(itemSearch)+'"':'No items yet. Add your first item above.<br><span style="font-size:11px">Saved items appear as a dropdown in every challan row.</span>')+'</div>'}`;
+}
+function itemFormSave(){
+  const name=document.getElementById('im-name').value.trim();
+  const code=document.getElementById('im-code').value.trim();
+  const rate=+document.getElementById('im-rate').value;
+  if(!name){alert('Item name is required');return;}
+  if(!rate&&rate!==0){alert('Default rate is required');return;}
+  if(rate<0){alert('Rate cannot be negative');return;}
+  const dup=findDupItem(name, itemEditId);
+  if(dup){alert('An item named "'+dup.name+'" already exists.');return;}
+  if(itemEditId){
+    const i=S.items.findIndex(x=>x.id===itemEditId); if(i===-1){itemEditId=null;renderItems();return;}
+    // Replace with a NEW object (never mutate in place) so diffWrite's baseline diff detects it.
+    S.items[i]={ id:itemEditId, name, code, rate };
+    itemEditId=null;
+  } else {
+    S.items.push({ id:uniqId('IT'), name, code, rate });
+  }
+  saveToCloud(); renderItems();
+}
+function delItem(id){
+  const it=S.items.find(x=>x.id===id); if(!it) return;
+  if(!confirm('Delete item "'+it.name+'" from the Item Master?\n\nSaved challans are NOT affected — they keep their own copies of item values.')) return;
+  S.items=S.items.filter(x=>x.id!==id);
+  if(itemEditId===id) itemEditId=null;
+  saveToCloud(); renderItems();
+}
+/* Dropdown pick → autofill name + default rate into the row (both stay editable; challan
+   snapshots the final typed values — the Item Master is never referenced after this point). */
+function pickItem(sel, rowId, isEC){
+  const it=S.items.find(x=>x.id===sel.value); if(!it) return;
+  const inputs=document.querySelectorAll('#'+rowId+' input');
+  inputs[0].value=it.name;
+  inputs[2].value=+it.rate||0;
+  if(isEC) calcECItem(rowId); else { calcItem(rowId); }
+  sel.value='';
+  inputs[1].focus();
+}
+
 
 /* ══════════════════════════════
    REPORTS  (fiscal year Apr–Mar)
@@ -3420,6 +3538,7 @@ function addECItemRow(item) {
   const amt = item ? item.amount : 0;
   div.innerHTML = `
     <button class="deli" onclick="document.getElementById('${id}').remove();calcECTotal()">✕</button>
+    ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',true)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
     <input type="text" placeholder="Item name e.g. Lower, Kurta" value="${item?esc(item.name):''}" oninput="calcECItem('${id}')">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" value="${item?item.qty:''}" oninput="calcECItem('${id}')"></div>
