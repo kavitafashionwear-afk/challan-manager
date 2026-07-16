@@ -331,12 +331,12 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 
   <!-- ITEM MASTER -->
   <div class="cscreen" id="cs-items">
-    <div id="items-content" style="padding-bottom:20px"></div>
+    <div class="pg" id="items-content"></div>
   </div>
 
   <!-- REPORTS -->
   <div class="cscreen" id="cs-reports">
-    <div id="reports-content" style="padding-bottom:20px"></div>
+    <div class="pg" id="reports-content"></div>
   </div>
 
   <!-- Bottom Nav -->
@@ -2718,8 +2718,10 @@ function scanHistoricalItems(){
   S.challans.forEach(c=>(c.items||[]).forEach(it=>{
     const raw=String(it.name||'').trim(); if(!raw) return;
     const k=normIName(raw);
-    const o=seen[k]=seen[k]||{key:k,raw,uses:0,qty:0,rev:0,last:''};
+    const o=seen[k]=seen[k]||{key:k,raw,uses:0,qty:0,rev:0,last:'',rMin:null,rMax:null};
     o.uses++; o.qty+=(+it.qty||0); o.rev+=(+it.amount||(+it.qty||0)*(+it.rate||0));
+    const rt=+it.rate||0;
+    if(rt>0){ if(o.rMin==null||rt<o.rMin)o.rMin=rt; if(o.rMax==null||rt>o.rMax)o.rMax=rt; }
     if(c.date>o.last){o.last=c.date;o.raw=raw;} }));
   return Object.values(seen);
 }
@@ -2753,7 +2755,7 @@ let kwSearch='';                 // search box in the Mapped Keywords view
 
 function renderItemReview(el){
   const un=unmappedHistorical().sort((a,b)=>b.rev-a.rev);
-  const masterSel=(id)=>'<option value="">— choose item —</option>'+S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''}</option>`).join('');
+  const masterSel=(id)=>'<option value="">— choose item —</option>'+S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('');
   const selCount=Object.keys(reviewSel).filter(k=>reviewSel[k]&&un.some(u=>u.key===k)).length;
   el.innerHTML=`
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
@@ -2769,7 +2771,7 @@ function renderItemReview(el){
     <div style="position:sticky;top:0;z-index:5;background:#fff;border:1.5px solid ${selCount?'#1A2E5A':'#ECECEC'};border-radius:10px;padding:9px 11px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <strong style="font-size:12px;color:#1A2E5A">${selCount} selected</strong>
       <span style="flex:1"></span>
-      <select id="bulk-map-target" style="font-size:12px;padding:6px">${masterSel()}</select>
+      <select id="bulk-map-target" style="font-size:12px;padding:6px;width:auto;flex:1;min-width:130px;max-width:240px">${masterSel()}</select>
       <button class="btn sm pri" onclick="bulkMapSelected()" style="font-size:11px" ${selCount?'':'disabled'}>Map Selected →</button>
       <button class="btn sm" onclick="bulkCreateFromSelected()" style="font-size:11px" ${selCount===1?'':'disabled'} title="Create a new Item Master record from the selected name">＋ Create New Item</button>
     </div>
@@ -2777,11 +2779,11 @@ function renderItemReview(el){
       const sug=itemSuggestions(h.raw,3);
       return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
         <div style="display:flex;align-items:flex-start;gap:9px">
-          <input type="checkbox" ${reviewSel[h.key]?'checked':''} onchange="reviewSel['${esc(h.key).replace(/'/g,"\\'")}']=this.checked;renderItems()" style="margin-top:3px">
+          <span onclick="toggleReviewSel('${esc(h.key).replace(/'/g,"\\'")}')" style="width:21px;height:21px;min-width:21px;flex:0 0 auto;border:2px solid ${reviewSel[h.key]?'#1A2E5A':'#CBD5E1'};background:${reviewSel[h.key]?'#1A2E5A':'#fff'};border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:2px;user-select:none">${reviewSel[h.key]?'✓':''}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">"${esc(h.raw)}"</div>
-            <div style="font-size:10.5px;color:#999;margin-top:1px">${h.uses}× used · qty ${h.qty.toLocaleString('en-IN')} · ${fmt(h.rev)} · last ${fmtD(h.last)}</div>
-            ${sug.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">${sug.map(s=>`<button class="btn sm" style="font-size:11px;background:#F0FDF4;border-color:#BBF7D0;color:#059669" onclick="mapOne('${esc(h.key).replace(/'/g,"\\'")}','${s.it.id}')">✓ ${esc(s.it.name)} <span style="opacity:.6">${Math.round(s.score*100)}%</span></button>`).join('')}</div>`
+            <div style="font-size:10.5px;color:#999;margin-top:1px">${h.uses}× used · qty ${h.qty.toLocaleString('en-IN')} · ${fmt(h.rev)}${h.rMin!=null?' · rate '+(h.rMin===h.rMax?'₹'+h.rMin:'₹'+h.rMin+'–₹'+h.rMax):''} · last ${fmtD(h.last)}</div>
+            ${sug.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">${sug.map(s=>`<button class="btn sm" style="font-size:11px;background:#F0FDF4;border-color:#BBF7D0;color:#059669" onclick="mapOne('${esc(h.key).replace(/'/g,"\\'")}','${s.it.id}')">✓ ${esc(s.it.name)} <span style="opacity:.75">₹${+s.it.rate||0}</span> <span style="opacity:.55">${Math.round(s.score*100)}%</span></button>`).join('')}</div>`
               :'<div style="font-size:11px;color:#BBB;margin-top:6px">No close match found.</div>'}
           </div>
         </div>
@@ -2798,7 +2800,7 @@ function renderItemKeywords(el){
       if(!(normIName(m.raw).includes(kq) || (it&&normIName(it.name).includes(kq)))) return; }
     (groups[m.itemId]=groups[m.itemId]||[]).push(m); });
   const ids=Object.keys(groups);
-  const masterSel=()=>S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join('');
+  const masterSel=()=>S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)} · ₹${+it.rate||0}</option>`).join('');
   el.innerHTML=`
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
       <button class="btn sm" onclick="itemView='master';renderItems()">← Item Master</button>
@@ -2810,7 +2812,7 @@ function renderItemKeywords(el){
     ${ids.length?ids.map(id=>{
       const it=S.items.find(x=>x.id===id);
       return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
-        <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:7px">${it?esc(it.name):'⚠️ (deleted item — remap below)'}</div>
+        <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:7px">${it?esc(it.name)+' <span style="font-weight:600;color:#059669;font-size:11px">₹'+(+it.rate||0)+'</span>':'⚠️ (deleted item — remap below)'}</div>
         ${groups[id].map(m=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid #F4F4F4">
           <span style="flex:1;font-size:12.5px;color:#444">"${esc(m.raw)}"</span>
           <select onchange="if(this.value)changeItemMapping('${esc(m.key).replace(/'/g,"\\'")}',this.value)" style="font-size:11px;padding:4px;max-width:130px"><option value="">→ change…</option>${masterSel()}</select>
@@ -2820,6 +2822,7 @@ function renderItemKeywords(el){
     :'<div style="text-align:center;padding:36px 16px;color:#999">'+(kq?'No mappings match your search.':'No mappings yet. Use 🧹 Review Historical Items to create them.')+'</div>'}`;
 }
 
+function toggleReviewSel(key){ reviewSel[key]=!reviewSel[key]; renderItems(); }
 function mapOne(key, itemId){
   const h=scanHistoricalItems().find(x=>x.key===key);
   addItemMapping(key, h?h.raw:key, itemId);
