@@ -2595,7 +2595,7 @@ function renderItems(){
   const ed=itemEditId?S.items.find(x=>x.id===itemEditId):null;
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};reviewLimit=60;renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};reviewLimit=60;reviewSearch='';renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
       <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='keywords';renderItems()">🔗 Mapped Keywords${(S.itemMap||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.itemMap.length}</span>`:''}</button>
     </div>
     <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
@@ -2751,10 +2751,24 @@ function changeItemMapping(key, itemId){
 let itemView='master';           // 'master' | 'review' | 'keywords'
 let reviewSel={};                // key → true (bulk selection)
 let reviewLimit=60;              // rows shown in the review list (Show More adds 60)
+let reviewSearch='';             // filters the unmapped list (substring OR fuzzy match)
 let kwSearch='';                 // search box in the Mapped Keywords view
 
-function renderItemReview(el){
+/* Unmapped list filtered by the review search box: substring on the normalized name, OR fuzzy
+   match (same engine as suggestions) so "plazo" still finds "WB khajoori plazzo". */
+function reviewFiltered(){
   const un=unmappedHistorical().sort((a,b)=>b.rev-a.rev);
+  const q=normIName(reviewSearch);
+  if(!q) return un;
+  return un.filter(h=> normIName(h.raw).includes(q) || fuzzyScore(reviewSearch,h.raw)>=0.45);
+}
+function reviewSelectShown(on){
+  reviewFiltered().slice(0,reviewLimit).forEach(h=>{ if(on) reviewSel[h.key]=true; else delete reviewSel[h.key]; });
+  renderItems();
+}
+function renderItemReview(el){
+  const un=reviewFiltered();
+  const unTotal=unmappedHistorical().length;
   const masterSel=(id)=>'<option value="">— choose item —</option>'+S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('');
   const selCount=Object.keys(reviewSel).filter(k=>reviewSel[k]&&un.some(u=>u.key===k)).length;
   el.innerHTML=`
@@ -2762,10 +2776,15 @@ function renderItemReview(el){
       <button class="btn sm" onclick="itemView='master';renderItems()">← Item Master</button>
       <div style="font-size:14px;font-weight:800;color:#1A2E5A;flex:1">🧹 Review Historical Items</div>
       <button class="btn sm" style="font-size:11px" onclick="itemView='keywords';renderItems()" title="See or remove existing mappings">🔗 Un-map / view mappings</button>
-      <span style="font-size:11px;color:#999">${un.length} unmapped</span>
+      <span style="font-size:11px;color:#999">${reviewSearch?un.length+' of '+unTotal:un.length} unmapped</span>
     </div>
     <div style="font-size:11.5px;color:#888;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px">
       These item spellings from old challans don't match any Item Master record. Map each to the right item so reports group them correctly. <strong>Old challans and prints are never changed</strong> — mappings only affect reports, and every mapping can be removed later.
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <input placeholder="🔍 Search keyword (e.g. plazzo, kurti)…" value="${esc(reviewSearch)}" oninput="reviewSearch=this.value;reviewLimit=60;renderItems();this.focus();this.setSelectionRange(this.value.length,this.value.length)" style="flex:1;min-width:170px">
+      ${un.length?`<button class="btn sm" style="font-size:11px" onclick="reviewSelectShown(true)">☑ Select shown</button>`:''}
+      ${Object.keys(reviewSel).some(k=>reviewSel[k])?`<button class="btn sm" style="font-size:11px" onclick="reviewSel={};renderItems()">✕ Clear selection</button>`:''}
     </div>
     ${un.length?`
     <div style="position:sticky;top:0;z-index:5;background:#fff;border:1.5px solid ${selCount?'#1A2E5A':'#ECECEC'};border-radius:10px;padding:9px 11px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -2789,7 +2808,8 @@ function renderItemReview(el){
         </div>
       </div>`;}).join('')}
     ${un.length>reviewLimit?`<button class="btn" style="width:100%;justify-content:center;margin-top:4px" onclick="reviewLimit+=60;renderItems()">Show ${Math.min(60,un.length-reviewLimit)} more (${un.length-reviewLimit} left)</button>`:''}`
-    :'<div style="text-align:center;padding:40px 16px;color:#059669;font-weight:700">✅ All historical item names are mapped or already match the Item Master.</div>'}`;
+    :(unTotal?'<div style="text-align:center;padding:40px 16px;color:#999">No unmapped names match "'+esc(reviewSearch)+'".</div>'
+        :'<div style="text-align:center;padding:40px 16px;color:#059669;font-weight:700">✅ All historical item names are mapped or already match the Item Master.</div>')}`;
 }
 
 function renderItemKeywords(el){
