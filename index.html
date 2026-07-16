@@ -716,7 +716,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'' };
+let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'' };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1552,7 +1552,7 @@ const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
 function saveLocal(){
   try{ localStorage.setItem(LS_KEY(), JSON.stringify({
     parties:S.parties, challans:S.challans, payments:S.payments,
-    settlements:S.settlements, overrides:S.overrides, items:S.items, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
+    settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
     seasons:S.seasons, curSeason:S.curSeason
   })); }catch(e){}
 }
@@ -1560,7 +1560,7 @@ function loadLocal(){
   try{ var raw=localStorage.getItem(LS_KEY()); if(!raw) return false;
     var d=JSON.parse(raw);
     S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
-    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.trash=d.trash||[];
+    S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.itemMap=d.itemMap||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||''; return true;
   }catch(e){ return false; }
@@ -1582,8 +1582,8 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{} };
-let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null;
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{} };
+let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
@@ -1678,14 +1678,21 @@ function attachDataListeners(){
   _subItems = _col('items').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.items = snap.docs.map(d=>d.data());
     _lastSaved.items = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
+    _itemCanonIdx = null;
     markLoaded(snap.metadata);
   }, err=>onSubErr('items',err));
+  _subMap = _col('itemmap').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.itemMap = snap.docs.map(d=>d.data());
+    _lastSaved.itemMap = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), mapDocId);
+    _itemCanonIdx = null;
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('itemmap',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -1728,6 +1735,7 @@ function saveToCloud() {
     //  + the legacy recomputeParty body.)  Only manual OVERRIDES are persisted now.
     diffWrite('overrides',   S.overrides,   _lastSaved.overrides,   overrideId);
     diffWrite('items',       S.items,       _lastSaved.items,       x=>x.id);
+    diffWrite('itemmap',     S.itemMap,     _lastSaved.itemMap,     mapDocId);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'' };
@@ -1831,7 +1839,8 @@ function publishPartyDirectory() {
 ══════════════════════════════ */
 let openCards = new Set();   // challan ids the user has expanded — preserved across re-renders
 function renderAll() {
-  invalidateAllAlloc();   // derived state is recomputed fresh each render pass from the ledger
+  invalidateAllAlloc();
+  _itemCanonIdx = null;   // item/mapping/challan data may have changed   // derived state is recomputed fresh each render pass from the ledger
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
@@ -2281,7 +2290,8 @@ function saveChallan() {
   const items=[];
   document.querySelectorAll('#item-rows .icard').forEach(card=>{
     const inp=card.querySelectorAll('input');
-    const name=inp[0].value.trim(), qty=+inp[1].value, rate=+inp[2].value, amount=qty*rate;
+    let name=inp[0].value.trim(), qty=+inp[1].value, rate=+inp[2].value, amount=qty*rate;
+    const _cn=itemCanon(name); if(_cn) name=_cn.name;   // keyword → clean master name (new bills only)
     if(name&&qty&&rate) items.push({name,qty,rate,amount});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
@@ -2575,11 +2585,18 @@ function itemOptions(){
 
 function renderItems(){
   const el=document.getElementById('items-content'); if(!el) return;
+  if(itemView==='review'){ renderItemReview(el); return; }
+  if(itemView==='keywords'){ renderItemKeywords(el); return; }
+  const unmCount=unmappedHistorical().length;
   const q=normIName(itemSearch);
   const list=(S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name))
     .filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code).includes(q));
   const ed=itemEditId?S.items.find(x=>x.id===itemEditId):null;
   el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='keywords';renderItems()">🔗 Mapped Keywords${(S.itemMap||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.itemMap.length}</span>`:''}</button>
+    </div>
     <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
       <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">${ed?'✏️ Edit Item':'➕ Add Item'}</div>
       <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" value="${ed?esc(ed.name):''}"></div>
@@ -2633,6 +2650,196 @@ function delItem(id){
   if(itemEditId===id) itemEditId=null;
   saveToCloud(); renderItems();
 }
+/* ══════════════════════════════
+   ITEM RECONCILIATION — historical name → Item Master mapping
+   Old challans used inconsistent spellings ("Cot Kurti", "CTN Kurti" …). Mappings link each
+   historical spelling to one Item Master record so reports group correctly. HARD RULES:
+   • Challans are NEVER modified — cards/prints keep showing the original text exactly as entered.
+   • Mappings are fully reversible: deleting one instantly makes that name a separate product again.
+   Storage: `itemmap` collection, one doc per historical name (deterministic id → offline/multi-
+   device idempotent), synced + cached exactly like every other collection.
+══════════════════════════════ */
+function mapDocId(m){ return 'M__'+encodeURIComponent(m.key); }
+
+/* Canonical resolver with a build-once index (instant aggregation for reports).
+   name → Item Master record, via (1) exact master-name match, (2) mapping table. */
+let _itemCanonIdx = null;
+function itemCanonIdx(){
+  if(_itemCanonIdx) return _itemCanonIdx;
+  const idx={};
+  (S.items||[]).forEach(it=>{ if(it&&it.name) idx[normIName(it.name)]=it.id; });
+  (S.itemMap||[]).forEach(m=>{ if(m&&m.key&&!(m.key in idx)) idx[m.key]=m.itemId; });
+  return _itemCanonIdx=idx;
+}
+function itemCanon(name){
+  const id=itemCanonIdx()[normIName(name)];
+  if(!id) return null;
+  return S.items.find(it=>it&&it.id===id)||null;   // stale mapping (item deleted) → unmapped
+}
+
+/* ── Fuzzy matching (suggestions only — NEVER auto-merges) ──
+   Normalizes case/spaces/hyphens/dots, strips trailing numbers, matches tokens in any order,
+   accepts prefixes ("C"→"Cotton"), consonant skeletons ("CTN"→"Cotton"), small typos. */
+function _fuzNorm(s){ return String(s||'').toLowerCase().replace(/[-_.]/g,' ').replace(/\s+/g,' ').trim().replace(/(\s+\d+)+$/,''); }
+function _skel(t){ return t.replace(/[aeiou]/g,''); }
+function _lev(a,b){ if(Math.abs(a.length-b.length)>2) return 9;
+  const m=[...Array(a.length+1)].map((_,i)=>[i,...Array(b.length).fill(0)]);
+  for(let j=0;j<=b.length;j++) m[0][j]=j;
+  for(let i=1;i<=a.length;i++) for(let j=1;j<=b.length;j++)
+    m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
+  return m[a.length][b.length]; }
+function _isSubseq(a,b){ let i=0; for(const ch of b){ if(ch===a[i]) i++; } return i===a.length; }
+function _tokScore(a,b){
+  if(a===b) return 1;
+  if(b.startsWith(a)||a.startsWith(b)) return 0.9;
+  const sa=_skel(a), sb=_skel(b);
+  if(sa.length>=2&&(sa===sb||_isSubseq(sa,sb)||_isSubseq(sb,sa))) return 0.72;
+  if(a.length>=4&&b.length>=4&&_lev(a,b)<=2) return 0.8;
+  return 0; }
+function fuzzyScore(hist, master){
+  const A=_fuzNorm(hist).split(' ').filter(Boolean), B=_fuzNorm(master).split(' ').filter(Boolean);
+  if(!A.length||!B.length) return 0;
+  if(A.join(' ')===B.join(' ')) return 1;
+  let sum=0;
+  A.forEach(a=>{ let best=0; B.forEach(b=>{ const t=_tokScore(a,b); if(t>best)best=t; }); sum+=best; });
+  let sumB=0;
+  B.forEach(b=>{ let best=0; A.forEach(a=>{ const t=_tokScore(a,b); if(t>best)best=t; }); sumB+=best; });
+  return (sum/A.length)*0.65 + (sumB/B.length)*0.35;
+}
+function itemSuggestions(hist, topN){
+  return (S.items||[]).map(it=>({it,score:fuzzyScore(hist,it.name)}))
+    .filter(x=>x.score>=0.45).sort((a,b)=>b.score-a.score).slice(0,topN||3);
+}
+
+/* One scan of the whole ledger → unique historical names with usage stats, unmapped first. */
+function scanHistoricalItems(){
+  const seen={};
+  S.challans.forEach(c=>(c.items||[]).forEach(it=>{
+    const raw=String(it.name||'').trim(); if(!raw) return;
+    const k=normIName(raw);
+    const o=seen[k]=seen[k]||{key:k,raw,uses:0,qty:0,rev:0,last:''};
+    o.uses++; o.qty+=(+it.qty||0); o.rev+=(+it.amount||(+it.qty||0)*(+it.rate||0));
+    if(c.date>o.last){o.last=c.date;o.raw=raw;} }));
+  return Object.values(seen);
+}
+function unmappedHistorical(){ const idx=itemCanonIdx(); return scanHistoricalItems().filter(h=>!(h.key in idx)); }
+
+/* ── Mapping mutations (mappings only — challans untouched) ── */
+function addItemMapping(key, raw, itemId){
+  if(!key||!itemId) return;
+  const i=(S.itemMap||[]).findIndex(m=>m.key===key);
+  const it=S.items.find(x=>x.id===itemId); if(!it) return;
+  const rec={ key, raw:raw||key, itemId, itemName:it.name };
+  if(i!==-1) S.itemMap[i]=rec; else S.itemMap.push(rec);
+  _itemCanonIdx=null;
+}
+function removeItemMapping(key){
+  S.itemMap=(S.itemMap||[]).filter(m=>m.key!==key);
+  _itemCanonIdx=null;
+  saveToCloud(); renderItems();
+}
+function changeItemMapping(key, itemId){
+  const m=(S.itemMap||[]).find(x=>x.key===key); if(!m||!itemId) return;
+  addItemMapping(key, m.raw, itemId);
+  saveToCloud(); renderItems();
+}
+
+/* ── Review wizard + keywords manager (sub-views of the Item Master page) ── */
+let itemView='master';           // 'master' | 'review' | 'keywords'
+let reviewSel={};                // key → true (bulk selection)
+
+function renderItemReview(el){
+  const un=unmappedHistorical().sort((a,b)=>b.rev-a.rev);
+  const masterSel=(id)=>'<option value="">— choose item —</option>'+S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''}</option>`).join('');
+  const selCount=Object.keys(reviewSel).filter(k=>reviewSel[k]&&un.some(u=>u.key===k)).length;
+  el.innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <button class="btn sm" onclick="itemView='master';renderItems()">← Item Master</button>
+      <div style="font-size:14px;font-weight:800;color:#1A2E5A;flex:1">🧹 Review Historical Items</div>
+      <span style="font-size:11px;color:#999">${un.length} unmapped</span>
+    </div>
+    <div style="font-size:11.5px;color:#888;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px">
+      These item spellings from old challans don't match any Item Master record. Map each to the right item so reports group them correctly. <strong>Old challans and prints are never changed</strong> — mappings only affect reports, and every mapping can be removed later.
+    </div>
+    ${un.length?`
+    <div style="position:sticky;top:0;z-index:5;background:#fff;border:1.5px solid ${selCount?'#1A2E5A':'#ECECEC'};border-radius:10px;padding:9px 11px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <strong style="font-size:12px;color:#1A2E5A">${selCount} selected</strong>
+      <span style="flex:1"></span>
+      <select id="bulk-map-target" style="font-size:12px;padding:6px">${masterSel()}</select>
+      <button class="btn sm pri" onclick="bulkMapSelected()" style="font-size:11px" ${selCount?'':'disabled'}>Map Selected →</button>
+      <button class="btn sm" onclick="bulkCreateFromSelected()" style="font-size:11px" ${selCount===1?'':'disabled'} title="Create a new Item Master record from the selected name">＋ Create New Item</button>
+    </div>
+    ${un.map(h=>{
+      const sug=itemSuggestions(h.raw,3);
+      return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
+        <div style="display:flex;align-items:flex-start;gap:9px">
+          <input type="checkbox" ${reviewSel[h.key]?'checked':''} onchange="reviewSel['${esc(h.key).replace(/'/g,"\\'")}']=this.checked;renderItems()" style="margin-top:3px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">"${esc(h.raw)}"</div>
+            <div style="font-size:10.5px;color:#999;margin-top:1px">${h.uses}× used · qty ${h.qty.toLocaleString('en-IN')} · ${fmt(h.rev)} · last ${fmtD(h.last)}</div>
+            ${sug.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">${sug.map(s=>`<button class="btn sm" style="font-size:11px;background:#F0FDF4;border-color:#BBF7D0;color:#059669" onclick="mapOne('${esc(h.key).replace(/'/g,"\\'")}','${s.it.id}')">✓ ${esc(s.it.name)} <span style="opacity:.6">${Math.round(s.score*100)}%</span></button>`).join('')}</div>`
+              :'<div style="font-size:11px;color:#BBB;margin-top:6px">No close match found.</div>'}
+          </div>
+        </div>
+      </div>`;}).join('')}`
+    :'<div style="text-align:center;padding:40px 16px;color:#059669;font-weight:700">✅ All historical item names are mapped or already match the Item Master.</div>'}`;
+}
+
+function renderItemKeywords(el){
+  const groups={};
+  (S.itemMap||[]).forEach(m=>{ (groups[m.itemId]=groups[m.itemId]||[]).push(m); });
+  const ids=Object.keys(groups);
+  const masterSel=()=>S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join('');
+  el.innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <button class="btn sm" onclick="itemView='master';renderItems()">← Item Master</button>
+      <div style="font-size:14px;font-weight:800;color:#1A2E5A;flex:1">🔗 Mapped Keywords</div>
+      <span style="font-size:11px;color:#999">${(S.itemMap||[]).length} mapping${(S.itemMap||[]).length===1?'':'s'}</span>
+    </div>
+    ${ids.length?ids.map(id=>{
+      const it=S.items.find(x=>x.id===id);
+      return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:7px">${it?esc(it.name):'⚠️ (deleted item — remap below)'}</div>
+        ${groups[id].map(m=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid #F4F4F4">
+          <span style="flex:1;font-size:12.5px;color:#444">"${esc(m.raw)}"</span>
+          <select onchange="if(this.value)changeItemMapping('${esc(m.key).replace(/'/g,"\\'")}',this.value)" style="font-size:11px;padding:4px;max-width:130px"><option value="">→ change…</option>${masterSel()}</select>
+          <button class="btn sm red" style="font-size:11px" onclick="removeItemMapping('${esc(m.key).replace(/'/g,"\\'")}')" title="Remove mapping — this name becomes a separate product again">✕</button>
+        </div>`).join('')}
+      </div>`;}).join('')
+    :'<div style="text-align:center;padding:36px 16px;color:#999">No mappings yet. Use 🧹 Review Historical Items to create them.</div>'}`;
+}
+
+function mapOne(key, itemId){
+  const h=scanHistoricalItems().find(x=>x.key===key);
+  addItemMapping(key, h?h.raw:key, itemId);
+  delete reviewSel[key];
+  saveToCloud(); renderItems();
+}
+function bulkMapSelected(){
+  const target=document.getElementById('bulk-map-target').value;
+  if(!target){alert('Choose the Item Master item to map the selected names to.');return;}
+  const hist=scanHistoricalItems();
+  let n=0;
+  Object.keys(reviewSel).forEach(k=>{ if(!reviewSel[k]) return;
+    const h=hist.find(x=>x.key===k); if(!h) return;
+    addItemMapping(k, h.raw, target); delete reviewSel[k]; n++; });
+  if(!n){alert('Select at least one historical name first.');return;}
+  saveToCloud(); renderItems();
+}
+function bulkCreateFromSelected(){
+  const keys=Object.keys(reviewSel).filter(k=>reviewSel[k]); if(keys.length!==1) return;
+  const h=scanHistoricalItems().find(x=>x.key===keys[0]); if(!h) return;
+  const rate=prompt('Create new Item Master item "'+h.raw+'".\n\nDefault rate (Rs.):', String(Math.round(h.qty?h.rev/h.qty:0)||''));
+  if(rate===null) return;
+  const r=+rate; if(isNaN(r)||r<0){alert('Enter a valid rate');return;}
+  if(findDupItem(h.raw)){alert('An item with this name already exists — map to it instead.');return;}
+  const id=uniqId('IT');
+  S.items.push({ id, name:h.raw, code:'', rate:r });
+  addItemMapping(h.key, h.raw, id);
+  delete reviewSel[keys[0]];
+  saveToCloud(); renderItems();
+}
+
 /* Dropdown pick → autofill name + default rate into the row (both stay editable; challan
    snapshots the final typed values — the Item Master is never referenced after this point). */
 function pickItem(sel, rowId, isEC){
@@ -2899,10 +3106,15 @@ function renderReports(){
   const agingBar=`<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;margin-bottom:10px">${buckets.map((b,i)=>b.a>0?`<div style="width:${b.a/agTot*100}%;background:${['#059669','#D97706','#EA580C','#DC2626'][i]}" title="${b.lbl}: ${fmt(b.a)}"></div>`:'').join('')}</div>`;
 
   /* ── item analytics ── */
+  /* Group by the CANONICAL Item Master record (mapping table), never by raw historical spelling:
+     "Cot Kurti", "CTN Kurti", "Cotton K" all aggregate as "Cotton Kurti". Unmapped names remain
+     separate products (reversible by design). */
   const items={};
   chs.filter(c=>fyOf(c.date)===repFY).forEach(c=>(c.items||[]).forEach(it=>{
-    const k=String(it.name||'').trim().toLowerCase(); if(!k) return;
-    const o=items[k]=items[k]||{name:it.name,qty:0,rev:0,n:0};
+    const raw=String(it.name||'').trim(); if(!raw) return;
+    const canon=itemCanon(raw);
+    const k=canon?('id:'+canon.id):('raw:'+normIName(raw));
+    const o=items[k]=items[k]||{name:canon?canon.name:raw,qty:0,rev:0,n:0};
     o.qty+=(+it.qty||0); o.rev+=(+it.amount||(+it.qty||0)*(+it.rate||0)); o.n++; }));
   const itemArr=Object.values(items);
   const topQty=itemArr.slice().sort((a,b)=>b.qty-a.qty).slice(0,10);
@@ -3578,7 +3790,8 @@ function saveEditChallan() {
   const items = [];
   document.querySelectorAll('#ec-item-rows .icard').forEach(card=>{
     const inputs = card.querySelectorAll('input');
-    const name=inputs[0].value.trim(), qty=+inputs[1].value, rate=+inputs[2].value;
+    let name=inputs[0].value.trim(); const qty=+inputs[1].value, rate=+inputs[2].value;
+    const _cn=itemCanon(name); if(_cn) name=_cn.name;   // keyword → clean master name
     if (name && qty && rate) items.push({name, qty, rate, amount:Math.round(qty*rate)});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
