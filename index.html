@@ -167,6 +167,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 label{font-size:12px;color:#555;display:block;margin-bottom:4px;font-weight:600}
 input,select,textarea{width:100%;padding:11px 12px;font-size:15px;border:1.5px solid #DDD;border-radius:9px;font-family:inherit;background:#fff;color:#1A1A1A;outline:none;-webkit-appearance:none}
 input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
+input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-webkit-appearance:checkbox;appearance:auto;flex:0 0 auto;box-shadow:none;accent-color:#1A2E5A;cursor:pointer}
 .ibox{background:#EFF6FF;border-radius:9px;padding:9px 12px;font-size:13px;font-weight:700;color:#1A2E5A;margin:6px 0}
 .ibox.grn{background:#ECFDF5;color:#065F46}
 .ibox.amb{background:#FFFBEB;color:#92400E}
@@ -2594,7 +2595,7 @@ function renderItems(){
   const ed=itemEditId?S.items.find(x=>x.id===itemEditId):null;
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};reviewLimit=60;renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
       <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='keywords';renderItems()">🔗 Mapped Keywords${(S.itemMap||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.itemMap.length}</span>`:''}</button>
     </div>
     <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
@@ -2747,6 +2748,8 @@ function changeItemMapping(key, itemId){
 /* ── Review wizard + keywords manager (sub-views of the Item Master page) ── */
 let itemView='master';           // 'master' | 'review' | 'keywords'
 let reviewSel={};                // key → true (bulk selection)
+let reviewLimit=60;              // rows shown in the review list (Show More adds 60)
+let kwSearch='';                 // search box in the Mapped Keywords view
 
 function renderItemReview(el){
   const un=unmappedHistorical().sort((a,b)=>b.rev-a.rev);
@@ -2756,6 +2759,7 @@ function renderItemReview(el){
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
       <button class="btn sm" onclick="itemView='master';renderItems()">← Item Master</button>
       <div style="font-size:14px;font-weight:800;color:#1A2E5A;flex:1">🧹 Review Historical Items</div>
+      <button class="btn sm" style="font-size:11px" onclick="itemView='keywords';renderItems()" title="See or remove existing mappings">🔗 Un-map / view mappings</button>
       <span style="font-size:11px;color:#999">${un.length} unmapped</span>
     </div>
     <div style="font-size:11.5px;color:#888;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px">
@@ -2769,7 +2773,7 @@ function renderItemReview(el){
       <button class="btn sm pri" onclick="bulkMapSelected()" style="font-size:11px" ${selCount?'':'disabled'}>Map Selected →</button>
       <button class="btn sm" onclick="bulkCreateFromSelected()" style="font-size:11px" ${selCount===1?'':'disabled'} title="Create a new Item Master record from the selected name">＋ Create New Item</button>
     </div>
-    ${un.map(h=>{
+    ${un.slice(0,reviewLimit).map(h=>{
       const sug=itemSuggestions(h.raw,3);
       return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
         <div style="display:flex;align-items:flex-start;gap:9px">
@@ -2781,13 +2785,18 @@ function renderItemReview(el){
               :'<div style="font-size:11px;color:#BBB;margin-top:6px">No close match found.</div>'}
           </div>
         </div>
-      </div>`;}).join('')}`
+      </div>`;}).join('')}
+    ${un.length>reviewLimit?`<button class="btn" style="width:100%;justify-content:center;margin-top:4px" onclick="reviewLimit+=60;renderItems()">Show ${Math.min(60,un.length-reviewLimit)} more (${un.length-reviewLimit} left)</button>`:''}`
     :'<div style="text-align:center;padding:40px 16px;color:#059669;font-weight:700">✅ All historical item names are mapped or already match the Item Master.</div>'}`;
 }
 
 function renderItemKeywords(el){
   const groups={};
-  (S.itemMap||[]).forEach(m=>{ (groups[m.itemId]=groups[m.itemId]||[]).push(m); });
+  const kq=normIName(kwSearch);
+  (S.itemMap||[]).forEach(m=>{
+    if(kq){ const it=S.items.find(x=>x.id===m.itemId);
+      if(!(normIName(m.raw).includes(kq) || (it&&normIName(it.name).includes(kq)))) return; }
+    (groups[m.itemId]=groups[m.itemId]||[]).push(m); });
   const ids=Object.keys(groups);
   const masterSel=()=>S.items.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join('');
   el.innerHTML=`
@@ -2796,6 +2805,8 @@ function renderItemKeywords(el){
       <div style="font-size:14px;font-weight:800;color:#1A2E5A;flex:1">🔗 Mapped Keywords</div>
       <span style="font-size:11px;color:#999">${(S.itemMap||[]).length} mapping${(S.itemMap||[]).length===1?'':'s'}</span>
     </div>
+    <div style="font-size:11px;color:#888;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:9px;padding:8px 10px;margin-bottom:10px">Mapped a word to the wrong item? <strong>✕ removes the mapping</strong> (the name goes back to Review as a separate product) or use <strong>→ change…</strong> to point it at a different item.</div>
+    <input placeholder="🔍 Search keyword or item…" value="${esc(kwSearch)}" oninput="kwSearch=this.value;renderItems();this.focus();this.setSelectionRange(this.value.length,this.value.length)" style="margin-bottom:10px">
     ${ids.length?ids.map(id=>{
       const it=S.items.find(x=>x.id===id);
       return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
@@ -2806,7 +2817,7 @@ function renderItemKeywords(el){
           <button class="btn sm red" style="font-size:11px" onclick="removeItemMapping('${esc(m.key).replace(/'/g,"\\'")}')" title="Remove mapping — this name becomes a separate product again">✕</button>
         </div>`).join('')}
       </div>`;}).join('')
-    :'<div style="text-align:center;padding:36px 16px;color:#999">No mappings yet. Use 🧹 Review Historical Items to create them.</div>'}`;
+    :'<div style="text-align:center;padding:36px 16px;color:#999">'+(kq?'No mappings match your search.':'No mappings yet. Use 🧹 Review Historical Items to create them.')+'</div>'}`;
 }
 
 function mapOne(key, itemId){
