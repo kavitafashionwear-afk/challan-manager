@@ -339,6 +339,9 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     <div class="pg" id="reports-content"></div>
   </div>
 
+  <datalist id="items-dl"></datalist>
+  <datalist id="st-items-dl"></datalist>
+
   <!-- Bottom Nav -->
   <nav class="bottom-nav">
     <button class="nav-tab on" id="nt-home" onclick="goTab('home')"><div class="ni">🏠</div><div>Home</div></button>
@@ -1221,6 +1224,8 @@ function requestAccess() {
 
 /* ── Approved staff billing workspace ── */
 let staffParties = [];      // read-only copy of parties (names only, no balances)
+let staffItems = [];        // read-only copy of the Item Master (published by owner)
+let staffItemsUnsub = null;
 let staffPartiesUnsub = null;
 
 function showStaffWork() {
@@ -1238,6 +1243,37 @@ function showStaffWork() {
       staffParties = (d.parties||[]).map(function(p){ return {id:p.id, name:p.name, phone:p.phone||'', city:p.city||''}; });
       staffFillParties();
     }, function(err){ console.warn('staff parties read:', err && err.code); });
+  if (staffItemsUnsub) { staffItemsUnsub(); staffItemsUnsub=null; }
+  staffItemsUnsub = db.collection('users').doc(DATA_OWNER_UID).collection('public').doc('items')
+    .onSnapshot(function(snap){
+      var d = snap.exists ? snap.data() : {};
+      staffItems = (d.items||[]).slice().sort(function(a,b){ return ((+a.rate||0)-(+b.rate||0)) || String(a.name||'').localeCompare(String(b.name||'')); });
+      staffRefreshItemUI();
+    }, function(err){ console.warn('staff items read:', err && err.code); });
+}
+function staffRefreshItemUI(){
+  var dl=document.getElementById('st-items-dl');
+  if(dl) dl.innerHTML=staffItems.map(function(it){ return '<option value="'+esc(it.name)+'">₹'+(+it.rate||0)+(it.code?' · '+esc(it.code):'')+'</option>'; }).join('');
+  document.querySelectorAll('#st-items .st-isel').forEach(function(sel){ var cur=sel.value; sel.innerHTML=stItemOptions(); sel.value=cur; sel.style.display=staffItems.length?'':'none'; });
+}
+function stItemOptions(){
+  return '<option value="">— pick from Item Master —</option>'+staffItems.map(function(it){
+    return '<option value="'+esc(it.id)+'">'+esc(it.name)+(it.code?' ['+esc(it.code)+']':'')+' · ₹'+(+it.rate||0)+'</option>'; }).join('');
+}
+function stPickItem(sel){
+  var it=staffItems.find(function(x){return x.id===sel.value;}); if(!it) return;
+  var row=sel.closest('.st-irow');
+  row.querySelector('.st-i-name').value=it.name;
+  var rt=row.querySelector('.st-i-rate'); if(!(+rt.value)) rt.value=+it.rate||0;
+  sel.value='';
+  staffCalcTotal();
+  row.querySelector('.st-i-qty').focus();
+}
+function stNameTyped(inp){
+  var n=String(inp.value||'').trim().toLowerCase().replace(/\s+/g,' ');
+  var it=staffItems.find(function(x){ return String(x.name||'').trim().toLowerCase().replace(/\s+/g,' ')===n; });
+  if(it){ var rt=inp.closest('.st-irow').querySelector('.st-i-rate'); if(!(+rt.value)) rt.value=+it.rate||0; }
+  staffCalcTotal();
 }
 
 function staffFillParties() {
@@ -1261,12 +1297,15 @@ function staffAddItem() {
   var wrap=document.getElementById('st-items');
   var row=document.createElement('div');
   row.className='st-irow';
-  row.style.cssText='display:flex;gap:6px;margin-bottom:8px';
+  row.style.cssText='margin-bottom:8px';
   row.innerHTML=
-    '<input placeholder="Item" class="st-i-name" style="flex:2;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">'+
+    '<select class="st-isel" onchange="stPickItem(this)" style="width:100%;margin-bottom:6px;padding:8px;border:1.5px solid #DDD;border-radius:8px;font-size:12px;background:#fff;'+(staffItems.length?'':'display:none')+'">'+stItemOptions()+'</select>'+
+    '<div style="display:flex;gap:6px">'+
+    '<input placeholder="Item" list="st-items-dl" class="st-i-name" oninput="stNameTyped(this)" style="flex:2;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box">'+
     '<input placeholder="Qty" type="number" inputmode="numeric" class="st-i-qty" oninput="staffCalcTotal()" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box;min-width:0">'+
     '<input placeholder="Rate" type="number" inputmode="decimal" class="st-i-rate" oninput="staffCalcTotal()" style="flex:1;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;box-sizing:border-box;min-width:0">'+
-    '<button onclick="this.parentNode.remove();staffCalcTotal()" style="background:#FEF2F2;border:1px solid #FECACA;color:#DC2626;border-radius:8px;padding:0 10px;cursor:pointer;font-size:14px">✕</button>';
+    '<button onclick="this.closest(\'.st-irow\').remove();staffCalcTotal()" style="background:#FEF2F2;border:1px solid #FECACA;color:#DC2626;border-radius:8px;padding:0 10px;cursor:pointer;font-size:14px">✕</button>'+
+    '</div>';
   wrap.appendChild(row);
 }
 
@@ -1751,6 +1790,7 @@ function saveToCloud() {
     }
   } catch(e){ console.warn('save threw:', e); setSyncDot(isOnline?'err':'offline'); }
   publishPartyDirectory();
+  publishItemDirectory();
 }
 let _lastMetaSig = null;
 
@@ -1833,6 +1873,17 @@ function publishPartyDirectory() {
       .set({ parties: dir, updated:new Date().toISOString() })
       .catch(function(err){ console.warn('directory publish deferred:', err && err.code); });
   } catch(e) { console.warn('directory publish threw:', e); }
+}
+/* Item Master published read-only for staff (staff cannot read the owner's private collections;
+   same pattern as the party directory). */
+function publishItemDirectory() {
+  if (!uid || !isOwnerUid(uid)) return;
+  try {
+    var dir = (S.items||[]).map(function(it){ return { id:it.id, name:it.name||'', code:it.code||'', rate:+it.rate||0 }; });
+    db.collection('users').doc(uid).collection('public').doc('items')
+      .set({ items: dir, updated:new Date().toISOString() })
+      .catch(function(err){ console.warn('item directory publish deferred:', err && err.code); });
+  } catch(e) { console.warn('item directory publish threw:', e); }
 }
 
 /* ══════════════════════════════
@@ -2105,9 +2156,10 @@ function toggleCard(el) {
 ══════════════════════════════ */
 function openModal(type) {
   if (type==='challan') {
-    document.getElementById('ch-party').innerHTML='<option value="">Select party...</option>'+S.parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    document.getElementById('ch-party').innerHTML='<option value="">Select party...</option>'+partiesSorted().map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
     document.getElementById('ch-date').value=today();
     document.getElementById('ch-season').innerHTML=seasonOptions(S.curSeason);
+    refreshItemDatalist();
     document.getElementById('ch-rmk').value='';
     document.getElementById('item-rows').innerHTML='';
     document.getElementById('ch-freight').value='';
@@ -2129,7 +2181,7 @@ function openChallanFor(pid) { openModal('challan'); document.getElementById('ch
 function openPayFor(pid) {
   openModal('payment');
   const sel=document.getElementById('pp-party');
-  sel.innerHTML='<option value="">Select party...</option>'+S.parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  sel.innerHTML='<option value="">Select party...</option>'+partiesSorted().map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
   sel.value=pid;
   document.getElementById('pp-date').value=today();
   document.getElementById('pp-amt').value='';
@@ -2148,7 +2200,7 @@ function addItemRow() {
   div.className='icard'; div.id=id;
   div.innerHTML=`<button class="deli" onclick="document.getElementById('${id}').remove();calcTotal()">✕</button>
     ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',false)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
-    <input type="text" placeholder="Item name e.g. Lower, Kurta" oninput="calcTotal()">
+    <input type="text" list="items-dl" placeholder="Item name e.g. Lower, Kurta" oninput="ownNameTyped(this,'${id}',false)">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" oninput="calcItem('${id}')"></div>
       <div><label style="font-size:10px">Rate</label><input type="number" placeholder="0" inputmode="decimal" oninput="calcItem('${id}')"></div>
@@ -2579,15 +2631,36 @@ function itemsByRecency(){
     return lb.localeCompare(la) || a.name.localeCompare(b.name);
   });
 }
+function partiesSorted(){ return (S.parties||[]).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''))); }
+/* Item dropdowns: sorted by DEFAULT RATE (low → high), rate always visible. */
+function itemsByRate(){ return (S.items||[]).slice().sort((a,b)=>((+a.rate||0)-(+b.rate||0))||String(a.name||'').localeCompare(String(b.name||''))); }
 function itemOptions(){
-  return '<option value="">— pick item —</option>'+itemsByRecency().map(it=>
+  return '<option value="">— pick item —</option>'+itemsByRate().map(it=>
     `<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('');
 }
+function findItemByName(v){ const n=normIName(v); if(!n) return null; return (S.items||[]).find(it=>normIName(it.name)===n)||null; }
+function refreshItemDatalist(){
+  const dl=document.getElementById('items-dl'); if(!dl) return;
+  dl.innerHTML=itemsByRate().map(it=>`<option value="${esc(it.name)}">₹${+it.rate||0}${it.code?' · '+esc(it.code):''}</option>`).join('');
+}
+/* Typing an item name: if it matches an Item Master record (picked from suggestions or typed
+   fully), auto-fill the default rate when the rate box is still empty. */
+function ownNameTyped(inp,rowId,isEC){
+  const it=findItemByName(inp.value);
+  if(it){ const ins=document.querySelectorAll('#'+rowId+' input'); if(ins[2]&&!(+ins[2].value)) ins[2].value=+it.rate||0; }
+  if(isEC) calcECItem(rowId); else calcTotal();
+}
 
+let _itemsRenderT=null;
+function debRenderItems(){ clearTimeout(_itemsRenderT); _itemsRenderT=setTimeout(renderItems,120); }
 function renderItems(){
   const el=document.getElementById('items-content'); if(!el) return;
-  if(itemView==='review'){ renderItemReview(el); return; }
-  if(itemView==='keywords'){ renderItemKeywords(el); return; }
+  // Preserve focus + caret across the innerHTML rebuild (typing in a search box must not lose focus)
+  const _ae=document.activeElement;
+  const _foc=(_ae&&_ae.id&&typeof _ae.selectionStart==='number')?{id:_ae.id,pos:_ae.selectionStart}:null;
+  const _done=()=>{ if(_foc){ const e2=document.getElementById(_foc.id); if(e2){ e2.focus(); try{e2.setSelectionRange(_foc.pos,_foc.pos);}catch(_e){} } } };
+  if(itemView==='review'){ renderItemReview(el); _done(); return; }
+  if(itemView==='keywords'){ renderItemKeywords(el); _done(); return; }
   const unmCount=unmappedHistorical().length;
   const q=normIName(itemSearch);
   const list=(S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name))
@@ -2611,7 +2684,7 @@ function renderItems(){
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-      <input placeholder="🔍 Search by name or code…" value="${esc(itemSearch)}" oninput="itemSearch=this.value;renderItems();this.focus();this.setSelectionRange(this.value.length,this.value.length)" style="flex:1">
+      <input id="im-search" placeholder="🔍 Search by name or code…" value="${esc(itemSearch)}" oninput="itemSearch=this.value;debRenderItems()" style="flex:1">
       <span style="font-size:11px;color:#999;flex-shrink:0">${list.length} item${list.length===1?'':'s'}</span>
     </div>
     ${list.length?list.map(it=>`
@@ -2624,6 +2697,7 @@ function renderItems(){
         <button class="btn sm red" onclick="delItem('${it.id}')" style="font-size:11px">🗑</button>
       </div>`).join('')
     :'<div style="text-align:center;padding:36px 16px;color:#999">'+(q?'No items match "'+esc(itemSearch)+'"':'No items yet. Add your first item above.<br><span style="font-size:11px">Saved items appear as a dropdown in every challan row.</span>')+'</div>'}`;
+  _done();
 }
 function itemFormSave(){
   const name=document.getElementById('im-name').value.trim();
@@ -2678,9 +2752,12 @@ function itemCanon(name){
   return S.items.find(it=>it&&it.id===id)||null;   // stale mapping (item deleted) → unmapped
 }
 
-/* ── Fuzzy matching (suggestions only — NEVER auto-merges) ──
-   Normalizes case/spaces/hyphens/dots, strips trailing numbers, matches tokens in any order,
-   accepts prefixes ("C"→"Cotton"), consonant skeletons ("CTN"→"Cotton"), small typos. */
+/* ── Fuzzy matching model (suggestions only — NEVER auto-merges) ──
+   Corpus-weighted token matching: every token gets an informativeness weight from its document
+   frequency across ALL item names + historical names (rare tokens like "plazzo" dominate; filler
+   words like "fancy"/"new"/sizes/single letters barely count). A candidate only scores well if the
+   query's MOST INFORMATIVE token is matched — this kills suggestions carried by junk tokens.
+   Character-bigram similarity is blended in as a backup for typos and joined words. */
 function _fuzNorm(s){ return String(s||'').toLowerCase().replace(/[-_.]/g,' ').replace(/\s+/g,' ').trim().replace(/(\s+\d+)+$/,''); }
 function _skel(t){ return t.replace(/[aeiou]/g,''); }
 function _lev(a,b){ if(Math.abs(a.length-b.length)>2) return 9;
@@ -2692,24 +2769,71 @@ function _lev(a,b){ if(Math.abs(a.length-b.length)>2) return 9;
 function _isSubseq(a,b){ let i=0; for(const ch of b){ if(ch===a[i]) i++; } return i===a.length; }
 function _tokScore(a,b){
   if(a===b) return 1;
-  if(b.startsWith(a)||a.startsWith(b)) return 0.9;
+  if(a.length>=2&&(b.startsWith(a)||a.startsWith(b))) return 0.9;
+  if(a.length===1&&b.startsWith(a)) return 0.5;              // single letters are weak evidence
   const sa=_skel(a), sb=_skel(b);
-  if(sa.length>=2&&(sa===sb||_isSubseq(sa,sb)||_isSubseq(sb,sa))) return 0.72;
+  if(sa.length>=3&&(sa===sb||_isSubseq(sa,sb)||_isSubseq(sb,sa))) return 0.72;
   if(a.length>=4&&b.length>=4&&_lev(a,b)<=2) return 0.8;
+  if(a.length===3&&b.length>=3&&_lev(a,b)<=1) return 0.72;
   return 0; }
+
+/* Token document-frequency over the whole corpus (item master + every historical spelling).
+   Cheap cache keyed on collection sizes — weights tolerate slight staleness. */
+let _tokDFCache=null, _tokDFKey='';
+function _tokDF(){
+  const key=(S.items||[]).length+':'+(S.challans||[]).length;
+  if(_tokDFCache&&_tokDFKey===key) return _tokDFCache;
+  const df={};
+  const addDoc=name=>{ const seen={}; _fuzNorm(name).split(' ').forEach(t=>{ if(t&&!seen[t]){seen[t]=1; df[t]=(df[t]||0)+1;} }); };
+  (S.items||[]).forEach(it=>it&&addDoc(it.name));
+  const uniq={};
+  (S.challans||[]).forEach(c=>(c.items||[]).forEach(it=>{ const k=_fuzNorm(it.name); if(k&&!uniq[k]){uniq[k]=1; addDoc(it.name);} }));
+  _tokDFKey=key; return _tokDFCache=df;
+}
+function _tokW(t, df){
+  let w=1/Math.log(2+(df[t]||0));                            // rarer → heavier
+  if(t.length===1||/^\d+$/.test(t)) w*=0.35;                 // letters/numbers are near-noise
+  else if(t.length===2) w*=0.7;
+  return w;
+}
+function _bigrams(str){ const g={},x=str.replace(/ /g,''); for(let i=0;i<x.length-1;i++){const b=x.slice(i,i+2); g[b]=(g[b]||0)+1;} return g; }
+function _bigramDice(a,b){
+  const A=_bigrams(a),B=_bigrams(b); let inter=0,na=0,nb=0;
+  Object.keys(A).forEach(k=>{ na+=A[k]; if(B[k]) inter+=Math.min(A[k],B[k]); });
+  Object.keys(B).forEach(k=>nb+=B[k]);
+  return (na+nb)?2*inter/(na+nb):0;
+}
 function fuzzyScore(hist, master){
-  const A=_fuzNorm(hist).split(' ').filter(Boolean), B=_fuzNorm(master).split(' ').filter(Boolean);
-  if(!A.length||!B.length) return 0;
-  if(A.join(' ')===B.join(' ')) return 1;
-  let sum=0;
-  A.forEach(a=>{ let best=0; B.forEach(b=>{ const t=_tokScore(a,b); if(t>best)best=t; }); sum+=best; });
-  let sumB=0;
-  B.forEach(b=>{ let best=0; A.forEach(a=>{ const t=_tokScore(a,b); if(t>best)best=t; }); sumB+=best; });
-  return (sum/A.length)*0.65 + (sumB/B.length)*0.35;
+  const na=_fuzNorm(hist), nb=_fuzNorm(master);
+  if(!na||!nb) return 0;
+  if(na===nb) return 1;
+  const A=na.split(' ').filter(Boolean), B=nb.split(' ').filter(Boolean);
+  const df=_tokDF();
+  const best=(t,L)=>{ let m=0; L.forEach(x=>{ const v=_tokScore(t,x); if(v>m)m=v; }); return m; };
+  let fw=0,fwW=0;
+  A.forEach(a=>{ const w=_tokW(a,df); fw+=w*best(a,B); fwW+=w; });
+  let bw=0,bwW=0, bMaxW=0;
+  const bInfo=[];
+  B.forEach(b=>{ const w=_tokW(b,df), m=best(b,A);
+    bw+=w*m; bwW+=w; if(w>bMaxW)bMaxW=w; bInfo.push({w,m}); });
+  const base=0.62*(fwW?fw/fwW:0)+0.38*(bwW?bw/bwW:0);
+  let score=0.75*base+0.25*_bigramDice(na,nb);
+  // Gate: the MASTER's dominant (most informative) token must be matched by the query —
+  // master names are clean product words, so an unmatched dominant token means a junk pairing
+  // ("Fancy Plazzo" must never suggest "Fancy Kurti": kurti is unmatched).
+  const domOk=bInfo.some(x=>x.w>=bMaxW*0.999&&x.m>=0.7);
+  if(!domOk) score*=0.4;
+  // Containment floor: if every informative master token is clearly present in the query
+  // ("Plazzo" ⊂ "WB khajoori plazzo", "Dupatta" ⊂ "Dupatta Set"), it IS a valid suggestion
+  // even when the query carries extra rare modifiers that dilute the averaged score.
+  if(bInfo.length&&bInfo.every(x=>x.w<bMaxW*0.5||x.m>=0.85)&&domOk) score=Math.max(score,0.62);
+  return score;
 }
 function itemSuggestions(hist, topN){
-  return (S.items||[]).map(it=>({it,score:fuzzyScore(hist,it.name)}))
-    .filter(x=>x.score>=0.45).sort((a,b)=>b.score-a.score).slice(0,topN||3);
+  const ranked=(S.items||[]).map(it=>({it,score:fuzzyScore(hist,it.name)}))
+    .filter(x=>x.score>=0.55).sort((a,b)=>b.score-a.score).slice(0,topN||3);
+  // drop trailing weak matches far below the best — noise, not alternatives
+  return ranked.filter((x,i)=>i===0||x.score>=ranked[0].score*0.72);
 }
 
 /* One scan of the whole ledger → unique historical names with usage stats, unmapped first. */
@@ -2782,7 +2906,7 @@ function renderItemReview(el){
       These item spellings from old challans don't match any Item Master record. Map each to the right item so reports group them correctly. <strong>Old challans and prints are never changed</strong> — mappings only affect reports, and every mapping can be removed later.
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-      <input placeholder="🔍 Search keyword (e.g. plazzo, kurti)…" value="${esc(reviewSearch)}" oninput="reviewSearch=this.value;reviewLimit=60;renderItems();this.focus();this.setSelectionRange(this.value.length,this.value.length)" style="flex:1;min-width:170px">
+      <input id="rv-search" placeholder="🔍 Search keyword (e.g. plazzo, kurti)…" value="${esc(reviewSearch)}" oninput="reviewSearch=this.value;reviewLimit=60;debRenderItems()" style="flex:1;min-width:170px">
       ${un.length?`<button class="btn sm" style="font-size:11px" onclick="reviewSelectShown(true)">☑ Select shown</button>`:''}
       ${Object.keys(reviewSel).some(k=>reviewSel[k])?`<button class="btn sm" style="font-size:11px" onclick="reviewSel={};renderItems()">✕ Clear selection</button>`:''}
     </div>
@@ -2828,7 +2952,7 @@ function renderItemKeywords(el){
       <span style="font-size:11px;color:#999">${(S.itemMap||[]).length} mapping${(S.itemMap||[]).length===1?'':'s'}</span>
     </div>
     <div style="font-size:11px;color:#888;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:9px;padding:8px 10px;margin-bottom:10px">Mapped a word to the wrong item? <strong>✕ removes the mapping</strong> (the name goes back to Review as a separate product) or use <strong>→ change…</strong> to point it at a different item.</div>
-    <input placeholder="🔍 Search keyword or item…" value="${esc(kwSearch)}" oninput="kwSearch=this.value;renderItems();this.focus();this.setSelectionRange(this.value.length,this.value.length)" style="margin-bottom:10px">
+    <input id="kw-search" placeholder="🔍 Search keyword or item…" value="${esc(kwSearch)}" oninput="kwSearch=this.value;debRenderItems()" style="margin-bottom:10px">
     ${ids.length?ids.map(id=>{
       const it=S.items.find(x=>x.id===id);
       return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
@@ -3762,9 +3886,10 @@ function openEditChallan(cid) {
   const c = S.challans.find(x=>x.id===cid); if(!c) return;
   curEditChallanIdEC = cid;
   const sel = document.getElementById('ec-party');
-  sel.innerHTML = S.parties.map(p=>`<option value="${p.id}"${p.id===c.pid?' selected':''}>${esc(p.name)}</option>`).join('');
+  sel.innerHTML = partiesSorted().map(p=>`<option value="${p.id}"${p.id===c.pid?' selected':''}>${esc(p.name)}</option>`).join('');
   document.getElementById('ec-date').value = c.date;
   document.getElementById('ec-season').innerHTML = seasonOptions(c.season||'');
+  refreshItemDatalist();
   document.getElementById('ec-rmk').value  = c.remarks || '';
   document.getElementById('ec-subtitle').textContent = c.num + ' — ' + (S.parties.find(p=>p.id===c.pid)?.name || c.pname);
   const container = document.getElementById('ec-item-rows');
@@ -3785,7 +3910,7 @@ function addECItemRow(item) {
   div.innerHTML = `
     <button class="deli" onclick="document.getElementById('${id}').remove();calcECTotal()">✕</button>
     ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',true)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
-    <input type="text" placeholder="Item name e.g. Lower, Kurta" value="${item?esc(item.name):''}" oninput="calcECItem('${id}')">
+    <input type="text" list="items-dl" placeholder="Item name e.g. Lower, Kurta" value="${item?esc(item.name):''}" oninput="ownNameTyped(this,'${id}',true)">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" value="${item?item.qty:''}" oninput="calcECItem('${id}')"></div>
       <div><label style="font-size:10px">Rate (Rs.)</label><input type="number" placeholder="0" inputmode="decimal" value="${item?item.rate:''}" oninput="calcECItem('${id}')"></div>
@@ -4052,7 +4177,7 @@ function saveQuickParty() {
   S.parties.push(newParty);
   // Refresh the party dropdown and select the new party
   const sel = document.getElementById('ch-party');
-  sel.innerHTML='<option value="">Select party...</option>'+S.parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  sel.innerHTML='<option value="">Select party...</option>'+partiesSorted().map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
   sel.value = newParty.id;
   saveToCloud();
   renderParties();
