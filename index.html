@@ -334,6 +334,11 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     <div class="pg" id="items-content"></div>
   </div>
 
+  <!-- STOCK -->
+  <div class="cscreen" id="cs-stock">
+    <div class="pg" id="stock-content"></div>
+  </div>
+
   <!-- REPORTS -->
   <div class="cscreen" id="cs-reports">
     <div class="pg" id="reports-content"></div>
@@ -428,7 +433,8 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
-  <div class="umi" onclick="goTab('items');closeMenu()">📦 Item Master</div>
+  <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
+  <div class="umi" onclick="goTab('items');closeMenu()">🏷️ Item Master</div>
   <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
@@ -720,7 +726,8 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'' };
+let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
+          stock:[], stockMv:[], stockFrom:'' };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1593,7 +1600,8 @@ function saveLocal(){
   try{ localStorage.setItem(LS_KEY(), JSON.stringify({
     parties:S.parties, challans:S.challans, payments:S.payments,
     settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
-    seasons:S.seasons, curSeason:S.curSeason
+    seasons:S.seasons, curSeason:S.curSeason,
+    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom
   })); }catch(e){}
 }
 function loadLocal(){
@@ -1602,7 +1610,9 @@ function loadLocal(){
     S.parties=d.parties||[]; S.challans=d.challans||[]; S.payments=d.payments||[];
     S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.itemMap=d.itemMap||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
-    S.seasons=d.seasons||[]; S.curSeason=d.curSeason||''; return true;
+    S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
+    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; invalidateStock();
+    return true;
   }catch(e){ return false; }
 }
 function flushPendingSave(){ if(uid && isOnline && isOwnerUid(uid)) saveToCloud(); }
@@ -1622,8 +1632,9 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{} };
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
+let _subStock=null, _subStockMv=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
@@ -1727,12 +1738,26 @@ function attachDataListeners(){
     _itemCanonIdx = null;
     markLoaded(snap.metadata);
   }, err=>onSubErr('itemmap',err));
+  // Opening stock — one doc per item (deterministic id → idempotent across devices/offline).
+  _subStock = _col('stock').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.stock = snap.docs.map(d=>d.data());
+    _lastSaved.stock = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
+    invalidateStock();
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('stock',err));
+  // Manual stock movements (purchases, returns, damage, corrections).
+  _subStockMv = _col('stockmv').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.stockMv = snap.docs.map(d=>d.data());
+    _lastSaved.stockMv = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
+    invalidateStock();
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('stockmv',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
-    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; }
+    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -1776,9 +1801,11 @@ function saveToCloud() {
     diffWrite('overrides',   S.overrides,   _lastSaved.overrides,   overrideId);
     diffWrite('items',       S.items,       _lastSaved.items,       x=>x.id);
     diffWrite('itemmap',     S.itemMap,     _lastSaved.itemMap,     mapDocId);
+    diffWrite('stock',       S.stock,       _lastSaved.stock,       x=>x.id);
+    diffWrite('stockmv',     S.stockMv,     _lastSaved.stockMv,     x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'' };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'' };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -1893,12 +1920,14 @@ let openCards = new Set();   // challan ids the user has expanded — preserved 
 function renderAll() {
   invalidateAllAlloc();
   _itemCanonIdx = null;   // item/mapping/challan data may have changed   // derived state is recomputed fresh each render pass from the ledger
+  invalidateStock();      // on-hand depends on items, mappings, challans and stock docs
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
   if (curTab==='daybook')  renderDaybook();
   if (curTab==='reports')  renderReports();
   if (curTab==='items')    renderItems();
+  if (curTab==='stock')    renderStock();
   if (curTab==='trash')    renderTrash();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
@@ -1914,14 +1943,15 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   const nt=document.getElementById('nt-'+tab); if(nt) nt.classList.add('on');   // reports has no bottom-nav tab
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items') ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
     tab==='challans' ? '📋 Challans' :
     tab==='daybook'  ? '📅 Daybook' :
     tab==='reports'  ? '📊 Reports' :
-    tab==='items'    ? '📦 Item Master' : '🗑️ Recycle Bin';
+    tab==='stock'    ? '📦 Stock' :
+    tab==='items'    ? '🏷️ Item Master' : '🗑️ Recycle Bin';
   renderAll();
 }
 
@@ -2653,6 +2683,442 @@ function ownNameTyped(inp,rowId,isEC){
 
 let _itemsRenderT=null;
 function debRenderItems(){ clearTimeout(_itemsRenderT); _itemsRenderT=setTimeout(renderItems,120); }
+/* ══════════════════════════════════════════════════════════════════════
+   STOCK MANAGER
+   On-hand is DERIVED, never stored. Persisted records are only:
+     • stock    — opening stock, one doc per item, id 'OS__<itemId>'
+     • stockmv  — manual movements (purchase / return / damage / correction)
+   Everything else is computed live from the existing ledger:
+     • OUT  = challan line quantities, resolved through itemCanon()
+     • IN   = contractor lot receivals (wired in stockContractorIn — inert
+              until the Contractor Tracker is merged and S.lots exists)
+   HARD RULES:
+     • Only movements dated ON OR AFTER the cutover count. Opening stock is
+       the balance as at the cutover, so counting older challans would
+       double-count what the opening figure already includes.
+     • Challans are NEVER modified by stock. Stock reads them, nothing more.
+     • Item text that does not resolve to an Item Master record is reported
+       as unmapped — it is NEVER auto-mapped or silently dropped.
+══════════════════════════════════════════════════════════════════════ */
+let _stockIdx = null;
+function invalidateStock(){ _stockIdx = null; }
+function stockCutover(){ return S.stockFrom || ''; }
+function stockReady(){ return !!stockCutover(); }
+function _onOrAfter(d, cut){ return !cut || String(d||'') >= cut; }
+function openingId(itemId){ return 'OS__' + itemId; }
+function openingFor(itemId){ const o=(S.stock||[]).find(x=>x&&x.itemId===itemId); return o?(+o.qty||0):0; }
+
+/* STAGE 2 HOOK — contractor receivals become stock IN.
+   Already written: the moment S.lots is present (Contractor Tracker merged),
+   finished-goods receivals dated on/after the cutover start crediting stock.
+   Fabric lots are excluded by design. No other engine change is required. */
+function stockContractorIn(row, cut, unmapped){
+  if(!Array.isArray(S.lots)) return;               // tracker not merged yet
+  S.lots.forEach(l=>{
+    if(!l || l.kind==='fabric') return;             // finished goods only
+    const recs = (l.receivals && l.receivals.length) ? l.receivals
+               : (l.piecesReceived!=null && l.piecesReceived!=='' ? [{date:l.dateReceived, pieces:l.piecesReceived}] : []);
+    recs.forEach(r=>{
+      const q = +r.pieces || 0; if(!q) return;
+      if(!_onOrAfter(r.date, cut)) return;
+      const cn = itemCanon(l.item);
+      if(cn){ row(cn.id).inCon += q; }
+      else {
+        const k = normIName(l.item); if(!k) return;
+        const u = unmapped[k] || (unmapped[k] = {key:k, raw:l.item, inQty:0, outQty:0, uses:0, last:''});
+        u.inQty += q; u.uses++; if((r.date||'') > u.last) u.last = r.date||'';
+      }
+    });
+  });
+}
+
+function stockIndex(){
+  if(_stockIdx) return _stockIdx;
+  const cut = stockCutover();
+  const rows = {};
+  const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, onHand:0});
+  (S.items||[]).forEach(it=>{ if(it&&it.id) row(it.id); });
+
+  (S.stock||[]).forEach(o=>{ if(o&&o.itemId) row(o.itemId).open += (+o.qty||0); });
+
+  (S.stockMv||[]).forEach(m=>{
+    if(!m||!m.itemId) return;
+    if(!_onOrAfter(m.date, cut)) return;
+    const q = +m.qty || 0;
+    if(q >= 0) row(m.itemId).manIn += q; else row(m.itemId).manOut += -q;
+  });
+
+  const unmapped = {};
+  (S.challans||[]).forEach(c=>{
+    if(!c || !_onOrAfter(c.date, cut)) return;      // S.challans excludes trashed challans
+    (c.items||[]).forEach(li=>{
+      const q = +li.qty || 0; if(!q) return;
+      const cn = itemCanon(li.name);
+      if(cn){ row(cn.id).out += q; }
+      else {
+        const k = normIName(li.name); if(!k) return;
+        const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
+        u.outQty += q; u.uses++; if((c.date||'') > u.last) u.last = c.date||'';
+      }
+    });
+  });
+
+  stockContractorIn(row, cut, unmapped);
+
+  Object.keys(rows).forEach(id=>{
+    const r = rows[id];
+    r.onHand = _r2(r.open + r.inCon + r.manIn - r.manOut - r.out);
+  });
+  return _stockIdx = { rows, unmapped:Object.values(unmapped) };
+}
+
+function stockRow(itemId){ return stockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,onHand:0}; }
+function stockOnHand(itemId){ return stockRow(itemId).onHand; }
+
+/* Full audit trail for one item — every contribution, oldest first. */
+function stockItemMoves(itemId){
+  const cut = stockCutover(), out = [];
+  const op = (S.stock||[]).find(x=>x&&x.itemId===itemId);
+  if(op) out.push({date:op.date||cut, kind:'open', label:'Opening stock', qty:(+op.qty||0), ref:''});
+  (S.stockMv||[]).forEach(m=>{
+    if(!m || m.itemId!==itemId || !_onOrAfter(m.date,cut)) return;
+    out.push({date:m.date, kind:(+m.qty||0)>=0?'in':'out', label:m.reason||'Manual', qty:(+m.qty||0), ref:m.remarks||'', mvId:m.id});
+  });
+  (S.challans||[]).forEach(c=>{
+    if(!c || !_onOrAfter(c.date,cut)) return;
+    (c.items||[]).forEach(li=>{
+      const q = +li.qty||0; if(!q) return;
+      const cn = itemCanon(li.name);
+      if(cn && cn.id===itemId) out.push({date:c.date, kind:'out', label:'Challan '+(c.num||''), qty:-q, ref:c.pname||'', cid:c.id});
+    });
+  });
+  if(Array.isArray(S.lots)) S.lots.forEach(l=>{
+    if(!l || l.kind==='fabric') return;
+    const cn = itemCanon(l.item); if(!cn || cn.id!==itemId) return;
+    const recs = (l.receivals&&l.receivals.length) ? l.receivals
+               : (l.piecesReceived!=null && l.piecesReceived!=='' ? [{date:l.dateReceived, pieces:l.piecesReceived}] : []);
+    recs.forEach(r=>{
+      const q = +r.pieces||0; if(!q || !_onOrAfter(r.date,cut)) return;
+      out.push({date:r.date, kind:'in', label:'Lot receival', qty:q, ref:l.contractorName||''});
+    });
+  });
+  return out.sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')) || (a.kind==='open'?-1:0));
+}
+
+/* ── Mutations ── */
+function setStockCutover(d){
+  if(!d) return;
+  S.stockFrom = d;
+  invalidateStock();
+  saveToCloud(); renderStock();
+}
+function saveOpeningStock(){
+  const inputs = document.querySelectorAll('#os-grid input[data-item]');
+  if(!inputs.length){ alert('Nothing to save.'); return; }
+  const cut = stockCutover() || today();
+  let changed = 0;
+  inputs.forEach(inp=>{
+    const itemId = inp.getAttribute('data-item');
+    const it = (S.items||[]).find(x=>x&&x.id===itemId); if(!it) return;
+    const raw = String(inp.value||'').trim();
+    const i = (S.stock||[]).findIndex(x=>x&&x.itemId===itemId);
+    if(raw===''){
+      if(i!==-1){ S.stock.splice(i,1); changed++; }
+      return;
+    }
+    const qty = +raw;
+    if(isNaN(qty)) return;
+    const rec = { id:openingId(itemId), itemId, itemName:it.name, qty:_r2(qty), date:cut };
+    if(i!==-1){
+      if(JSON.stringify(S.stock[i])!==JSON.stringify(rec)){ S.stock[i]=rec; changed++; }
+    } else { S.stock.push(rec); changed++; }
+  });
+  if(!changed){ alert('No changes to save.'); return; }
+  invalidateStock();
+  saveToCloud();
+  stockView='onhand'; renderStock();
+}
+function addStockMove(){
+  const itemId = document.getElementById('sm-item').value;
+  const dir    = document.getElementById('sm-dir').value;
+  const qty    = +document.getElementById('sm-qty').value;
+  const date   = document.getElementById('sm-date').value;
+  const reason = document.getElementById('sm-reason').value;
+  const rmk    = document.getElementById('sm-rmk').value.trim();
+  const it = (S.items||[]).find(x=>x&&x.id===itemId);
+  if(!it){ alert('Select an item from the Item Master.'); return; }
+  if(!qty || qty<=0){ alert('Enter a quantity greater than 0.'); return; }
+  if(!date){ alert('Select a date.'); return; }
+  const cut = stockCutover();
+  if(cut && date < cut){ alert('That date is before the stock start date ('+fmtD(cut)+').\n\nOpening stock already covers everything before that, so this movement would double-count. Change the date, or change the stock start date.'); return; }
+  const signed = dir==='out' ? -Math.abs(qty) : Math.abs(qty);
+  const after  = _r2(stockOnHand(itemId) + signed);
+  if(after < 0 && !confirm('This takes '+it.name+' to '+fmtN(after)+' — negative stock.\n\nUsually that means an inward entry is missing. Save anyway?')) return;
+  S.stockMv.push({ id:uniqId('SM'), itemId, itemName:it.name, qty:signed, date, reason, remarks:rmk });
+  invalidateStock();
+  document.getElementById('sm-qty').value='';
+  document.getElementById('sm-rmk').value='';
+  saveToCloud(); renderStock();
+}
+function delStockMove(id){
+  const m = (S.stockMv||[]).find(x=>x&&x.id===id); if(!m) return;
+  if(!confirm('Delete this stock movement?\n\n'+m.itemName+'  '+(m.qty>0?'+':'')+fmtN(m.qty)+'\n'+fmtD(m.date)+(m.reason?'  ·  '+m.reason:'')+'\n\nOn-hand will be recalculated.')) return;
+  S.stockMv = S.stockMv.filter(x=>x&&x.id!==id);
+  invalidateStock();
+  saveToCloud(); renderStock();
+}
+
+/* ── UI ── */
+let stockView   = 'onhand';    // 'onhand' | 'opening' | 'moves' | 'item'
+let stockSearch = '';
+let stockFilter = 'all';       // 'all' | 'neg' | 'low' | 'zero'
+let stockItemId = null;
+let osSearch    = '';
+
+function setStockView(v){ stockView=v; renderStock(); }
+function openStockItem(id){ stockItemId=id; stockView='item'; renderStock(); }
+
+function renderStock(){
+  const el = document.getElementById('stock-content'); if(!el) return;
+  const _ae = document.activeElement;
+  const _foc = (_ae && _ae.id && typeof _ae.selectionStart==='number') ? {id:_ae.id, pos:_ae.selectionStart} : null;
+  const _done = ()=>{ if(_foc){ const e2=document.getElementById(_foc.id); if(e2){ e2.focus(); try{e2.setSelectionRange(_foc.pos,_foc.pos);}catch(_e){} } } };
+
+  if(!stockReady()){ renderStockSetup(el); _done(); return; }
+  if(stockView==='opening'){ renderStockOpening(el); _done(); return; }
+  if(stockView==='moves')  { renderStockMoves(el);   _done(); return; }
+  if(stockView==='item')   { renderStockItem(el);    _done(); return; }
+  if(stockView==='unmapped'){ renderStockUnmapped(el); _done(); return; }
+  renderStockOnHand(el); _done();
+}
+
+function renderStockSetup(el){
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:18px">
+      <div style="font-size:15px;font-weight:800;color:#1A2E5A;margin-bottom:8px">📦 Set up Stock</div>
+      <div style="font-size:13px;color:#555;line-height:1.6;margin-bottom:14px">
+        Pick the date your stock count starts from. You will enter the physical count you have on hand
+        as at that date, and from then on challans reduce stock automatically.
+        <br><br>
+        Nothing before this date is counted — that is exactly what the opening figure represents,
+        so there is no back-calculation to do.
+      </div>
+      <div class="fg"><label>Stock start date *</label><input id="sf-date" type="date" value="${today()}"></div>
+      <button class="btn pri" style="width:100%;justify-content:center" onclick="setStockCutover(document.getElementById('sf-date').value)">Start tracking stock</button>
+    </div>`;
+}
+
+function stockSummary(){
+  const idx = stockIndex();
+  let tracked=0, neg=0, zero=0, units=0;
+  (S.items||[]).forEach(it=>{
+    const r = idx.rows[it.id]; if(!r) return;
+    const touched = r.open||r.inCon||r.manIn||r.manOut||r.out;
+    if(touched) tracked++;
+    if(r.onHand < 0) neg++;
+    else if(r.onHand === 0 && touched) zero++;
+    if(r.onHand > 0) units += r.onHand;
+  });
+  return {tracked, neg, zero, units, unmapped:idx.unmapped.length};
+}
+
+function renderStockOnHand(el){
+  const idx = stockIndex(), sm = stockSummary();
+  const q = normIName(stockSearch);
+  let list = (S.items||[]).slice().map(it=>({it, r:stockRow(it.id)}));
+  if(q) list = list.filter(x=> normIName(x.it.name).includes(q) || normIName(x.it.code).includes(q));
+  if(stockFilter==='neg')  list = list.filter(x=>x.r.onHand < 0);
+  if(stockFilter==='zero') list = list.filter(x=>x.r.onHand === 0);
+  if(stockFilter==='low')  list = list.filter(x=>x.r.onHand > 0 && x.r.onHand <= 10);
+  list.sort((a,b)=> a.it.name.localeCompare(b.it.name));
+
+  const chip = (k,lab,n) => `<button class="btn sm" style="flex:1;justify-content:center;font-size:12px;${stockFilter===k?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="stockFilter='${k}';renderStock()">${lab}${n?` <span style="opacity:.75;font-size:10px">${n}</span>`:''}</button>`;
+
+  const warn = sm.unmapped ? `
+    <div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E">
+      <strong>⚠️ ${sm.unmapped} item name${sm.unmapped>1?'s are':' is'} not linked to the Item Master.</strong>
+      <div style="margin-top:4px">Movements under ${sm.unmapped>1?'those names':'that name'} are not counted in stock. Map ${sm.unmapped>1?'them':'it'} to fix the numbers — nothing is changed automatically.</div>
+      <button class="btn sm" style="margin-top:8px" onclick="setStockView('unmapped')">Review unmapped names</button>
+    </div>` : '';
+
+  el.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
+    </div>
+    ${warn}
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px">
+        <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">TOTAL UNITS</div>
+        <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.units)}</div>
+      </div>
+      <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px">
+        <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">ITEMS TRACKED</div>
+        <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.tracked)}</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#888;margin-bottom:10px">Stock from <strong>${fmtD(stockCutover())}</strong> · <button class="btn sm" style="padding:3px 9px;font-size:11px" onclick="setStockView('opening')">change</button></div>
+    <input id="stk-search" placeholder="🔍 Search item..." value="${esc(stockSearch)}" oninput="stockSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      ${chip('all','All','')}${chip('low','Low','')}${chip('zero','Zero',sm.zero||'')}${chip('neg','Negative',sm.neg||'')}
+    </div>
+    ${ list.length ? list.map(x=>{
+      const r=x.r, c = r.onHand<0?'#DC2626' : r.onHand===0?'#888' : '#065F46';
+      return `<div class="prow" onclick="openStockItem('${x.it.id}')">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:700;color:#1A1A1A">${esc(x.it.name)}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Open ${fmtN(r.open)} · In ${fmtN(r.inCon+r.manIn)} · Out ${fmtN(r.out+r.manOut)}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:17px;font-weight:800;color:${c}">${fmtN(r.onHand)}</div>
+          <div style="font-size:10px;color:#AAA">on hand</div>
+        </div>
+      </div>`;
+    }).join('') : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items match.</div>` }`;
+}
+
+function renderStockOpening(el){
+  const q = normIName(osSearch);
+  let list = (S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  if(q) list = list.filter(it=> normIName(it.name).includes(q) || normIName(it.code).includes(q));
+  const entered = (S.stock||[]).length;
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:8px">📥 Opening Stock</div>
+      <div style="font-size:12px;color:#666;line-height:1.55;margin-bottom:12px">
+        Physical count you hold as at the start date. Leave an item blank if you hold none of it —
+        blank removes any opening figure previously entered.
+      </div>
+      <div class="fg"><label>Stock start date</label><input id="sf-date2" type="date" value="${esc(stockCutover())}" onchange="setStockCutover(this.value)"></div>
+      <div style="font-size:11px;color:#888">${entered} item${entered===1?'':'s'} with an opening figure</div>
+    </div>
+    <input id="os-search" placeholder="🔍 Filter items..." value="${esc(osSearch)}" oninput="osSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
+    ${ (S.items||[]).length ? `
+      <div id="os-grid" style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:8px 10px;margin-bottom:12px">
+        ${ list.map(it=>`
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #F4F4F4">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:700;color:#1A1A1A">${esc(it.name)}</div>
+              ${it.code?`<div style="font-size:10px;color:#AAA">${esc(it.code)}</div>`:''}
+            </div>
+            <input data-item="${it.id}" type="number" inputmode="numeric" placeholder="0"
+                   value="${(S.stock||[]).some(x=>x.itemId===it.id)?openingFor(it.id):''}"
+                   style="width:92px;text-align:right;padding:7px 9px;font-size:13px">
+          </div>`).join('') }
+      </div>
+      <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
+      <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Only the items shown above are saved. Clear the filter to edit everything at once.</div>
+    ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="goTab('items')">Add items first</button></div>` }`;
+}
+
+function renderStockMoves(el){
+  const items = (S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const moves = (S.stockMv||[]).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:4px">🔁 Add Movement</div>
+      <div style="font-size:11.5px;color:#888;line-height:1.5;margin-bottom:10px">
+        For stock that does not come from a challan or a contractor lot — goods bought in, sales
+        returns, damage, or a correction after a physical recount.
+      </div>
+      <div class="fg"><label>Item *</label>
+        <select id="sm-item"><option value="">Select item...</option>${items.map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join('')}</select>
+      </div>
+      <div class="fr">
+        <div><label>Direction *</label><select id="sm-dir"><option value="in">IN  (+)</option><option value="out">OUT (−)</option></select></div>
+        <div><label>Quantity *</label><input id="sm-qty" type="number" inputmode="numeric" placeholder="0"></div>
+      </div>
+      <div class="fr">
+        <div><label>Date *</label><input id="sm-date" type="date" value="${today()}"></div>
+        <div><label>Reason</label>
+          <select id="sm-reason">
+            <option>Purchase</option><option>Sales return</option><option>Production</option>
+            <option>Damage / loss</option><option>Recount correction</option><option>Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="fg"><label>Remarks</label><input id="sm-rmk" placeholder="optional"></div>
+      <button class="btn pri" style="width:100%;justify-content:center" onclick="addStockMove()">Add Movement</button>
+    </div>
+    ${ moves.length ? moves.map(m=>{
+      const pos = (+m.qty||0) >= 0;
+      return `<div class="payrow">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:700">${esc(m.itemName||'')}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">${fmtD(m.date)}${m.reason?' · '+esc(m.reason):''}${m.remarks?' · '+esc(m.remarks):''}</div>
+        </div>
+        <div style="font-size:15px;font-weight:800;color:${pos?'#065F46':'#DC2626'};flex-shrink:0">${pos?'+':''}${fmtN(m.qty)}</div>
+        <button class="btn sm red" style="flex-shrink:0" onclick="delStockMove('${m.id}')">🗑</button>
+      </div>`;
+    }).join('') : `<div style="text-align:center;color:#999;padding:30px 20px;font-size:13px">No manual movements yet.</div>` }`;
+}
+
+function renderStockItem(el){
+  const it = (S.items||[]).find(x=>x&&x.id===stockItemId);
+  if(!it){ stockView='onhand'; renderStock(); return; }
+  const r = stockRow(it.id), moves = stockItemMoves(it.id);
+  let run = 0;
+  const rows = moves.map(m=>{
+    run = _r2(run + (+m.qty||0));
+    const pos = (+m.qty||0) >= 0;
+    return `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid #F4F4F4">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12.5px;font-weight:700;color:#1A1A1A">${esc(m.label)}</div>
+        <div style="font-size:10.5px;color:#999;margin-top:1px">${fmtD(m.date)}${m.ref?' · '+esc(m.ref):''}</div>
+      </div>
+      <div style="font-size:13px;font-weight:800;color:${pos?'#065F46':'#DC2626'};width:60px;text-align:right">${pos?'+':''}${fmtN(m.qty)}</div>
+      <div style="font-size:12px;font-weight:700;color:#888;width:60px;text-align:right">${fmtN(run)}</div>
+    </div>`;
+  }).join('');
+  const c = r.onHand<0?'#DC2626' : r.onHand===0?'#888' : '#065F46';
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:16px;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:800;color:#1A1A1A">${esc(it.name)}</div>
+      ${it.code?`<div style="font-size:11px;color:#AAA;margin-top:2px">${esc(it.code)}</div>`:''}
+      <div style="font-size:30px;font-weight:800;color:${c};margin-top:10px">${fmtN(r.onHand)}</div>
+      <div style="font-size:11px;color:#888">on hand</div>
+      <div style="display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid #F0F0F0;font-size:11.5px;color:#555;flex-wrap:wrap">
+        <span>Opening <strong>${fmtN(r.open)}</strong></span>
+        <span>Lots <strong style="color:#065F46">+${fmtN(r.inCon)}</strong></span>
+        <span>Manual in <strong style="color:#065F46">+${fmtN(r.manIn)}</strong></span>
+        <span>Challans <strong style="color:#DC2626">−${fmtN(r.out)}</strong></span>
+        <span>Manual out <strong style="color:#DC2626">−${fmtN(r.manOut)}</strong></span>
+      </div>
+    </div>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:10px 12px">
+      <div style="display:flex;gap:10px;padding:0 4px 8px;border-bottom:1.5px solid #EEE;font-size:10px;font-weight:800;color:#999;letter-spacing:.3px">
+        <div style="flex:1">MOVEMENT</div><div style="width:60px;text-align:right">QTY</div><div style="width:60px;text-align:right">BALANCE</div>
+      </div>
+      ${ rows || `<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">No movements since ${fmtD(stockCutover())}.</div>` }
+    </div>`;
+}
+
+function renderStockUnmapped(el){
+  const un = stockIndex().unmapped.slice().sort((a,b)=>(b.outQty+b.inQty)-(a.outQty+a.inQty));
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
+    <div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E">
+      These names appear on challans or lots dated on/after ${fmtD(stockCutover())} but do not match any
+      Item Master record, so their quantities are not counted in stock. Nothing is changed automatically —
+      map them in the Item Master and the numbers correct themselves.
+      <button class="btn sm" style="margin-top:8px" onclick="goTab('items');itemView='review';renderItems()">Open Item Master review</button>
+    </div>
+    ${ un.length ? un.map(u=>`
+      <div class="payrow">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:700">${esc(u.raw)}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">${u.uses} entr${u.uses===1?'y':'ies'} · last ${fmtD(u.last)}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;font-size:12px">
+          ${u.inQty?`<div style="color:#065F46;font-weight:700">+${fmtN(u.inQty)}</div>`:''}
+          ${u.outQty?`<div style="color:#DC2626;font-weight:700">−${fmtN(u.outQty)}</div>`:''}
+        </div>
+      </div>`).join('') : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">Everything is mapped ✓</div>` }`;
+}
+
 function renderItems(){
   const el=document.getElementById('items-content'); if(!el) return;
   // Preserve focus + caret across the innerHTML rebuild (typing in a search box must not lose focus)
