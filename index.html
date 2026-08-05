@@ -443,6 +443,27 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 
 <!-- ══ MODALS ══ -->
 
+<!-- EDIT ITEM MODAL -->
+<div class="overlay" id="mo-itemedit">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead"><h3>✏️ Edit Item</h3><button class="xbtn" onclick="closeItemEdit()">✕</button></div>
+  <div class="mbody">
+    <div id="ie-usage" style="font-size:11.5px;color:#888;background:#F7F7F7;border-radius:9px;padding:9px 11px;margin-bottom:12px"></div>
+    <div class="fg"><label>Item Name *</label><input id="ie-name" placeholder="e.g. Cotton Kurti"></div>
+    <div class="fr">
+      <div><label>Item Code</label><input id="ie-code" placeholder="e.g. CK101"></div>
+      <div><label>Default Rate (Rs.) *</label><input id="ie-rate" type="number" inputmode="decimal" placeholder="0"></div>
+    </div>
+    <div id="ie-warn" style="display:none;font-size:11.5px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px;color:#92400E"></div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="btn" style="flex:1;justify-content:center" onclick="closeItemEdit()">Cancel</button>
+      <button class="btn pri" style="flex:2;justify-content:center" onclick="itemEditSave()">✓ Save Changes</button>
+    </div>
+    <button class="btn red" style="width:100%;justify-content:center;margin-top:8px" onclick="itemEditDelete()">🗑 Delete Item</button>
+  </div>
+</div>
+</div>
+
 <!-- SEASON MANAGER MODAL -->
 <div class="overlay" id="mo-seasons">
 <div class="mbox"><div class="mhandle"></div>
@@ -3144,7 +3165,7 @@ function renderItems(){
   const q=normIName(itemSearch);
   const list=(S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name))
     .filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code).includes(q));
-  const ed=itemEditId?S.items.find(x=>x.id===itemEditId):null;
+  const ed=null;   // editing happens in the mo-itemedit modal, not this inline form
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};reviewLimit=60;reviewSearch='';renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
@@ -3172,11 +3193,89 @@ function renderItems(){
           <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">${esc(it.name)} ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}</div>
           <div style="font-size:11px;color:#888;margin-top:2px">Default rate: <strong style="color:#059669">${fmt(+it.rate||0)}</strong></div>
         </div>
-        <button class="btn sm" onclick="itemEditId='${it.id}';renderItems();window.scrollTo(0,0)" style="font-size:11px">✏️ Edit</button>
+        <button class="btn sm" onclick="openItemEdit('${it.id}')" style="font-size:11px">✏️ Edit</button>
         <button class="btn sm red" onclick="delItem('${it.id}')" style="font-size:11px">🗑</button>
       </div>`).join('')
     :'<div style="text-align:center;padding:36px 16px;color:#999">'+(q?'No items match "'+esc(itemSearch)+'"':'No items yet. Add your first item above.<br><span style="font-size:11px">Saved items appear as a dropdown in every challan row.</span>')+'</div>'}`;
   _done();
+}
+/* ── Item edit modal ──
+   Editing from a popup so the list position is never lost. A RENAME is the dangerous case:
+   itemCanon() resolves challan/lot text by exact name first, so renaming an item silently
+   orphans every historical line that still carries the old spelling. We therefore offer to
+   keep a mapping from the old name → this item, which preserves reports AND stock. */
+let ieId = null;
+function itemUsageStats(id){
+  const it=(S.items||[]).find(x=>x&&x.id===id);
+  let ch=0, lots=0;
+  const nm = it ? normIName(it.name) : '';
+  (S.challans||[]).forEach(c=>(c.items||[]).forEach(li=>{ const cn=itemCanon(li.name); if(cn&&cn.id===id) ch++; }));
+  (S.lots||[]).forEach(l=>{ if(!l||l.kind==='fabric')return; const cn=itemCanon(l.item); if(cn&&cn.id===id) lots++; });
+  const maps=(S.itemMap||[]).filter(m=>m&&m.itemId===id).length;
+  return {ch, lots, maps, nm};
+}
+function openItemEdit(id){
+  const it=(S.items||[]).find(x=>x&&x.id===id); if(!it) return;
+  ieId=id;
+  document.getElementById('ie-name').value=it.name||'';
+  document.getElementById('ie-code').value=it.code||'';
+  document.getElementById('ie-rate').value=(+it.rate||0);
+  document.getElementById('ie-warn').style.display='none';
+  const u=itemUsageStats(id);
+  const parts=[];
+  parts.push(u.ch+' challan line'+(u.ch===1?'':'s'));
+  if(u.lots) parts.push(u.lots+' contractor lot'+(u.lots===1?'':'s'));
+  if(u.maps) parts.push(u.maps+' mapped keyword'+(u.maps===1?'':'s'));
+  let txt='Used by '+parts.join(' · ');
+  if(typeof stockReady==='function' && stockReady()) txt+='  ·  stock on hand '+fmtN(stockOnHand(id));
+  document.getElementById('ie-usage').textContent=txt;
+  document.getElementById('mo-itemedit').classList.add('open');
+  setTimeout(()=>{ const n=document.getElementById('ie-name'); if(n){ n.focus(); n.select(); } },60);
+}
+function closeItemEdit(){ ieId=null; document.getElementById('mo-itemedit').classList.remove('open'); }
+function itemEditSave(){
+  const it=(S.items||[]).find(x=>x&&x.id===ieId); if(!it){ closeItemEdit(); return; }
+  const name=document.getElementById('ie-name').value.trim();
+  const code=document.getElementById('ie-code').value.trim();
+  const rate=+document.getElementById('ie-rate').value;
+  const w=document.getElementById('ie-warn');
+  const bad=msg=>{ w.style.display='block'; w.textContent=msg; };
+  if(!name) return bad('Item name is required.');
+  if(document.getElementById('ie-rate').value==='') return bad('Default rate is required.');
+  if(rate<0) return bad('Rate cannot be negative.');
+  const dup=findDupItem(name, ieId);
+  if(dup) return bad('An item named "'+dup.name+'" already exists.');
+
+  const oldName=it.name||'';
+  const renamed = normIName(oldName)!==normIName(name);
+  if(renamed){
+    // Does anything still refer to the OLD spelling directly?
+    const oldKey=normIName(oldName);
+    let hits=0;
+    (S.challans||[]).forEach(c=>(c.items||[]).forEach(li=>{ if(normIName(li.name)===oldKey) hits++; }));
+    (S.lots||[]).forEach(l=>{ if(l&&l.kind!=='fabric'&&normIName(l.item)===oldKey) hits++; });
+    if(hits){
+      const keep=confirm('Renaming "'+oldName+'" to "'+name+'".\n\n'+hits+' existing entr'+(hits===1?'y':'ies')+' still use the old name. Unless the old name stays linked to this item, '+(hits===1?'it':'they')+' will drop out of reports and stock.\n\nOK  = keep "'+oldName+'" linked to this item (recommended)\nCancel = let the old name become a separate unmapped item');
+      if(keep) addItemMapping(oldKey, oldName, ieId);
+    }
+  }
+  const i=S.items.findIndex(x=>x&&x.id===ieId);
+  S.items[i]={ id:ieId, name, code, rate };            // new object — never mutate in place
+  // Any mapping pointing here should show the current master name.
+  (S.itemMap||[]).forEach((m,mi)=>{ if(m&&m.itemId===ieId&&m.itemName!==name) S.itemMap[mi]=Object.assign({},m,{itemName:name}); });
+  _itemCanonIdx=null; invalidateStock();
+  saveToCloud(); closeItemEdit(); renderItems();
+}
+function itemEditDelete(){
+  const id=ieId; const it=(S.items||[]).find(x=>x&&x.id===id); if(!it) return;
+  const u=itemUsageStats(id);
+  let msg='Delete item "'+it.name+'" from the Item Master?\n\nSaved challans are NOT affected — they keep their own copies of item values.';
+  if(u.ch||u.lots) msg+='\n\n'+(u.ch?u.ch+' challan line'+(u.ch===1?'':'s'):'')+(u.ch&&u.lots?' and ':'')+(u.lots?u.lots+' contractor lot'+(u.lots===1?'':'s'):'')+' currently resolve to this item and will become unmapped — their quantities will drop out of stock until remapped.';
+  if(u.maps) msg+='\n\n'+u.maps+' mapped keyword'+(u.maps===1?'':'s')+' will point at a deleted item and be reported as unmapped.';
+  if(!confirm(msg)) return;
+  S.items=S.items.filter(x=>x&&x.id!==id);
+  _itemCanonIdx=null; invalidateStock();
+  saveToCloud(); closeItemEdit(); renderItems();
 }
 function itemFormSave(){
   const name=document.getElementById('im-name').value.trim();
