@@ -727,7 +727,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
    STATE
 ══════════════════════════════ */
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
-          stock:[], stockMv:[], stockFrom:'' };
+          stock:[], stockMv:[], stockFrom:'', lots:[] };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1601,7 +1601,7 @@ function saveLocal(){
     parties:S.parties, challans:S.challans, payments:S.payments,
     settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
     seasons:S.seasons, curSeason:S.curSeason,
-    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom
+    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, lots:S.lots
   })); }catch(e){}
 }
 function loadLocal(){
@@ -1611,7 +1611,7 @@ function loadLocal(){
     S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.itemMap=d.itemMap||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
-    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; invalidateStock();
+    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.lots=d.lots||[]; invalidateStock();
     return true;
   }catch(e){ return false; }
 }
@@ -1634,7 +1634,7 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
 let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
-let _subStock=null, _subStockMv=null;
+let _subStock=null, _subStockMv=null, _subLots=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
@@ -1752,12 +1752,25 @@ function attachDataListeners(){
     invalidateStock();
     markLoaded(snap.metadata);
   }, err=>onSubErr('stockmv',err));
+  /* ── Contractor Tracker bridge — STRICTLY READ ONLY ──
+     Both apps live under the same owner document (users/{OWNER_UID}/…), so this app can read
+     ct_lots directly. Finished-goods receivals become stock IN via stockContractorIn().
+     ct_lots is deliberately ABSENT from saveToCloud()'s diffWrite list and from _lastSaved —
+     this app can never write to, reshape, or delete a lot. The Contractor Tracker stays the
+     sole owner of that collection. If the read is denied (staff account), S.lots stays empty
+     and stock simply shows no contractor inward — nothing breaks. */
+  _subLots = _col('ct_lots').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.lots = snap.docs.map(d=>d.data());
+    invalidateStock();
+    _tokDFCache = null;          // lot item names join the fuzzy-matching corpus
+    markLoaded(snap.metadata);
+  }, err=>onSubErr('ct_lots',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subLots,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -3247,13 +3260,14 @@ function _tokScore(a,b){
    Cheap cache keyed on collection sizes — weights tolerate slight staleness. */
 let _tokDFCache=null, _tokDFKey='';
 function _tokDF(){
-  const key=(S.items||[]).length+':'+(S.challans||[]).length;
+  const key=(S.items||[]).length+':'+(S.challans||[]).length+':'+(S.lots||[]).length;
   if(_tokDFCache&&_tokDFKey===key) return _tokDFCache;
   const df={};
   const addDoc=name=>{ const seen={}; _fuzNorm(name).split(' ').forEach(t=>{ if(t&&!seen[t]){seen[t]=1; df[t]=(df[t]||0)+1;} }); };
   (S.items||[]).forEach(it=>it&&addDoc(it.name));
   const uniq={};
   (S.challans||[]).forEach(c=>(c.items||[]).forEach(it=>{ const k=_fuzNorm(it.name); if(k&&!uniq[k]){uniq[k]=1; addDoc(it.name);} }));
+  (S.lots||[]).forEach(l=>{ if(!l||l.kind==='fabric')return; const k=_fuzNorm(l.item); if(k&&!uniq[k]){uniq[k]=1; addDoc(l.item);} });
   _tokDFKey=key; return _tokDFCache=df;
 }
 function _tokW(t, df){
@@ -3302,17 +3316,35 @@ function itemSuggestions(hist, topN){
   return ranked.filter((x,i)=>i===0||x.score>=ranked[0].score*0.72);
 }
 
-/* One scan of the whole ledger → unique historical names with usage stats, unmapped first. */
+/* One scan of the whole ledger → unique historical names with usage stats, unmapped first.
+   Covers BOTH sources: challan lines (sales) and Contractor Tracker lot items (production).
+   Lot names carry no sale revenue, so they never pollute the rate/revenue stats — a lot-only
+   name shows a "lot" badge instead. Mapping a lot name is what connects a contractor's
+   production to a stock item. */
 function scanHistoricalItems(){
   const seen={};
+  const bucket=(raw)=>{
+    const k=normIName(raw); if(!k) return null;
+    return seen[k]=seen[k]||{key:k,raw,uses:0,qty:0,rev:0,last:'',rMin:null,rMax:null,src:''};
+  };
   S.challans.forEach(c=>(c.items||[]).forEach(it=>{
     const raw=String(it.name||'').trim(); if(!raw) return;
-    const k=normIName(raw);
-    const o=seen[k]=seen[k]||{key:k,raw,uses:0,qty:0,rev:0,last:'',rMin:null,rMax:null};
+    const o=bucket(raw); if(!o) return;
     o.uses++; o.qty+=(+it.qty||0); o.rev+=(+it.amount||(+it.qty||0)*(+it.rate||0));
+    o.src = o.src==='lot'||o.src==='both' ? 'both' : 'challan';
     const rt=+it.rate||0;
     if(rt>0){ if(o.rMin==null||rt<o.rMin)o.rMin=rt; if(o.rMax==null||rt>o.rMax)o.rMax=rt; }
     if(c.date>o.last){o.last=c.date;o.raw=raw;} }));
+  (S.lots||[]).forEach(l=>{
+    if(!l || l.kind==='fabric') return;                 // fabric is not finished-goods stock
+    const raw=String(l.item||'').trim(); if(!raw) return;
+    const o=bucket(raw); if(!o) return;
+    const recs=(l.receivals&&l.receivals.length)?l.receivals
+             :(l.piecesReceived!=null&&l.piecesReceived!==''?[{date:l.dateReceived,pieces:l.piecesReceived}]:[]);
+    o.uses++;
+    recs.forEach(r=>{ o.qty+=(+r.pieces||0); if((r.date||'')>o.last){o.last=r.date||'';} });
+    o.src = o.src==='challan'||o.src==='both' ? 'both' : 'lot';
+  });
   return Object.values(seen);
 }
 function unmappedHistorical(){ const idx=itemCanonIdx(); return scanHistoricalItems().filter(h=>!(h.key in idx)); }
@@ -3369,7 +3401,7 @@ function renderItemReview(el){
       <span style="font-size:11px;color:#999">${reviewSearch?un.length+' of '+unTotal:un.length} unmapped</span>
     </div>
     <div style="font-size:11.5px;color:#888;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px">
-      These item spellings from old challans don't match any Item Master record. Map each to the right item so reports group them correctly. <strong>Old challans and prints are never changed</strong> — mappings only affect reports, and every mapping can be removed later.
+      These item spellings from old challans and contractor lots don't match any Item Master record. Map each to the right item so reports group them correctly — and so lot receivals credit the right stock item. <strong>Old challans, prints and lots are never changed</strong> — mappings only affect reports and stock, and every mapping can be removed later.
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
       <input id="rv-search" placeholder="🔍 Search keyword (e.g. plazzo, kurti)…" value="${esc(reviewSearch)}" oninput="reviewSearch=this.value;reviewLimit=60;debRenderItems()" style="flex:1;min-width:170px">
@@ -3390,8 +3422,8 @@ function renderItemReview(el){
         <div style="display:flex;align-items:flex-start;gap:9px">
           <span onclick="toggleReviewSel('${esc(h.key).replace(/'/g,"\\'")}')" style="width:21px;height:21px;min-width:21px;flex:0 0 auto;border:2px solid ${reviewSel[h.key]?'#1A2E5A':'#CBD5E1'};background:${reviewSel[h.key]?'#1A2E5A':'#fff'};border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:2px;user-select:none">${reviewSel[h.key]?'✓':''}</span>
           <div style="flex:1;min-width:0">
-            <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">"${esc(h.raw)}"</div>
-            <div style="font-size:10.5px;color:#999;margin-top:1px">${h.uses}× used · qty ${h.qty.toLocaleString('en-IN')} · ${fmt(h.rev)}${h.rMin!=null?' · rate '+(h.rMin===h.rMax?'₹'+h.rMin:'₹'+h.rMin+'–₹'+h.rMax):''} · last ${fmtD(h.last)}</div>
+            <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">"${esc(h.raw)}"${h.src==='lot'?' <span style="font-size:9.5px;font-weight:800;background:#EFF6FF;color:#1D4ED8;padding:1px 6px;border-radius:20px;vertical-align:middle">LOT</span>':h.src==='both'?' <span style="font-size:9.5px;font-weight:800;background:#F0FDF4;color:#059669;padding:1px 6px;border-radius:20px;vertical-align:middle">LOT + CHALLAN</span>':''}</div>
+            <div style="font-size:10.5px;color:#999;margin-top:1px">${h.uses}× used · qty ${h.qty.toLocaleString('en-IN')}${h.src==='lot'?'':' · '+fmt(h.rev)}${h.rMin!=null?' · rate '+(h.rMin===h.rMax?'₹'+h.rMin:'₹'+h.rMin+'–₹'+h.rMax):''} · last ${fmtD(h.last)}</div>
             ${sug.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">${sug.map(s=>`<button class="btn sm" style="font-size:11px;background:#F0FDF4;border-color:#BBF7D0;color:#059669" onclick="mapOne('${esc(h.key).replace(/'/g,"\\'")}','${s.it.id}')">✓ ${esc(s.it.name)} <span style="opacity:.75">₹${+s.it.rate||0}</span> <span style="opacity:.55">${Math.round(s.score*100)}%</span></button>`).join('')}</div>`
               :'<div style="font-size:11px;color:#BBB;margin-top:6px">No close match found.</div>'}
           </div>
