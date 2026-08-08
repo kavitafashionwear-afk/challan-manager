@@ -2677,7 +2677,30 @@ function delSeason(name){
    Items (name, code, default rate) live in their own synced `items` collection. Challans always
    SNAPSHOT item values at save time — changing the Item Master later NEVER modifies saved challans.
 ══════════════════════════════ */
-let itemSearch='', itemEditId=null;
+let itemSearch='', itemEditId=null, itemSort='name';
+function setItemSort(v){ itemSort=v; renderItems(); }
+function itemSortList(list){
+  const L=list.slice();
+  const R=it=>+it.rate||0;
+  if(itemSort==='rate')       L.sort((a,b)=>R(a)-R(b) || a.name.localeCompare(b.name));
+  else if(itemSort==='rated') L.sort((a,b)=>R(b)-R(a) || a.name.localeCompare(b.name));
+  else if(itemSort==='namez') L.sort((a,b)=>b.name.localeCompare(a.name));
+  else if(itemSort==='used')  L.sort((a,b)=>itemUseCount(b.id)-itemUseCount(a.id) || a.name.localeCompare(b.name));
+  else if(itemSort==='stock' && typeof stockOnHand==='function')
+                              L.sort((a,b)=>stockOnHand(b.id)-stockOnHand(a.id) || a.name.localeCompare(b.name));
+  else L.sort((a,b)=>a.name.localeCompare(b.name));
+  return L;
+}
+let _itemUseCache=null, _itemUseKey='';
+function itemUseCount(id){
+  const key=(S.challans||[]).length+':'+(S.items||[]).length+':'+(S.itemMap||[]).length;
+  if(!_itemUseCache||_itemUseKey!==key){
+    const m={};
+    (S.challans||[]).forEach(c=>(c.items||[]).forEach(li=>{ const cn=itemCanon(li.name); if(cn) m[cn.id]=(m[cn.id]||0)+1; }));
+    _itemUseCache=m; _itemUseKey=key;
+  }
+  return _itemUseCache[id]||0;
+}
 
 function normIName(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
 function findDupItem(name, excludeId){
@@ -2736,17 +2759,28 @@ function debRenderItems(){ clearTimeout(_itemsRenderT); _itemsRenderT=setTimeout
 ══════════════════════════════════════════════════════════════════════ */
 let _stockIdx = null;
 function invalidateStock(){ _stockIdx = null; }
-function stockCutover(){ return S.stockFrom || ''; }
-function stockReady(){ return !!stockCutover(); }
+function stockCutover(){ return S.stockFrom || ''; }          // default only — each item may override
+function stockReady(){ return !!stockCutover() || (S.stock||[]).length>0; }
 function _onOrAfter(d, cut){ return !cut || String(d||'') >= cut; }
 function openingId(itemId){ return 'OS__' + itemId; }
 function openingFor(itemId){ const o=(S.stock||[]).find(x=>x&&x.itemId===itemId); return o?(+o.qty||0):0; }
+/* Each article can start on its OWN date — the day you physically counted it. Movements before
+   that date are already baked into that item's opening figure, so they must not be counted again.
+   Items with no opening record fall back to the default start date. */
+function itemCutover(itemId){
+  const o=(S.stock||[]).find(x=>x&&x.itemId===itemId);
+  return (o && o.date) ? o.date : stockCutover();
+}
+function hasOwnCutover(itemId){
+  const o=(S.stock||[]).find(x=>x&&x.itemId===itemId);
+  return !!(o && o.date && o.date!==stockCutover());
+}
 
 /* STAGE 2 HOOK — contractor receivals become stock IN.
    Already written: the moment S.lots is present (Contractor Tracker merged),
-   finished-goods receivals dated on/after the cutover start crediting stock.
+   finished-goods receivals dated on/after the item's own start date credit stock.
    Fabric lots are excluded by design. No other engine change is required. */
-function stockContractorIn(row, cut, unmapped){
+function stockContractorIn(row, cutOf, gcut, unmapped){
   if(!Array.isArray(S.lots)) return;               // tracker not merged yet
   S.lots.forEach(l=>{
     if(!l || l.kind==='fabric') return;             // finished goods only
@@ -2754,10 +2788,12 @@ function stockContractorIn(row, cut, unmapped){
                : (l.piecesReceived!=null && l.piecesReceived!=='' ? [{date:l.dateReceived, pieces:l.piecesReceived}] : []);
     recs.forEach(r=>{
       const q = +r.pieces || 0; if(!q) return;
-      if(!_onOrAfter(r.date, cut)) return;
       const cn = itemCanon(l.item);
-      if(cn){ row(cn.id).inCon += q; }
-      else {
+      if(cn){
+        if(!_onOrAfter(r.date, cutOf(cn.id))) return;
+        row(cn.id).inCon += q;
+      } else {
+        if(!_onOrAfter(r.date, gcut)) return;
         const k = normIName(l.item); if(!k) return;
         const u = unmapped[k] || (unmapped[k] = {key:k, raw:l.item, inQty:0, outQty:0, uses:0, last:''});
         u.inQty += q; u.uses++; if((r.date||'') > u.last) u.last = r.date||'';
@@ -2768,7 +2804,11 @@ function stockContractorIn(row, cut, unmapped){
 
 function stockIndex(){
   if(_stockIdx) return _stockIdx;
-  const cut = stockCutover();
+  const gcut = stockCutover();
+  const cuts = {};
+  (S.stock||[]).forEach(o=>{ if(o&&o.itemId) cuts[o.itemId] = o.date || gcut; });
+  const cutOf = id => (id in cuts) ? cuts[id] : gcut;
+
   const rows = {};
   const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, onHand:0});
   (S.items||[]).forEach(it=>{ if(it&&it.id) row(it.id); });
@@ -2777,19 +2817,22 @@ function stockIndex(){
 
   (S.stockMv||[]).forEach(m=>{
     if(!m||!m.itemId) return;
-    if(!_onOrAfter(m.date, cut)) return;
+    if(!_onOrAfter(m.date, cutOf(m.itemId))) return;
     const q = +m.qty || 0;
     if(q >= 0) row(m.itemId).manIn += q; else row(m.itemId).manOut += -q;
   });
 
   const unmapped = {};
-  (S.challans||[]).forEach(c=>{
-    if(!c || !_onOrAfter(c.date, cut)) return;      // S.challans excludes trashed challans
+  (S.challans||[]).forEach(c=>{                     // S.challans excludes trashed challans
+    if(!c) return;
     (c.items||[]).forEach(li=>{
       const q = +li.qty || 0; if(!q) return;
       const cn = itemCanon(li.name);
-      if(cn){ row(cn.id).out += q; }
-      else {
+      if(cn){
+        if(!_onOrAfter(c.date, cutOf(cn.id))) return;
+        row(cn.id).out += q;
+      } else {
+        if(!_onOrAfter(c.date, gcut)) return;
         const k = normIName(li.name); if(!k) return;
         const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
         u.outQty += q; u.uses++; if((c.date||'') > u.last) u.last = c.date||'';
@@ -2797,7 +2840,7 @@ function stockIndex(){
     });
   });
 
-  stockContractorIn(row, cut, unmapped);
+  stockContractorIn(row, cutOf, gcut, unmapped);
 
   Object.keys(rows).forEach(id=>{
     const r = rows[id];
@@ -2811,7 +2854,7 @@ function stockOnHand(itemId){ return stockRow(itemId).onHand; }
 
 /* Full audit trail for one item — every contribution, oldest first. */
 function stockItemMoves(itemId){
-  const cut = stockCutover(), out = [];
+  const cut = itemCutover(itemId), out = [];
   const op = (S.stock||[]).find(x=>x&&x.itemId===itemId);
   if(op) out.push({date:op.date||cut, kind:'open', label:'Opening stock', qty:(+op.qty||0), ref:''});
   (S.stockMv||[]).forEach(m=>{
@@ -2847,14 +2890,16 @@ function setStockCutover(d){
   saveToCloud(); renderStock();
 }
 function saveOpeningStock(){
-  const inputs = document.querySelectorAll('#os-grid input[data-item]');
-  if(!inputs.length){ alert('Nothing to save.'); return; }
-  const cut = stockCutover() || today();
-  let changed = 0;
-  inputs.forEach(inp=>{
+  const rows = document.querySelectorAll('#os-grid input[data-item]');
+  if(!rows.length){ alert('Nothing to save.'); return; }
+  const fallback = stockCutover() || today();
+  let changed = 0, missingDate = 0;
+  rows.forEach(inp=>{
     const itemId = inp.getAttribute('data-item');
     const it = (S.items||[]).find(x=>x&&x.id===itemId); if(!it) return;
     const raw = String(inp.value||'').trim();
+    const dEl = document.getElementById('osd-'+itemId);
+    const d   = dEl ? String(dEl.value||'').trim() : '';
     const i = (S.stock||[]).findIndex(x=>x&&x.itemId===itemId);
     if(raw===''){
       if(i!==-1){ S.stock.splice(i,1); changed++; }
@@ -2862,11 +2907,13 @@ function saveOpeningStock(){
     }
     const qty = +raw;
     if(isNaN(qty)) return;
-    const rec = { id:openingId(itemId), itemId, itemName:it.name, qty:_r2(qty), date:cut };
+    if(!d) missingDate++;
+    const rec = { id:openingId(itemId), itemId, itemName:it.name, qty:_r2(qty), date:d||fallback };
     if(i!==-1){
       if(JSON.stringify(S.stock[i])!==JSON.stringify(rec)){ S.stock[i]=rec; changed++; }
     } else { S.stock.push(rec); changed++; }
   });
+  if(missingDate && !confirm(missingDate+' item'+(missingDate===1?'':'s')+' have a quantity but no start date.\n\nThey will use the default start date ('+fmtD(fallback)+'). Continue?')) return;
   if(!changed){ alert('No changes to save.'); return; }
   invalidateStock();
   saveToCloud();
@@ -2883,8 +2930,8 @@ function addStockMove(){
   if(!it){ alert('Select an item from the Item Master.'); return; }
   if(!qty || qty<=0){ alert('Enter a quantity greater than 0.'); return; }
   if(!date){ alert('Select a date.'); return; }
-  const cut = stockCutover();
-  if(cut && date < cut){ alert('That date is before the stock start date ('+fmtD(cut)+').\n\nOpening stock already covers everything before that, so this movement would double-count. Change the date, or change the stock start date.'); return; }
+  const cut = itemCutover(itemId);
+  if(cut && date < cut){ alert('That date is before this article\'s start date ('+fmtD(cut)+').\n\nIts opening figure already covers everything before that, so this movement would double-count. Change the date, or change the start date for '+it.name+' on the Opening Stock page.'); return; }
   const signed = dir==='out' ? -Math.abs(qty) : Math.abs(qty);
   const after  = _r2(stockOnHand(itemId) + signed);
   if(after < 0 && !confirm('This takes '+it.name+' to '+fmtN(after)+' — negative stock.\n\nUsually that means an inward entry is missing. Save anyway?')) return;
@@ -2931,11 +2978,11 @@ function renderStockSetup(el){
     <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:18px">
       <div style="font-size:15px;font-weight:800;color:#1A2E5A;margin-bottom:8px">📦 Set up Stock</div>
       <div style="font-size:13px;color:#555;line-height:1.6;margin-bottom:14px">
-        Pick the date your stock count starts from. You will enter the physical count you have on hand
-        as at that date, and from then on challans reduce stock automatically.
+        Pick a default start date. You will enter the physical count for each article, and from then
+        on challans reduce stock automatically.
         <br><br>
-        Nothing before this date is counted — that is exactly what the opening figure represents,
-        so there is no back-calculation to do.
+        Each article can be given its own start date on the next screen — useful when you count
+        different articles on different days. This date is just the default for new entries.
       </div>
       <div class="fg"><label>Stock start date *</label><input id="sf-date" type="date" value="${today()}"></div>
       <button class="btn pri" style="width:100%;justify-content:center" onclick="setStockCutover(document.getElementById('sf-date').value)">Start tracking stock</button>
@@ -2953,7 +3000,8 @@ function stockSummary(){
     else if(r.onHand === 0 && touched) zero++;
     if(r.onHand > 0) units += r.onHand;
   });
-  return {tracked, neg, zero, units, unmapped:idx.unmapped.length};
+  const custom=(S.items||[]).filter(it=>hasOwnCutover(it.id)).length;
+  return {tracked, neg, zero, units, custom, unmapped:idx.unmapped.length};
 }
 
 function renderStockOnHand(el){
@@ -2991,7 +3039,7 @@ function renderStockOnHand(el){
         <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.tracked)}</div>
       </div>
     </div>
-    <div style="font-size:11px;color:#888;margin-bottom:10px">Stock from <strong>${fmtD(stockCutover())}</strong> · <button class="btn sm" style="padding:3px 9px;font-size:11px" onclick="setStockView('opening')">change</button></div>
+    <div style="font-size:11px;color:#888;margin-bottom:10px">Default start <strong>${stockCutover()?fmtD(stockCutover()):'not set'}</strong>${sm.custom?` · <strong>${sm.custom}</strong> article${sm.custom===1?'':'s'} on their own date`:''} · <button class="btn sm" style="padding:3px 9px;font-size:11px" onclick="setStockView('opening')">edit dates</button></div>
     <input id="stk-search" placeholder="🔍 Search item..." value="${esc(stockSearch)}" oninput="stockSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
     <div style="display:flex;gap:6px;margin-bottom:12px">
       ${chip('all','All','')}${chip('low','Low','')}${chip('zero','Zero',sm.zero||'')}${chip('neg','Negative',sm.neg||'')}
@@ -3016,33 +3064,45 @@ function renderStockOpening(el){
   let list = (S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
   if(q) list = list.filter(it=> normIName(it.name).includes(q) || normIName(it.code).includes(q));
   const entered = (S.stock||[]).length;
+  const fallback = stockCutover() || today();
+  const custom = (S.items||[]).filter(it=>hasOwnCutover(it.id)).length;
   el.innerHTML = `
     <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
     <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
       <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:8px">📥 Opening Stock</div>
       <div style="font-size:12px;color:#666;line-height:1.55;margin-bottom:12px">
-        Physical count you hold as at the start date. Leave an item blank if you hold none of it —
-        blank removes any opening figure previously entered.
+        Enter the physical count for each article and <strong>the date you counted it</strong>. Each
+        article can start on its own date — challans and lots before that date are ignored for that
+        article only. Leave the quantity blank if you hold none of it.
       </div>
-      <div class="fg"><label>Stock start date</label><input id="sf-date2" type="date" value="${esc(stockCutover())}" onchange="setStockCutover(this.value)"></div>
-      <div style="font-size:11px;color:#888">${entered} item${entered===1?'':'s'} with an opening figure</div>
+      <div class="fg"><label>Default start date <span style="font-weight:400;color:#999">— used for new rows</span></label>
+        <input id="sf-date2" type="date" value="${esc(stockCutover())}" onchange="setStockCutover(this.value)"></div>
+      <div style="font-size:11px;color:#888">${entered} article${entered===1?'':'s'} counted${custom?` · ${custom} on a custom date`:''}</div>
     </div>
     <input id="os-search" placeholder="🔍 Filter items..." value="${esc(osSearch)}" oninput="osSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
     ${ (S.items||[]).length ? `
       <div id="os-grid" style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:8px 10px;margin-bottom:12px">
-        ${ list.map(it=>`
-          <div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #F4F4F4">
+        <div style="display:flex;gap:8px;padding:4px 4px 7px;border-bottom:1.5px solid #EEE;font-size:9.5px;font-weight:800;color:#999;letter-spacing:.3px">
+          <div style="flex:1">ARTICLE</div><div style="width:80px;text-align:right">QTY</div><div style="width:124px;text-align:right">START DATE</div>
+        </div>
+        ${ list.map(it=>{
+          const has = (S.stock||[]).some(x=>x&&x.itemId===it.id);
+          const rec = (S.stock||[]).find(x=>x&&x.itemId===it.id);
+          return `
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid #F4F4F4">
             <div style="flex:1;min-width:0">
               <div style="font-size:13px;font-weight:700;color:#1A1A1A">${esc(it.name)}</div>
               ${it.code?`<div style="font-size:10px;color:#AAA">${esc(it.code)}</div>`:''}
             </div>
             <input data-item="${it.id}" type="number" inputmode="numeric" placeholder="0"
-                   value="${(S.stock||[]).some(x=>x.itemId===it.id)?openingFor(it.id):''}"
-                   style="width:92px;text-align:right;padding:7px 9px;font-size:13px">
-          </div>`).join('') }
+                   value="${has?openingFor(it.id):''}"
+                   style="width:80px;text-align:right;padding:7px 8px;font-size:13px">
+            <input id="osd-${it.id}" type="date" value="${esc(rec&&rec.date?rec.date:fallback)}"
+                   style="width:124px;padding:6px 7px;font-size:11.5px">
+          </div>`; }).join('') }
       </div>
       <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
-      <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Only the items shown above are saved. Clear the filter to edit everything at once.</div>
+      <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Only the articles shown above are saved. Clear the filter to edit everything at once.</div>
     ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="goTab('items')">Add items first</button></div>` }`;
 }
 
@@ -3113,7 +3173,7 @@ function renderStockItem(el){
       <div style="font-size:16px;font-weight:800;color:#1A1A1A">${esc(it.name)}</div>
       ${it.code?`<div style="font-size:11px;color:#AAA;margin-top:2px">${esc(it.code)}</div>`:''}
       <div style="font-size:30px;font-weight:800;color:${c};margin-top:10px">${fmtN(r.onHand)}</div>
-      <div style="font-size:11px;color:#888">on hand</div>
+      <div style="font-size:11px;color:#888">on hand · counted from <strong>${itemCutover(it.id)?fmtD(itemCutover(it.id)):'—'}</strong></div>
       <div style="display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid #F0F0F0;font-size:11.5px;color:#555;flex-wrap:wrap">
         <span>Opening <strong>${fmtN(r.open)}</strong></span>
         <span>Lots <strong style="color:#065F46">+${fmtN(r.inCon)}</strong></span>
@@ -3126,7 +3186,7 @@ function renderStockItem(el){
       <div style="display:flex;gap:10px;padding:0 4px 8px;border-bottom:1.5px solid #EEE;font-size:10px;font-weight:800;color:#999;letter-spacing:.3px">
         <div style="flex:1">MOVEMENT</div><div style="width:60px;text-align:right">QTY</div><div style="width:60px;text-align:right">BALANCE</div>
       </div>
-      ${ rows || `<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">No movements since ${fmtD(stockCutover())}.</div>` }
+      ${ rows || `<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">No movements since ${fmtD(itemCutover(it.id))}.</div>` }
     </div>`;
 }
 
@@ -3135,8 +3195,9 @@ function renderStockUnmapped(el){
   el.innerHTML = `
     <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
     <div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E">
-      These names appear on challans or lots dated on/after ${fmtD(stockCutover())} but do not match any
-      Item Master record, so their quantities are not counted in stock. Nothing is changed automatically —
+      These names appear on challans or lots dated on/after the default start date
+      (${stockCutover()?fmtD(stockCutover()):'—'}) but do not match any Item Master record, so their
+      quantities are not counted in stock. Once mapped, the article's own start date applies. Nothing is changed automatically —
       map them in the Item Master and the numbers correct themselves.
       <button class="btn sm" style="margin-top:8px" onclick="goTab('items');itemView='review';renderItems()">Open Item Master review</button>
     </div>
@@ -3163,8 +3224,7 @@ function renderItems(){
   if(itemView==='keywords'){ renderItemKeywords(el); _done(); return; }
   const unmCount=unmappedHistorical().length;
   const q=normIName(itemSearch);
-  const list=(S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name))
-    .filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code).includes(q));
+  const list=itemSortList((S.items||[]).filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code).includes(q)));
   const ed=null;   // editing happens in the mo-itemedit modal, not this inline form
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:12px">
@@ -3183,9 +3243,20 @@ function renderItems(){
         <button class="btn pri" style="flex:1;justify-content:center" onclick="itemFormSave()">✓ ${ed?'Save Changes':'Add Item'}</button>
       </div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
       <input id="im-search" placeholder="🔍 Search by name or code…" value="${esc(itemSearch)}" oninput="itemSearch=this.value;debRenderItems()" style="flex:1">
       <span style="font-size:11px;color:#999;flex-shrink:0">${list.length} item${list.length===1?'':'s'}</span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <label style="font-size:11px;color:#888;flex-shrink:0">Sort</label>
+      <select id="im-sort" onchange="setItemSort(this.value)" style="flex:1;font-size:12px;padding:7px">
+        <option value="name"${itemSort==='name'?' selected':''}>Name A → Z</option>
+        <option value="namez"${itemSort==='namez'?' selected':''}>Name Z → A</option>
+        <option value="rate"${itemSort==='rate'?' selected':''}>Rate — low to high</option>
+        <option value="rated"${itemSort==='rated'?' selected':''}>Rate — high to low</option>
+        <option value="used"${itemSort==='used'?' selected':''}>Most billed</option>
+        ${stockReady()?`<option value="stock"${itemSort==='stock'?' selected':''}>Stock on hand — high to low</option>`:''}
+      </select>
     </div>
     ${list.length?list.map(it=>`
       <div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px">
@@ -3260,7 +3331,10 @@ function itemEditSave(){
     }
   }
   const i=S.items.findIndex(x=>x&&x.id===ieId);
-  S.items[i]={ id:ieId, name, code, rate };            // new object — never mutate in place
+  // New object (never mutate in place), built by COPYING the existing record: `jobRate` is the
+  // Contractor Tracker's manufacturing rate and must survive a save here. Replacing the object
+  // wholesale would silently delete it for both apps.
+  S.items[i]=Object.assign({}, it, { id:ieId, name, code, rate });
   // Any mapping pointing here should show the current master name.
   (S.itemMap||[]).forEach((m,mi)=>{ if(m&&m.itemId===ieId&&m.itemName!==name) S.itemMap[mi]=Object.assign({},m,{itemName:name}); });
   _itemCanonIdx=null; invalidateStock();
@@ -3288,8 +3362,9 @@ function itemFormSave(){
   if(dup){alert('An item named "'+dup.name+'" already exists.');return;}
   if(itemEditId){
     const i=S.items.findIndex(x=>x.id===itemEditId); if(i===-1){itemEditId=null;renderItems();return;}
-    // Replace with a NEW object (never mutate in place) so diffWrite's baseline diff detects it.
-    S.items[i]={ id:itemEditId, name, code, rate };
+    // Replace with a NEW object (never mutate in place) so diffWrite's baseline diff detects it,
+    // but copy the existing record first so fields owned by the Contractor Tracker (jobRate) survive.
+    S.items[i]=Object.assign({}, S.items[i], { id:itemEditId, name, code, rate });
     itemEditId=null;
   } else {
     S.items.push({ id:uniqId('IT'), name, code, rate });
