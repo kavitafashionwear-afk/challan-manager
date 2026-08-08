@@ -2992,35 +2992,66 @@ function setStockCutover(d){
   invalidateStock();
   saveToCloud(); renderStock();
 }
+/* ── Opening stock draft ──
+   Typed values live HERE, not only in the DOM. Any Firestore snapshot triggers renderAll(), which
+   rebuilds this grid from saved state — so values kept only in input elements were destroyed
+   mid-entry and just the most recently typed row survived. The draft also means Save applies every
+   article you touched, not merely the rows currently visible through the filter. */
+let osDraft = null;
+function osFallbackDate(){ return stockCutover() || today(); }
+function osSeed(){
+  osDraft = {};
+  (S.items||[]).forEach(it=>{ if(it&&it.id) osDraft[it.id] = osRowFor(it.id); });
+}
+function osRowFor(itemId){
+  const rec = (S.stock||[]).find(x=>x&&x.itemId===itemId);
+  return { q: rec ? String(+rec.qty||0) : '', d: (rec&&rec.date) ? rec.date : osFallbackDate() };
+}
+function osRow(itemId){
+  if(!osDraft) osDraft = {};
+  if(!osDraft[itemId]) osDraft[itemId] = osRowFor(itemId);   // item added after seeding
+  return osDraft[itemId];
+}
+function osSet(itemId, field, val){ osRow(itemId)[field] = val; }   // no re-render: never fights typing
+
 function saveOpeningStock(){
-  const rows = document.querySelectorAll('#os-grid input[data-item]');
-  if(!rows.length){ alert('Nothing to save.'); return; }
-  const fallback = stockCutover() || today();
-  let changed = 0, missingDate = 0;
-  rows.forEach(inp=>{
-    const itemId = inp.getAttribute('data-item');
+  if(!osDraft) osSeed();
+  const fallback = osFallbackDate();
+  // PHASE 1 — plan only. Nothing is mutated until every check has passed, so declining the
+  // confirmation below cannot leave a half-applied batch behind.
+  const puts = [], dels = [];
+  let missingDate = 0, invalid = 0;
+  Object.keys(osDraft).forEach(itemId=>{
     const it = (S.items||[]).find(x=>x&&x.id===itemId); if(!it) return;
-    const raw = String(inp.value||'').trim();
-    const dEl = document.getElementById('osd-'+itemId);
-    const d   = dEl ? String(dEl.value||'').trim() : '';
-    const i = (S.stock||[]).findIndex(x=>x&&x.itemId===itemId);
-    if(raw===''){
-      if(i!==-1){ S.stock.splice(i,1); changed++; }
+    const raw = String(osDraft[itemId].q||'').trim();
+    const d   = String(osDraft[itemId].d||'').trim();
+    const cur = (S.stock||[]).find(x=>x&&x.itemId===itemId);
+    if(raw===''){                                  // blank clears any previous opening figure
+      if(cur) dels.push(itemId);
       return;
     }
     const qty = +raw;
-    if(isNaN(qty)) return;
+    if(isNaN(qty)){ invalid++; return; }
     if(!d) missingDate++;
     const rec = { id:openingId(itemId), itemId, itemName:it.name, qty:_r2(qty), date:d||fallback };
-    if(i!==-1){
-      if(JSON.stringify(S.stock[i])!==JSON.stringify(rec)){ S.stock[i]=rec; changed++; }
-    } else { S.stock.push(rec); changed++; }
+    if(!cur || JSON.stringify(cur)!==JSON.stringify(rec)) puts.push(rec);
   });
-  if(missingDate && !confirm(missingDate+' item'+(missingDate===1?'':'s')+' have a quantity but no start date.\n\nThey will use the default start date ('+fmtD(fallback)+'). Continue?')) return;
+  if(invalid){ alert(invalid+' article'+(invalid===1?' has':'s have')+' a quantity that is not a number. Fix those and save again.'); return; }
+  const changed = puts.length + dels.length;
   if(!changed){ alert('No changes to save.'); return; }
+  if(missingDate && !confirm(missingDate+' article'+(missingDate===1?'':'s')+' have a quantity but no date.\n\nThey will use '+fmtD(fallback)+'. Continue?')) return;
+
+  // PHASE 2 — apply.
+  dels.forEach(id=>{ const i=S.stock.findIndex(x=>x&&x.itemId===id); if(i!==-1) S.stock.splice(i,1); });
+  puts.forEach(rec=>{
+    const i=S.stock.findIndex(x=>x&&x.itemId===rec.itemId);
+    if(i!==-1) S.stock[i]=rec; else S.stock.push(rec);      // new object, never mutated in place
+  });
   invalidateStock();
   saveToCloud();
+  osDraft = null;
   stockView='onhand'; renderStock();
+  setTimeout(()=>alert('Saved '+changed+' article'+(changed===1?'':'s')+'.'), 30);
 }
 function addStockMove(){
   const itemId = document.getElementById('sm-item').value;
@@ -3059,7 +3090,11 @@ let stockFilter = 'all';       // 'all' | 'neg' | 'low' | 'zero'
 let stockItemId = null;
 let osSearch    = '';
 
-function setStockView(v){ stockView=v; renderStock(); }
+function setStockView(v){
+  if(v==='opening' && stockView!=='opening') osSeed();      // start from saved values
+  if(v!=='opening') osDraft = null;                          // leaving discards the draft
+  stockView=v; renderStock();
+}
 function openStockItem(id){ stockItemId=id; stockView='item'; renderStock(); }
 
 /* Read-only sync diagnosis. Shows every listener's real state so a stuck dot can be traced to the
@@ -3233,28 +3268,28 @@ function renderStockOpening(el){
     ${ (S.items||[]).length ? `
       <div id="os-grid" style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:6px 10px;margin-bottom:12px">
         ${ list.map(it=>{
-          const has = (S.stock||[]).some(x=>x&&x.itemId===it.id);
-          const rec = (S.stock||[]).find(x=>x&&x.itemId===it.id);
+          const r = osRow(it.id);
+          const dirty = r.q !== osRowFor(it.id).q || r.d !== osRowFor(it.id).d;
           return `
-          <div style="padding:10px 2px;border-bottom:1px solid #F4F4F4">
-            <div style="font-size:13px;font-weight:700;color:#1A1A1A;word-break:break-word">${esc(it.name)}${it.code?` <span style="font-size:10px;color:#AAA;font-weight:600">${esc(it.code)}</span>`:''}</div>
+          <div style="padding:10px 2px;border-bottom:1px solid #F4F4F4${dirty?';background:#FFFDF5':''}">
+            <div style="font-size:13px;font-weight:700;color:#1A1A1A;word-break:break-word">${esc(it.name)}${it.code?` <span style="font-size:10px;color:#AAA;font-weight:600">${esc(it.code)}</span>`:''}${dirty?' <span style="font-size:9px;font-weight:800;color:#B45309">• unsaved</span>':''}</div>
             <div style="display:flex;gap:8px;margin-top:7px">
               <div style="width:96px;min-width:0;flex-shrink:0">
                 <div style="font-size:9px;font-weight:800;color:#AAA;letter-spacing:.3px;margin-bottom:3px">QTY</div>
-                <input data-item="${it.id}" type="number" inputmode="numeric" placeholder="0"
-                       value="${has?openingFor(it.id):''}"
+                <input id="osq-${it.id}" type="number" inputmode="numeric" placeholder="0"
+                       value="${esc(r.q)}" oninput="osSet('${it.id}','q',this.value)"
                        style="width:100%;min-width:0;text-align:right;padding:8px 9px;font-size:14px">
               </div>
               <div style="flex:1;min-width:0">
                 <div style="font-size:9px;font-weight:800;color:#AAA;letter-spacing:.3px;margin-bottom:3px">COUNTED ON</div>
-                <input id="osd-${it.id}" type="date" value="${esc(rec&&rec.date?rec.date:fallback)}"
+                <input id="osd-${it.id}" type="date" value="${esc(r.d)}" onchange="osSet('${it.id}','d',this.value)"
                        style="width:100%;min-width:0;padding:8px 9px;font-size:13px">
               </div>
             </div>
           </div>`; }).join('') }
       </div>
       <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
-      <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Only the articles shown above are saved. Clear the filter to edit everything at once.</div>
+      <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Fill in as many articles as you like, then save once. Filtering does not lose what you have typed.</div>
     ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="goTab('items')">Add items first</button></div>` }`;
 }
 
