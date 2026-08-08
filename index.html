@@ -166,6 +166,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 .fr{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:13px}
 label{font-size:12px;color:#555;display:block;margin-bottom:4px;font-weight:600}
 input,select,textarea{width:100%;padding:11px 12px;font-size:15px;border:1.5px solid #DDD;border-radius:9px;font-family:inherit;background:#fff;color:#1A1A1A;outline:none;-webkit-appearance:none}
+/* iOS gives date inputs an intrinsic min-width; inside a flex row that pushes them off-screen. */
+input[type=date]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;min-height:42px;text-align:left}
+input[type=date]::-webkit-date-and-time-value{text-align:left;margin:0}
+input[type=date]::-webkit-calendar-picker-indicator{margin:0;padding:0}
 input:focus,select:focus{border-color:#1A2E5A;box-shadow:0 0 0 3px #DBEAFE}
 input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-webkit-appearance:checkbox;appearance:auto;flex:0 0 auto;box-shadow:none;accent-color:#1A2E5A;cursor:pointer}
 .ibox{background:#EFF6FF;border-radius:9px;padding:9px 12px;font-size:13px;font-weight:700;color:#1A2E5A;margin:6px 0}
@@ -433,6 +437,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
+  <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
   <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
   <div class="umi" onclick="goTab('items');closeMenu()">🏷️ Item Master</div>
   <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
@@ -442,6 +447,14 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 </div>
 
 <!-- ══ MODALS ══ -->
+
+<!-- SYNC STATUS -->
+<div class="overlay" id="mo-sync">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead"><h3>&#128268; Sync Status</h3><button class="xbtn" onclick="closeModal('sync')">&#10005;</button></div>
+  <div class="mbody"><div id="sync-body"></div></div>
+</div>
+</div>
 
 <!-- EDIT ITEM MODAL -->
 <div class="overlay" id="mo-itemedit">
@@ -731,11 +744,17 @@ let incomingUnsub = null; // owner's listener for staff-created bills (auto-merg
 const _mergedBills = {};  // billIds already merged this session (guards double-merge)
 
 /* ── OFFLINE-FIRST: local cache so writes queue offline and auto-flush online ── */
+var PERSIST = { state:'pending', code:'' };   // surfaced in Sync Status — a silent failure here
+                                              // means nothing queues offline and no data survives a reload
 try {
-  db.enablePersistence({ synchronizeTabs: true }).catch(function(err){
-    console.warn('Offline persistence not enabled:', err && err.code);
-  });
-} catch(e) { console.warn('Persistence setup skipped', e); }
+  db.enablePersistence({ synchronizeTabs: true })
+    .then(function(){ PERSIST.state='on'; })
+    .catch(function(err){
+      PERSIST.state='off'; PERSIST.code=(err&&err.code)||'unknown';
+      console.warn('OFFLINE PERSISTENCE NOT ENABLED:', PERSIST.code, err);
+      if(typeof refreshSyncDot==='function') refreshSyncDot();
+    });
+} catch(e) { PERSIST.state='off'; PERSIST.code='exception'; console.warn('Persistence setup skipped', e); }
 let isOnline = (typeof navigator!=='undefined') ? navigator.onLine : true;
 let loadedOnce = false; // true after a successful cloud read; guards against blank/stale overwrites
 // On reconnect we do NOT push local data — Firestore auto-flushes its own queued writes,
@@ -1614,16 +1633,48 @@ function setSyncDot(s) {
           : s==='err' ? 'Sync issue — saved locally, will retry'
           : 'Synced ✓';
 }
-function updateSyncUI(){ setSyncDot(isOnline ? 'ok' : 'offline'); }
+function updateSyncUI(){ refreshSyncDot(); }
 
 const LS_KEY = function(){ return 'challan_backup_' + (uid || 'anon'); };
+/* Local backup of THIS app's own data.
+   S.lots is deliberately NOT stored: it is a read-only mirror of the Contractor Tracker's
+   ct_lots collection. Writing it here put a second app's entire dataset into the same ~5MB
+   localStorage quota; on overflow setItem throws QuotaExceededError, and because saveLocal runs
+   on every snapshot the backup silently stopped updating altogether. Firestore's own IndexedDB
+   cache already persists ct_lots, so nothing is lost by leaving it out.
+   Quota failures are now recorded instead of swallowed, and we shed the least important data
+   rather than losing the whole backup. */
+var LOCAL = { state:'ok', code:'', bytes:0 };
 function saveLocal(){
-  try{ localStorage.setItem(LS_KEY(), JSON.stringify({
+  var full = {
     parties:S.parties, challans:S.challans, payments:S.payments,
-    settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash, pC:S.pC, cC:S.cC, pyC:S.pyC,
-    seasons:S.seasons, curSeason:S.curSeason,
-    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, lots:S.lots
-  })); }catch(e){}
+    settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash,
+    pC:S.pC, cC:S.cC, pyC:S.pyC, seasons:S.seasons, curSeason:S.curSeason,
+    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom
+  };
+  // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
+  var tiers = [
+    full,
+    Object.assign({}, full, { trash:[] }),
+    Object.assign({}, full, { trash:[], settlements:[], overrides:[] })
+  ];
+  for (var i=0;i<tiers.length;i++){
+    try {
+      var str = JSON.stringify(tiers[i]);
+      localStorage.setItem(LS_KEY(), str);
+      LOCAL.state = (i===0?'ok':'trimmed'); LOCAL.code = (i===0?'':'quota — dropped '+(i===1?'recycle bin':'recycle bin + derived data'));
+      LOCAL.bytes = str.length;
+      return true;
+    } catch(e){
+      LOCAL.code = (e && e.name) || 'error';
+      if (i===tiers.length-1){
+        LOCAL.state='failed';
+        console.warn('LOCAL BACKUP FAILED:', LOCAL.code, e);
+        return false;
+      }
+    }
+  }
+  return false;
 }
 function loadLocal(){
   try{ var raw=localStorage.getItem(LS_KEY()); if(!raw) return false;
@@ -1632,7 +1683,8 @@ function loadLocal(){
     S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.itemMap=d.itemMap||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
-    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.lots=d.lots||[]; invalidateStock();
+    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; invalidateStock();
+    // S.lots is not in the local backup by design — Firestore's own cache restores it.
     return true;
   }catch(e){ return false; }
 }
@@ -1658,6 +1710,59 @@ let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=nu
 let _subStock=null, _subStockMv=null, _subLots=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
+/* ── SYNC STATE (aggregate, not last-writer-wins) ──
+   Previously the dot was set by whichever listener happened to fire LAST. With 11 listeners that
+   is unreliable: one collection reporting a cache-only snapshot pinned the dot to blinking yellow
+   even though everything else was synced and saved, which reads as "not connecting".
+   Now every collection reports its own state and the dot is computed from all of them.
+   ct_lots is OPTIONAL — it is owned by the Contractor Tracker and only read opportunistically for
+   stock, so it must never be able to make this app look broken. */
+const SYNC = {};
+const SYNC_OPTIONAL = { ct_lots:1 };
+let _writeFails = 0, _lastWriteErr = '', _saveBlocked = false;
+function syncMark(coll, meta, n){
+  const s = SYNC[coll] || (SYNC[coll] = {});
+  s.cache   = !!(meta && meta.fromCache);
+  s.pending = !!(meta && meta.hasPendingWrites);
+  if(!s.cache) s.srv = true;          // has been confirmed by the server at least once
+  s.err = null;
+  if(n!=null) s.n = n;
+  s.at = Date.now();
+  refreshSyncDot();
+}
+function syncErrMark(coll, code){
+  const s = SYNC[coll] || (SYNC[coll] = {});
+  s.err = code || 'error'; s.at = Date.now();
+  refreshSyncDot();
+}
+function noteWriteFail(coll, e){
+  const code = (e && e.code) || 'unknown';
+  console.warn('WRITE FAILED ('+coll+'):', code, e);
+  // permission-denied / not-found are real, permanent failures — never hide them behind "deferred".
+  if(code==='permission-denied' || code==='not-found' || code==='invalid-argument'){
+    _writeFails++; _lastWriteErr = coll+': '+code;
+    refreshSyncDot();
+  }
+}
+function refreshSyncDot(){
+  if(!isOnline){ setSyncDot('offline'); return; }
+  const keys = Object.keys(SYNC);
+  const req  = keys.filter(k=>!SYNC_OPTIONAL[k]);
+  if(_writeFails || _saveBlocked){ setSyncDot('err'); return; }
+  if(req.some(k=>SYNC[k].err)){ setSyncDot('err'); return; }
+  if(keys.some(k=>SYNC[k].pending)){ setSyncDot('busy'); return; }   // our own write in flight
+  if(req.some(k=>SYNC[k].cache)){ setSyncDot('busy'); return; }      // still waiting on the server
+  setSyncDot('ok');
+}
+function syncReport(){
+  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','ct_lots','meta'];
+  return order.filter(k=>k in SYNC).map(k=>{
+    const s=SYNC[k];
+    return { coll:k, optional:!!SYNC_OPTIONAL[k], err:s.err||null, cache:!!s.cache,
+             pending:!!s.pending, srv:!!s.srv, n:(s.n==null?'-':s.n) };
+  });
+}
+
 function _indexById(arr, keyFn){ const m={}; (arr||[]).forEach(x=>{ m[keyFn?keyFn(x):x.id]=x; }); return m; }
 
 function subscribeData() {
@@ -1704,39 +1809,37 @@ function attachDataListeners(){
   // so multi-device updates still appear live. A tiny debounce coalesces any burst into one render.
   let _renderTimer = null;
   const scheduleRender = ()=>{ if(_renderTimer) return; _renderTimer = setTimeout(()=>{ _renderTimer=null; renderAll(); }, 60); };
-  const markLoaded = (meta)=>{
+  const markLoaded = (meta, coll, n)=>{
     loadedOnce = true;
     reconcileCounters();
     saveLocal();
-    const cache   = meta && meta.fromCache;
-    const pending = meta && meta.hasPendingWrites;
-    setSyncDot(cache ? (isOnline?'busy':'offline') : (pending ? 'busy' : 'ok'));
-    if (!pending) scheduleRender();   // skip the echo of our own optimistic write
+    syncMark(coll||'?', meta, n);     // aggregate state decides the dot, not this one snapshot
+    if (!(meta && meta.hasPendingWrites)) scheduleRender();   // skip the echo of our own write
   };
   // One listener per collection — each rebuilds only its own array.
   _subParts = _col('parties').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.parties = snap.docs.map(d=>d.data());
     _lastSaved.parties = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'parties', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('parties',err));
   _subCh = _col('challans').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.challans = snap.docs.map(d=>d.data());
     // Deep-copy the baseline so in-place edits (totals, status, items) are detected by diffWrite
     // and actually written to the cloud. (Sharing references made edits silently not save.)
     _lastSaved.challans = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'challans', snap.docs?snap.docs.length:null);
     if(snap.metadata && !snap.metadata.fromCache){ _chServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('challans',err));
   _subPay = _col('payments').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.payments = snap.docs.map(d=>d.data());
     _lastSaved.payments = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'payments', snap.docs?snap.docs.length:null);
     if(snap.metadata && !snap.metadata.fromCache){ _payServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('payments',err));
   _subSet = _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.settlements = snap.docs.map(d=>d.data());
     _lastSaved.settlements = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), settlementId);
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'settlements', snap.docs?snap.docs.length:null);
     if(snap.metadata && !snap.metadata.fromCache){ _setServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('settlements',err));
   // Manual overrides — the ONLY manual-allocation business record. Same per-document + offline-safe
@@ -1745,33 +1848,33 @@ function attachDataListeners(){
     S.overrides = snap.docs.map(d=>d.data());
     _lastSaved.overrides = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), overrideId);
     invalidateAllAlloc();
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'overrides', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('overrides',err));
   _subItems = _col('items').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.items = snap.docs.map(d=>d.data());
     _lastSaved.items = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     _itemCanonIdx = null;
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'items', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('items',err));
   _subMap = _col('itemmap').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.itemMap = snap.docs.map(d=>d.data());
     _lastSaved.itemMap = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), mapDocId);
     _itemCanonIdx = null;
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'itemmap', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('itemmap',err));
   // Opening stock — one doc per item (deterministic id → idempotent across devices/offline).
   _subStock = _col('stock').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.stock = snap.docs.map(d=>d.data());
     _lastSaved.stock = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     invalidateStock();
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'stock', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('stock',err));
   // Manual stock movements (purchases, returns, damage, corrections).
   _subStockMv = _col('stockmv').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.stockMv = snap.docs.map(d=>d.data());
     _lastSaved.stockMv = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     invalidateStock();
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'stockmv', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('stockmv',err));
   /* ── Contractor Tracker bridge — STRICTLY READ ONLY ──
      Both apps live under the same owner document (users/{OWNER_UID}/…), so this app can read
@@ -1784,20 +1887,20 @@ function attachDataListeners(){
     S.lots = snap.docs.map(d=>d.data());
     invalidateStock();
     _tokDFCache = null;          // lot item names join the fuzzy-matching corpus
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'ct_lots', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('ct_lots',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
-    markLoaded(snap.metadata);
+    markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('meta',err));
 
   unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subLots,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
-  console.warn('Read blocked ('+which+'):', err && err.code);
+  console.warn('READ BLOCKED ('+which+'):', err && err.code, err);
+  syncErrMark(which, err && err.code);
   if (!loadedOnce && loadLocal()) renderAll();
-  setSyncDot(isOnline ? 'err' : 'offline');
 }
 
 // Keep numbering counters ahead of the highest existing number (offline devices may drift).
@@ -1822,9 +1925,10 @@ function _clean(o){ const c=JSON.parse(JSON.stringify(o)); deepSanitize(c); retu
 /* Diff current S vs last-saved and write ONLY what changed (per-document). */
 function saveToCloud() {
   if (!uid) return;
-  if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); setSyncDot(isOnline?'err':'offline'); return; }
+  if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); _saveBlocked=true; refreshSyncDot(); return; }
+  _saveBlocked=false;
   saveLocal();
-  setSyncDot(isOnline ? 'busy' : 'offline');
+  refreshSyncDot();
   try {
     diffWrite('parties',     S.parties,     _lastSaved.parties,     x=>x.id);
     diffWrite('challans',    S.challans,    _lastSaved.challans,    x=>x.id);
@@ -1844,12 +1948,11 @@ function saveToCloud() {
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
       _col('meta').doc('state').set(_clean(Object.assign({}, metaObj, { updated:new Date().toISOString() })))
-        .then(function(){ setSyncDot(isOnline?'ok':'offline'); })
-        .catch(function(err){ console.warn('meta write deferred:', err&&err.code); setSyncDot(isOnline?'err':'offline'); });
-    } else {
-      setSyncDot(isOnline?'ok':'offline');
+        .then(function(){ refreshSyncDot(); })
+        .catch(function(err){ noteWriteFail('meta', err); });
     }
-  } catch(e){ console.warn('save threw:', e); setSyncDot(isOnline?'err':'offline'); }
+    refreshSyncDot();
+  } catch(e){ console.warn('SAVE THREW:', e); _saveBlocked=true; refreshSyncDot(); }
   publishPartyDirectory();
   publishItemDirectory();
 }
@@ -1862,11 +1965,11 @@ function diffWrite(coll, arr, lastIndex, keyFn){
     nowIndex[id] = item;
     const prev = lastIndex[id];
     if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) {
-      _col(coll).doc(String(id)).set(_clean(item)).catch(e=>console.warn(coll+' write deferred:', e&&e.code));
+      _col(coll).doc(String(id)).set(_clean(item)).catch(e=>noteWriteFail(coll,e));
     }
   });
   Object.keys(lastIndex).forEach(id=>{
-    if (!(id in nowIndex)) _col(coll).doc(String(id)).delete().catch(e=>console.warn(coll+' delete deferred:', e&&e.code));
+    if (!(id in nowIndex)) _col(coll).doc(String(id)).delete().catch(e=>noteWriteFail(coll,e));
   });
   Object.keys(lastIndex).forEach(k=>{ delete lastIndex[k]; });
   // Baseline must be SNAPSHOTS, not live references — otherwise an in-place edit mutates the
@@ -2959,6 +3062,53 @@ let osSearch    = '';
 function setStockView(v){ stockView=v; renderStock(); }
 function openStockItem(id){ stockItemId=id; stockView='item'; renderStock(); }
 
+/* Read-only sync diagnosis. Shows every listener's real state so a stuck dot can be traced to the
+   exact collection instead of guessed at. Changes nothing. */
+function openSyncStatus(){
+  renderSyncStatus();
+  document.getElementById('mo-sync').classList.add('open');
+}
+function renderSyncStatus(){
+  const el=document.getElementById('sync-body'); if(!el) return;
+  const rep=syncReport();
+  const badge=(txt,bg,fg)=>`<span style="font-size:9.5px;font-weight:800;background:${bg};color:${fg};padding:2px 7px;border-radius:20px">${txt}</span>`;
+  const rows=rep.map(r=>{
+    let st, note='';
+    if(r.err){ st=badge('BLOCKED','#FEE2E2','#B91C1C'); note=r.err; }
+    else if(r.pending){ st=badge('SAVING','#FEF3C7','#92400E'); note='write in flight'; }
+    else if(r.cache){ st=badge('NO SERVER','#FEF3C7','#92400E'); note=r.srv?'lost connection':'never reached server'; }
+    else st=badge('SYNCED','#DCFCE7','#065F46');
+    return `<div style="display:flex;align-items:center;gap:9px;padding:8px 2px;border-bottom:1px solid #F4F4F4">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12.5px;font-weight:700;color:#1A1A1A">${r.coll}${r.optional?' <span style="font-size:9px;color:#999;font-weight:600">optional</span>':''}</div>
+        ${note?`<div style="font-size:10.5px;color:#DC2626;margin-top:1px">${esc(note)}</div>`:''}
+      </div>
+      <div style="font-size:11px;color:#999;width:44px;text-align:right">${r.n}</div>
+      <div style="width:82px;text-align:right">${st}</div>
+    </div>`;}).join('');
+  const missing=11-rep.length;
+  el.innerHTML=`
+    <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
+      Browser reports <strong>${isOnline?'online':'OFFLINE'}</strong>. Initial read confirmed: <strong>${loadedOnce?'yes':'no'}</strong>.
+      <div style="margin-top:7px">Offline cache: <strong style="color:${PERSIST.state==='on'?'#065F46':PERSIST.state==='off'?'#B91C1C':'#92400E'}">${PERSIST.state==='on'?'ON':PERSIST.state==='off'?'OFF ('+esc(PERSIST.code)+')':'starting…'}</strong></div>
+      ${PERSIST.state==='off'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">Firestore's offline cache is <strong>not active</strong>, so edits made offline are not queued and are lost on reload.${PERSIST.code==='failed-precondition'?' Cause: the app is open in more than one tab.':''}${PERSIST.code==='unimplemented'?' Cause: this browser or private-browsing mode does not support it.':''}</div>`:''}
+      <div style="margin-top:5px">Local backup: <strong style="color:${LOCAL.state==='ok'?'#065F46':LOCAL.state==='trimmed'?'#92400E':'#B91C1C'}">${LOCAL.state==='ok'?'OK':LOCAL.state==='trimmed'?'TRIMMED':'FAILED'}</strong>${LOCAL.bytes?` <span style="color:#999">· ${Math.round(LOCAL.bytes/1024)} KB</span>`:''}${LOCAL.code?` <span style="color:#B91C1C">· ${esc(LOCAL.code)}</span>`:''}</div>
+      ${LOCAL.state==='failed'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">This device's local backup could not be written (${esc(LOCAL.code)}). Firestore's own offline cache still works, but the extra safety copy is not being kept.</div>`:''}
+      ${_writeFails?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:9px;color:#B91C1C;font-size:11.5px"><strong>${_writeFails} write${_writeFails===1?'':'s'} rejected.</strong> Last: ${esc(_lastWriteErr)}.<br>If this says <strong>permission-denied</strong>, your Firestore security rules do not allow that collection yet — data is safe on this device but is NOT reaching the server.</div>`:''}
+      ${missing>0?`<div style="color:#92400E;margin-top:8px">${missing} listener${missing===1?'':'s'} have not reported at all yet.</div>`:''}
+    </div>
+    <div style="display:flex;gap:9px;padding:0 2px 7px;border-bottom:1.5px solid #EEE;font-size:9.5px;font-weight:800;color:#999;letter-spacing:.3px">
+      <div style="flex:1">COLLECTION</div><div style="width:44px;text-align:right">DOCS</div><div style="width:82px;text-align:right">STATE</div>
+    </div>
+    ${rows||'<div style="text-align:center;color:#999;padding:20px;font-size:12.5px">No listeners attached.</div>'}
+    <button class="btn" style="width:100%;justify-content:center;margin-top:12px" onclick="renderSyncStatus()">↻ Refresh</button>
+    <div style="font-size:10.5px;color:#999;margin-top:9px;line-height:1.5">
+      <strong>SYNCED</strong> = confirmed by the server. <strong>NO SERVER</strong> = reading from this
+      device's cache only. <strong>BLOCKED</strong> = the server refused the read.
+      Anything marked <em>optional</em> cannot affect the dot.
+    </div>`;
+}
+
 function renderStock(){
   const el = document.getElementById('stock-content'); if(!el) return;
   const _ae = document.activeElement;
@@ -3081,24 +3231,26 @@ function renderStockOpening(el){
     </div>
     <input id="os-search" placeholder="🔍 Filter items..." value="${esc(osSearch)}" oninput="osSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
     ${ (S.items||[]).length ? `
-      <div id="os-grid" style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:8px 10px;margin-bottom:12px">
-        <div style="display:flex;gap:8px;padding:4px 4px 7px;border-bottom:1.5px solid #EEE;font-size:9.5px;font-weight:800;color:#999;letter-spacing:.3px">
-          <div style="flex:1">ARTICLE</div><div style="width:80px;text-align:right">QTY</div><div style="width:124px;text-align:right">START DATE</div>
-        </div>
+      <div id="os-grid" style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:6px 10px;margin-bottom:12px">
         ${ list.map(it=>{
           const has = (S.stock||[]).some(x=>x&&x.itemId===it.id);
           const rec = (S.stock||[]).find(x=>x&&x.itemId===it.id);
           return `
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid #F4F4F4">
-            <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:700;color:#1A1A1A">${esc(it.name)}</div>
-              ${it.code?`<div style="font-size:10px;color:#AAA">${esc(it.code)}</div>`:''}
+          <div style="padding:10px 2px;border-bottom:1px solid #F4F4F4">
+            <div style="font-size:13px;font-weight:700;color:#1A1A1A;word-break:break-word">${esc(it.name)}${it.code?` <span style="font-size:10px;color:#AAA;font-weight:600">${esc(it.code)}</span>`:''}</div>
+            <div style="display:flex;gap:8px;margin-top:7px">
+              <div style="width:96px;min-width:0;flex-shrink:0">
+                <div style="font-size:9px;font-weight:800;color:#AAA;letter-spacing:.3px;margin-bottom:3px">QTY</div>
+                <input data-item="${it.id}" type="number" inputmode="numeric" placeholder="0"
+                       value="${has?openingFor(it.id):''}"
+                       style="width:100%;min-width:0;text-align:right;padding:8px 9px;font-size:14px">
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:9px;font-weight:800;color:#AAA;letter-spacing:.3px;margin-bottom:3px">COUNTED ON</div>
+                <input id="osd-${it.id}" type="date" value="${esc(rec&&rec.date?rec.date:fallback)}"
+                       style="width:100%;min-width:0;padding:8px 9px;font-size:13px">
+              </div>
             </div>
-            <input data-item="${it.id}" type="number" inputmode="numeric" placeholder="0"
-                   value="${has?openingFor(it.id):''}"
-                   style="width:80px;text-align:right;padding:7px 8px;font-size:13px">
-            <input id="osd-${it.id}" type="date" value="${esc(rec&&rec.date?rec.date:fallback)}"
-                   style="width:124px;padding:6px 7px;font-size:11.5px">
           </div>`; }).join('') }
       </div>
       <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
