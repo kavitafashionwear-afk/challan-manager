@@ -448,6 +448,27 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 
 <!-- ══ MODALS ══ -->
 
+<!-- GOODS RETURN -->
+<div class="overlay" id="mo-return">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead"><h3>&#8617;&#65039; Goods Return</h3><button class="xbtn" onclick="closeModal('return')">&#10005;</button></div>
+  <div class="mbody">
+    <div id="rt-subtitle" style="font-size:12px;color:#888;margin-bottom:12px"></div>
+    <div class="fr">
+      <div><label>Return Date *</label><input id="rt-date" type="date"></div>
+      <div><label>Reference</label><input id="rt-ref" placeholder="optional"></div>
+    </div>
+    <div class="sh"><h2 style="font-size:13px">Items Returned</h2></div>
+    <div id="rt-item-rows"></div>
+    <button class="btn" style="width:100%;justify-content:center;margin:8px 0 12px" onclick="addRTRow()">+ Add Item</button>
+    <div class="fg"><label>Remarks</label><input id="rt-rmk" placeholder="reason for return (optional)"></div>
+    <div id="rt-total" style="display:none;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:9px;padding:10px 12px;font-size:13px;font-weight:700;color:#065F46;margin-bottom:12px"></div>
+    <div class="ibox blue" style="font-size:11.5px">Returned goods go back into stock on the return date, and the return value is <strong>credited against this party's outstanding balance</strong> — oldest bill first, exactly like a payment. It is reported separately from cash received.</div>
+    <button class="btn pri" style="width:100%;justify-content:center;margin-top:10px" onclick="saveReturn()">&#10003; Record Return</button>
+  </div>
+</div>
+</div>
+
 <!-- SYNC STATUS -->
 <div class="overlay" id="mo-sync">
 <div class="mbox"><div class="mhandle"></div>
@@ -767,7 +788,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
    STATE
 ══════════════════════════════ */
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
-          stock:[], stockMv:[], stockFrom:'', lots:[] };
+          stock:[], stockMv:[], stockFrom:'', lots:[], returns:[] };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -839,7 +860,13 @@ function allocateParty(pid, data){
 
   const challans = (data.challans||[]).filter(c=>c&&c.pid===pid).slice()
     .sort((a,b)=>(a.date||'').localeCompare(b.date||'') || String(a.num||a.id||'').localeCompare(String(b.num||b.id||'')));
-  const payments = (data.payments||[]).filter(p=>p&&p.pid===pid).slice()
+  const cashPays = (data.payments||[]).filter(p=>p&&p.pid===pid).slice();
+  /* A goods return is a CREDIT: the party owes less because goods came back. It settles bills the
+     same way cash does, so it joins the same allocation pool — but it is tracked separately from
+     cash everywhere it is reported, so "Received" never counts returned stock as money in. */
+  const retCredits = (data.returns||[]).filter(r=>r&&r.pid===pid&&(+r.total||0)>0.001)
+    .map(r=>({ id:r.id, pid:r.pid, amount:_r2(+r.total||0), date:r.date||'', isReturn:true, num:r.num||'' }));
+  const payments = cashPays.concat(retCredits)
     .sort((a,b)=>(a.date||'').localeCompare(b.date||'') || String(a.id||'').localeCompare(String(b.id||'')));
 
   const myChallanIds = new Set(challans.map(c=>c.id));
@@ -848,6 +875,7 @@ function allocateParty(pid, data){
   const billTotal = {}; challans.forEach(c=>billTotal[c.id]=_r2(c.total));
   const payAmt    = {}; payments.forEach(p=>payAmt[p.id]=_r2(p.amount));
   const payDate   = {}; payments.forEach(p=>payDate[p.id]=p.date||'');
+  const isRet     = {}; payments.forEach(p=>{ if(p.isReturn) isRet[p.id]=true; });
   const paid    = {};   challans.forEach(c=>paid[c.id]=0);
   const payUsed = {};   payments.forEach(p=>payUsed[p.id]=0);
   const allocations = [];   // {cid, payId, amount, manual}
@@ -868,7 +896,7 @@ function allocateParty(pid, data){
       if (amt > 0.001){
         paid[o.cid] = _r2((paid[o.cid]||0) + amt);
         payUsed[o.payId] = _r2((payUsed[o.payId]||0) + amt);
-        allocations.push({ cid:o.cid, payId:o.payId, amount:amt, manual:true, date:payDate[o.payId]||o.date||'' });
+        allocations.push({ cid:o.cid, payId:o.payId, amount:amt, manual:true, date:payDate[o.payId]||o.date||'', isReturn:!!isRet[o.payId] });
       }
     });
 
@@ -883,7 +911,7 @@ function allocateParty(pid, data){
       const use = _r2(Math.min(due, avail));
       paid[c.id] = _r2((paid[c.id]||0) + use);
       payUsed[pool[pi].payId] = _r2((payUsed[pool[pi].payId]||0) + use);
-      allocations.push({ cid:c.id, payId:pool[pi].payId, amount:use, manual:false, date:payDate[pool[pi].payId]||'' });
+      allocations.push({ cid:c.id, payId:pool[pi].payId, amount:use, manual:false, date:payDate[pool[pi].payId]||'', isReturn:!!isRet[pool[pi].payId] });
       avail = _r2(avail - use);
       due   = _r2(due - use);
     }
@@ -900,16 +928,18 @@ function allocateParty(pid, data){
   payments.forEach(p=>paymentRemaining[p.id]=_r2(payAmt[p.id]-(payUsed[p.id]||0)));
 
   const totalBilled        = _r2(challans.reduce((s,c)=>s+billTotal[c.id],0));
-  const totalPaid          = _r2(payments.reduce((s,p)=>s+payAmt[p.id],0));
+  const totalPaid          = _r2(cashPays.reduce((s,p)=>s+_r2(+p.amount||0),0));   // CASH ONLY
+  const totalReturns       = _r2(retCredits.reduce((s,r)=>s+r.amount,0));          // goods credited
+  const totalCredited      = _r2(totalPaid + totalReturns);
   const allocatedToChallans= _r2(challans.reduce((s,c)=>s+(paid[c.id]||0),0));
-  const partyBalance       = _r2(totalBilled + ob - totalPaid);   // ≡ legacy partyBal()
+  const partyBalance       = _r2(totalBilled + ob - totalCredited);
   const outstanding        = Math.max(0, partyBalance);
   const advance            = Math.max(0, _r2(-partyBalance));
   const pendingCount       = challans.filter(c=>status[c.id]!=='S').length;
 
   return { pid, ob, challanIds:challans.map(c=>c.id),
            paid, due, status, allocations, paymentRemaining,
-           totalBilled, totalPaid, allocatedToChallans,
+           totalBilled, totalPaid, totalReturns, totalCredited, allocatedToChallans,
            partyBalance, outstanding, advance, pendingCount };
 }
 
@@ -1650,7 +1680,7 @@ function saveLocal(){
     parties:S.parties, challans:S.challans, payments:S.payments,
     settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash,
     pC:S.pC, cC:S.cC, pyC:S.pyC, seasons:S.seasons, curSeason:S.curSeason,
-    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom
+    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns
   };
   // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
   var tiers = [
@@ -1683,7 +1713,7 @@ function loadLocal(){
     S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.itemMap=d.itemMap||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
-    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; invalidateStock();
+    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; invalidateStock();
     // S.lots is not in the local backup by design — Firestore's own cache restores it.
     return true;
   }catch(e){ return false; }
@@ -1705,9 +1735,9 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{} };
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
-let _subStock=null, _subStockMv=null, _subLots=null;
+let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 /* ── SYNC STATE (aggregate, not last-writer-wins) ──
@@ -1755,7 +1785,7 @@ function refreshSyncDot(){
   setSyncDot('ok');
 }
 function syncReport(){
-  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','ct_lots','meta'];
+  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','ct_lots','meta'];
   return order.filter(k=>k in SYNC).map(k=>{
     const s=SYNC[k];
     return { coll:k, optional:!!SYNC_OPTIONAL[k], err:s.err||null, cache:!!s.cache,
@@ -1876,6 +1906,13 @@ function attachDataListeners(){
     invalidateStock();
     markLoaded(snap.metadata, 'stockmv', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('stockmv',err));
+  // Goods returned by a party. Each return credits stock back on its own return date.
+  _subRet = _col('returns').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.returns = snap.docs.map(d=>d.data());
+    _lastSaved.returns = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
+    invalidateStock();
+    markLoaded(snap.metadata, 'returns', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('returns',err));
   /* ── Contractor Tracker bridge — STRICTLY READ ONLY ──
      Both apps live under the same owner document (users/{OWNER_UID}/…), so this app can read
      ct_lots directly. Finished-goods receivals become stock IN via stockContractorIn().
@@ -1890,11 +1927,11 @@ function attachDataListeners(){
     markLoaded(snap.metadata, 'ct_lots', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('ct_lots',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
-    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
+    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subLots,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subLots,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -1941,9 +1978,10 @@ function saveToCloud() {
     diffWrite('itemmap',     S.itemMap,     _lastSaved.itemMap,     mapDocId);
     diffWrite('stock',       S.stock,       _lastSaved.stock,       x=>x.id);
     diffWrite('stockmv',     S.stockMv,     _lastSaved.stockMv,     x=>x.id);
+    diffWrite('returns',     S.returns,     _lastSaved.returns,     x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'' };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'' };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -2193,7 +2231,9 @@ function renderPartyDetail(pid) {
   // Payment history — built from the PAYMENT LEDGER (source of truth), with "applied to" taken
   // from the allocator's allocation map. No dependency on stored settlement records.
   const appliedByPay = {};
-  a.allocations.forEach(al=>{ if(al.payId){ (appliedByPay[al.payId]=appliedByPay[al.payId]||[]).push(al.cid); } });
+  a.allocations.forEach(al=>{ if(al.payId && !al.isReturn){ (appliedByPay[al.payId]=appliedByPay[al.payId]||[]).push(al.cid); } });
+  const appliedByRet = {};
+  a.allocations.forEach(al=>{ if(al.payId && al.isReturn){ (appliedByRet[al.payId]=appliedByRet[al.payId]||[]).push(al.cid); } });
   const pmts = S.payments.filter(x=>x.pid===pid).map(pay=>({
     id: pay.id, payId: pay.id, date: pay.date, amount: pay.amount,
     mode: pay.mode || 'Payment', remarks: pay.remarks || '',
@@ -2223,6 +2263,7 @@ function renderPartyDetail(pid) {
     <div class="pacts">
       <button class="pact green" onclick="openPayFor('${pid}')">💵 Payment</button>
       <button class="pact blue"  onclick="openChallanFor('${pid}')">+ Challan</button>
+      <button class="pact" onclick="openReturnFor('${pid}')" style="background:#FFF7ED;color:#C2410C">↩️ Return</button>
       <button class="pact blue"  onclick="openEditParty('${pid}')" style="background:#F0FFF4;color:#059669">✏️ Edit</button>
       <button class="pact purple" onclick="printStmt('${pid}')">🖨 Statement</button>
       <button class="pact red"   onclick="delParty('${pid}')">🗑 Delete</button>
@@ -2231,6 +2272,21 @@ function renderPartyDetail(pid) {
     ${bal<=0?`<div class="ibox grn">✅ Account Clear — No outstanding balance</div>`:''}
     <div class="sh" style="margin-top:14px"><h2>Challans</h2></div>
     ${chs.length ? [...pend,...settl].map(c=>challanCard(c,false)).join('') : '<div class="empty" style="padding:1.5rem"><div class="ei" style="font-size:32px">📋</div><p>No challans</p></div>'}
+    ${(()=>{ const rts=partyReturns(pid); return rts.length?`
+    <div class="sh" style="margin-top:14px"><h2>Goods Returned</h2>
+      <span style="font-size:12px;color:#888;font-weight:600">${rts.length} return(s) · ${fmtN(rts.reduce((s,r)=>s+(+r.qty||0),0))} pcs · ${fmt(a.totalReturns||0)} credited</span>
+    </div>
+    ${rts.map(r=>`
+      <div style="background:#fff;border:1px solid #FED7AA;border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#EA580C;flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:700;color:#C2410C">↩️ ${fmtN(r.qty||0)} pcs${r.total?` · credit ${fmt(r.total)}`:''}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">${esc(r.num||'')} · ${fmtD(r.date)}${r.ref?' · '+esc(r.ref):''}${r.remarks?' · <em>'+esc(r.remarks)+'</em>':''}</div>
+          <div style="font-size:10.5px;color:#AAA;margin-top:2px">${r.items.map(i=>esc(i.name)+' ×'+fmtN(i.qty)).join(', ')}</div>
+          ${(appliedByRet[r.id]||[]).length?`<div style="font-size:10px;color:#AAA;margin-top:2px">Applied to: ${(appliedByRet[r.id]||[]).map(cid=>{const ch=chs.find(c=>c.id===cid);return ch?ch.num:null;}).filter(Boolean).join(', ')}</div>`:''}
+        </div>
+        <button class="btn sm red" onclick="delReturn('${r.id}')" style="border:none;background:none;flex-shrink:0">🗑</button>
+      </div>`).join('')}`:''; })()}
     <div class="sh" style="margin-top:14px">
       <h2>Payment History</h2>
       ${pmts.length?`<span style="font-size:12px;color:#888;font-weight:600">${pmts.length} record(s) · ${fmt(totalReceived)}</span>`:''}
@@ -2375,12 +2431,199 @@ function addItemRow() {
     </div>`;
   document.getElementById('item-rows').appendChild(div);
 }
+/* ── Stock check while billing ──
+   Warns when a line would sell more than is on hand. Two things this must get right:
+   • Multiple rows of the SAME item count together against one balance.
+   • When EDITING a challan, that challan's own quantities are already deducted in stockOnHand,
+     so they are added back before comparing — otherwise every edit looks like an overdraw.
+   Advisory only: stock never blocks a bill, because the physical goods may already have moved. */
+function stockAvailable(itemId){
+  let avail = stockOnHand(itemId);
+  if(typeof curEditChallanIdEC!=='undefined' && curEditChallanIdEC){
+    const c = (S.challans||[]).find(x=>x&&x.id===curEditChallanIdEC);
+    if(c) (c.items||[]).forEach(li=>{
+      const cn = itemCanon(li.name);
+      if(cn && cn.id===itemId) avail += (+li.qty||0);
+    });
+  }
+  return _r2(avail);
+}
+function checkStockRows(scope){
+  if(typeof stockReady!=='function' || !stockReady()) return [];
+  const cards = document.querySelectorAll('#'+scope+' .icard');
+  const want = {};                       // itemId -> total qty across all rows
+  const seen = [];
+  cards.forEach(card=>{
+    const inputs = card.querySelectorAll('input');
+    const name = String(inputs[0].value||'').trim();
+    const qty  = +inputs[1].value || 0;
+    const cn   = name ? itemCanon(name) : null;
+    seen.push({card, cn, qty, name});
+    if(cn && qty>0) want[cn.id] = (want[cn.id]||0) + qty;
+  });
+  const short = [];
+  Object.keys(want).forEach(id=>{
+    const avail = stockAvailable(id);
+    if(want[id] > avail){
+      const it = (S.items||[]).find(x=>x&&x.id===id);
+      short.push({ id, name: it?it.name:id, want:want[id], avail, over:_r2(want[id]-avail) });
+    }
+  });
+  // paint each row
+  seen.forEach(r=>{
+    let warn = r.card.querySelector('.stkwarn');
+    const bad = r.cn ? short.find(x=>x.id===r.cn.id) : null;
+    if(bad && r.qty>0){
+      if(!warn){
+        warn = document.createElement('div');
+        warn.className = 'stkwarn';
+        warn.style.cssText = 'font-size:11px;font-weight:700;color:#B45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:6px 9px;margin-top:6px';
+        r.card.appendChild(warn);
+      }
+      warn.textContent = '⚠ Only '+fmtN(bad.avail)+' in stock — this bill uses '+fmtN(bad.want)+' (short by '+fmtN(bad.over)+')';
+    } else if(warn){ warn.remove(); }
+  });
+  return short;
+}
+/* Blocking confirmation at save time. Returns true if the user chose to continue. */
+function confirmStockShortfall(scope){
+  const short = checkStockRows(scope);
+  if(!short.length) return true;
+  const lines = short.map(x=>'  • '+x.name+' — on hand '+fmtN(x.avail)+', billing '+fmtN(x.want)+' (short '+fmtN(x.over)+')').join('\n');
+  return confirm('This bill sells more than is in stock:\n\n'+lines+'\n\nThat usually means a lot receival or a purchase has not been entered yet.\n\nSave the bill anyway?');
+}
+
+/* ══════════════════════════════
+   GOODS RETURN
+   Records goods a party sent back. Each return credits stock on its RETURN date (gated by that
+   article's own start date, like every other movement).
+   Deliberately does NOT touch the payment/settlement engine: crediting a party's account is a
+   money decision that belongs with the bill or a payment entry, and silently altering balances
+   from a stock screen would be the wrong kind of surprise on a live ledger.
+══════════════════════════════ */
+let rtRowId = 0, curReturnPid = null;
+function openReturnFor(pid){
+  const p = S.parties.find(x=>x&&x.id===pid); if(!p) return;
+  curReturnPid = pid;
+  document.getElementById('rt-subtitle').textContent = 'From ' + p.name;
+  document.getElementById('rt-date').value = today();
+  document.getElementById('rt-ref').value = '';
+  document.getElementById('rt-rmk').value = '';
+  document.getElementById('rt-total').style.display = 'none';
+  const box = document.getElementById('rt-item-rows');
+  box.innerHTML = ''; rtRowId = 0;
+  addRTRow();
+  document.getElementById('mo-return').classList.add('open');
+}
+function addRTRow(){
+  const id = 'rt'+(rtRowId++);
+  const div = document.createElement('div');
+  div.className = 'icard'; div.id = id;
+  div.innerHTML = `<button class="deli" onclick="document.getElementById('${id}').remove();calcRTTotal()">✕</button>
+    ${(S.items&&S.items.length)?`<select onchange="pickRTItem(this,'${id}')" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
+    <input type="text" list="items-dl" placeholder="Item name" oninput="calcRTItem('${id}')">
+    <div class="inum">
+      <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" oninput="calcRTItem('${id}')"></div>
+      <div><label style="font-size:10px">Rate</label><input type="number" placeholder="0" inputmode="decimal" oninput="calcRTItem('${id}')"></div>
+      <div><label style="font-size:10px">Credit</label><div class="iamt" id="${id}-a">-</div></div>
+    </div>`;
+  document.getElementById('rt-item-rows').appendChild(div);
+}
+function pickRTItem(sel, rowId){
+  const it = S.items.find(x=>x.id===sel.value); if(!it) return;
+  const inputs = document.querySelectorAll('#'+rowId+' input');
+  inputs[0].value = it.name;
+  inputs[2].value = +it.rate||0;
+  sel.value = '';
+  calcRTItem(rowId);
+  inputs[1].focus();
+}
+function calcRTItem(id){
+  const inputs = document.querySelectorAll('#'+id+' input');
+  const q = +inputs[1].value, r = +inputs[2].value, a = q&&r ? Math.round(q*r) : 0;
+  const el = document.getElementById(id+'-a');
+  el.textContent = a ? fmt(a) : '-'; el.dataset.v = a||'';
+  calcRTTotal();
+}
+function calcRTTotal(){
+  let t = 0, n = 0;
+  document.querySelectorAll('#rt-item-rows .icard').forEach(c=>{
+    t += +c.querySelector('.iamt').dataset.v||0;
+    n += +c.querySelectorAll('input')[1].value||0;
+  });
+  const box = document.getElementById('rt-total');
+  if(n>0){ box.style.display='block'; box.textContent = fmtN(n)+' piece'+(n===1?'':'s')+' back to stock'+(t>0?' · '+fmt(t)+' credited to the party':' · no credit (enter rates)'); }
+  else box.style.display='none';
+}
+function saveReturn(){
+  const pid = curReturnPid;
+  const p = S.parties.find(x=>x&&x.id===pid); if(!p){ alert('Party not found.'); return; }
+  const date = document.getElementById('rt-date').value;
+  if(!date){ alert('Return date is required.'); return; }
+  const items = [];
+  document.querySelectorAll('#rt-item-rows .icard').forEach(card=>{
+    const inp = card.querySelectorAll('input');
+    let name = String(inp[0].value||'').trim();
+    const qty = +inp[1].value, rate = +inp[2].value||0;
+    const cn = itemCanon(name); if(cn) name = cn.name;      // store the clean master name
+    if(name && qty>0) items.push({ name, qty, rate, amount:Math.round(qty*rate) });
+  });
+  if(!items.length){ alert('Add at least one item with a name and quantity.'); return; }
+
+  // Warn about anything that will not reach stock, rather than failing silently.
+  const unmapped = items.filter(li=>!itemCanon(li.name)).map(li=>li.name);
+  const early = [];
+  items.forEach(li=>{
+    const cn = itemCanon(li.name); if(!cn) return;
+    const cut = itemCutover(cn.id);
+    if(cut && date < cut) early.push(li.name+' (starts '+fmtD(cut)+')');
+  });
+  let note = '';
+  if(unmapped.length) note += '\n\nNot in the Item Master, so these will NOT be counted in stock:\n  • '+unmapped.join('\n  • ')+'\nMap them in Item Master to fix that.';
+  if(early.length)    note += '\n\nDated before the article\'s stock start date, so these will NOT be counted:\n  • '+early.join('\n  • ');
+  const totalQty = items.reduce((s,i)=>s+(+i.qty||0),0);
+  const totalVal = items.reduce((s,i)=>s+(+i.amount||0),0);
+  const curBal = (getAlloc(pid)||{}).partyBalance || 0;
+  if(!confirm('Record this return from '+p.name+'?\n\n'+fmtN(totalQty)+' piece'+(totalQty===1?'':'s')+' on '+fmtD(date)
+      +(totalVal?'\nCredit value '+fmt(totalVal):'\nNo value entered — no credit will be given')
+      +'\n\nStock goes up.'
+      +(totalVal?'\nBalance '+fmt(curBal)+'  →  '+fmt(_r2(curBal-totalVal)):'')
+      +note)) return;
+
+  S.rtC = (S.rtC||0) + 1;
+  S.returns.push({
+    id: uniqId('RT'), num: 'RT-'+pad(S.rtC), pid, pname: p.name, date,
+    items, qty: totalQty, total: totalVal,
+    ref: document.getElementById('rt-ref').value.trim(),
+    remarks: document.getElementById('rt-rmk').value.trim()
+  });
+  invalidateStock();
+  invalidateParty(pid);
+  saveToCloud();
+  closeModal('return');
+  renderAll();
+  if(curParty===pid) renderPartyDetail(pid); else openParty(pid);
+}
+function delReturn(id){
+  const rt = (S.returns||[]).find(x=>x&&x.id===id); if(!rt) return;
+  if(!confirm('Delete return '+(rt.num||'')+'?\n\n'+fmtN(rt.qty||0)+' piece'+((rt.qty||0)===1?'':'s')+' will be removed from stock again.')) return;
+  S.returns = S.returns.filter(x=>x&&x.id!==id);
+  invalidateStock();
+  invalidateParty(rt.pid);
+  saveToCloud(); renderAll();
+  if(curParty) renderPartyDetail(curParty);
+}
+function partyReturns(pid){
+  return (S.returns||[]).filter(r=>r&&r.pid===pid).sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+}
+
 function calcItem(id) {
   const inputs=document.querySelectorAll('#'+id+' input');
   const q=+inputs[1].value, r=+inputs[2].value, a=q&&r?q*r:0;
   const el=document.getElementById(id+'-a');
   el.textContent=a?fmt(a):'-'; el.dataset.v=a||'';
   calcTotal();
+  try{ checkStockRows('item-rows'); }catch(e){}
 }
 function calcTotal() {
   let t=0; document.querySelectorAll('#item-rows .icard').forEach(c=>{t+=+c.querySelector('.iamt').dataset.v||0;});
@@ -2515,6 +2758,7 @@ function saveChallan() {
     if(name&&qty&&rate) items.push({name,qty,rate,amount});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
+  if (!confirmStockShortfall('item-rows')) return;
   S.cC++;
   const party=S.parties.find(p=>p.id===pid);
   const freight=+document.getElementById('ch-freight').value||0;
@@ -2836,6 +3080,7 @@ function refreshItemDatalist(){
 /* Typing an item name: if it matches an Item Master record (picked from suggestions or typed
    fully), auto-fill the default rate when the rate box is still empty. */
 function ownNameTyped(inp,rowId,isEC){
+  try{ setTimeout(function(){ checkStockRows(isEC?'ec-item-rows':'item-rows'); },0); }catch(e){}
   const it=findItemByName(inp.value);
   if(it){ const ins=document.querySelectorAll('#'+rowId+' input'); if(ins[2]&&!(+ins[2].value)) ins[2].value=+it.rate||0; }
   if(isEC) calcECItem(rowId); else calcTotal();
@@ -2913,7 +3158,7 @@ function stockIndex(){
   const cutOf = id => (id in cuts) ? cuts[id] : gcut;
 
   const rows = {};
-  const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, onHand:0});
+  const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, retIn:0, onHand:0});
   (S.items||[]).forEach(it=>{ if(it&&it.id) row(it.id); });
 
   (S.stock||[]).forEach(o=>{ if(o&&o.itemId) row(o.itemId).open += (+o.qty||0); });
@@ -2943,16 +3188,34 @@ function stockIndex(){
     });
   });
 
+  // Goods returned by parties come back into stock on the return date.
+  (S.returns||[]).forEach(rt=>{
+    if(!rt) return;
+    (rt.items||[]).forEach(li=>{
+      const q = +li.qty || 0; if(!q) return;
+      const cn = itemCanon(li.name);
+      if(cn){
+        if(!_onOrAfter(rt.date, cutOf(cn.id))) return;
+        row(cn.id).retIn += q;
+      } else {
+        if(!_onOrAfter(rt.date, gcut)) return;
+        const k = normIName(li.name); if(!k) return;
+        const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
+        u.inQty += q; u.uses++; if((rt.date||'') > u.last) u.last = rt.date||'';
+      }
+    });
+  });
+
   stockContractorIn(row, cutOf, gcut, unmapped);
 
   Object.keys(rows).forEach(id=>{
     const r = rows[id];
-    r.onHand = _r2(r.open + r.inCon + r.manIn - r.manOut - r.out);
+    r.onHand = _r2(r.open + r.inCon + r.manIn + r.retIn - r.manOut - r.out);
   });
   return _stockIdx = { rows, unmapped:Object.values(unmapped) };
 }
 
-function stockRow(itemId){ return stockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,onHand:0}; }
+function stockRow(itemId){ return stockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0}; }
 function stockOnHand(itemId){ return stockRow(itemId).onHand; }
 
 /* Full audit trail for one item — every contribution, oldest first. */
@@ -2970,6 +3233,14 @@ function stockItemMoves(itemId){
       const q = +li.qty||0; if(!q) return;
       const cn = itemCanon(li.name);
       if(cn && cn.id===itemId) out.push({date:c.date, kind:'out', label:'Challan '+(c.num||''), qty:-q, ref:c.pname||'', cid:c.id});
+    });
+  });
+  (S.returns||[]).forEach(rt=>{
+    if(!rt || !_onOrAfter(rt.date,cut)) return;
+    (rt.items||[]).forEach(li=>{
+      const q = +li.qty||0; if(!q) return;
+      const cn = itemCanon(li.name);
+      if(cn && cn.id===itemId) out.push({date:rt.date, kind:'in', label:'Return '+(rt.num||''), qty:q, ref:rt.pname||''});
     });
   });
   if(Array.isArray(S.lots)) S.lots.forEach(l=>{
@@ -3121,7 +3392,7 @@ function renderSyncStatus(){
       <div style="font-size:11px;color:#999;width:44px;text-align:right">${r.n}</div>
       <div style="width:82px;text-align:right">${st}</div>
     </div>`;}).join('');
-  const missing=11-rep.length;
+  const missing=12-rep.length;
   el.innerHTML=`
     <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
       Browser reports <strong>${isOnline?'online':'OFFLINE'}</strong>. Initial read confirmed: <strong>${loadedOnce?'yes':'no'}</strong>.
@@ -3234,7 +3505,7 @@ function renderStockOnHand(el){
       return `<div class="prow" onclick="openStockItem('${x.it.id}')">
         <div style="flex:1;min-width:0">
           <div style="font-size:14px;font-weight:700;color:#1A1A1A">${esc(x.it.name)}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Open ${fmtN(r.open)} · In ${fmtN(r.inCon+r.manIn)} · Out ${fmtN(r.out+r.manOut)}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Open ${fmtN(r.open)} · In ${fmtN(r.inCon+r.manIn+r.retIn)} · Out ${fmtN(r.out+r.manOut)}</div>
         </div>
         <div style="text-align:right;flex-shrink:0">
           <div style="font-size:17px;font-weight:800;color:${c}">${fmtN(r.onHand)}</div>
@@ -3364,6 +3635,7 @@ function renderStockItem(el){
       <div style="display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid #F0F0F0;font-size:11.5px;color:#555;flex-wrap:wrap">
         <span>Opening <strong>${fmtN(r.open)}</strong></span>
         <span>Lots <strong style="color:#065F46">+${fmtN(r.inCon)}</strong></span>
+        <span>Returns <strong style="color:#065F46">+${fmtN(r.retIn)}</strong></span>
         <span>Manual in <strong style="color:#065F46">+${fmtN(r.manIn)}</strong></span>
         <span>Challans <strong style="color:#DC2626">−${fmtN(r.out)}</strong></span>
         <span>Manual out <strong style="color:#DC2626">−${fmtN(r.manOut)}</strong></span>
@@ -3860,6 +4132,7 @@ function bulkCreateFromSelected(){
 /* Dropdown pick → autofill name + default rate into the row (both stay editable; challan
    snapshots the final typed values — the Item Master is never referenced after this point). */
 function pickItem(sel, rowId, isEC){
+  try{ setTimeout(function(){ checkStockRows(isEC?'ec-item-rows':'item-rows'); },0); }catch(e){}
   const it=S.items.find(x=>x.id===sel.value); if(!it) return;
   const inputs=document.querySelectorAll('#'+rowId+' input');
   inputs[0].value=it.name;
@@ -4786,6 +5059,7 @@ function calcECItem(id) {
   el.textContent = a ? fmt(a) : '-';
   el.dataset.v = a || '';
   calcECTotal();
+  try{ checkStockRows('ec-item-rows'); }catch(e){}
 }
 
 function calcECTotal() {
@@ -4813,6 +5087,7 @@ function saveEditChallan() {
     if (name && qty && rate) items.push({name, qty, rate, amount:Math.round(qty*rate)});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
+  if (!confirmStockShortfall('ec-item-rows')) return;
   c.pid     = newPid;
   c.pname   = S.parties.find(p=>p.id===newPid)?.name || c.pname;
   c.date    = newDate;
