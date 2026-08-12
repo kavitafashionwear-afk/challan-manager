@@ -49,6 +49,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 .sync-dot.busy{background:#FCD34D;animation:pulse .8s infinite}
 .sync-dot.offline{background:#9CA3AF}
 .sync-dot.err{background:#F87171}
+.sync-dot.stuck{background:#F97316;animation:pulse 1.6s infinite;box-shadow:0 0 0 2px rgba(249,115,22,.25)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ── BOTTOM NAV ── */
@@ -767,6 +768,20 @@ const _mergedBills = {};  // billIds already merged this session (guards double-
 /* ── OFFLINE-FIRST: local cache so writes queue offline and auto-flush online ── */
 var PERSIST = { state:'pending', code:'' };   // surfaced in Sync Status — a silent failure here
                                               // means nothing queues offline and no data survives a reload
+/* ── TRANSPORT (must run before ANY Firestore read/write, incl. enablePersistence) ──
+   ROOT CAUSE of "dot blinks amber forever + nothing reaches the cloud":
+   the Firestore SDK defaults to a bidirectional WebChannel stream. On Windows Chrome behind
+   certain ISPs, corporate proxies or antivirus TLS-inspection, that stream's handshake is
+   silently swallowed — the socket never errors, it just never completes. Result: every
+   listener stays fromCache:true forever (→ dot pinned to busy) and every write sits in the
+   local queue forever (→ "not saving"), while navigator.onLine still reports online.
+   experimentalAutoDetectLongPolling makes the SDK detect that and fall back to HTTP
+   long-polling, which those middleboxes do pass. useFetchStreams:false avoids the fetch()
+   streaming path that the same middleboxes break. */
+var TRANSPORT = { state:'auto-detect', code:'' };
+try {
+  db.settings({ experimentalAutoDetectLongPolling:true, useFetchStreams:false, merge:true });
+} catch(e) { TRANSPORT.state='default'; TRANSPORT.code=(e&&e.message)||'settings rejected'; console.warn('Firestore settings skipped', e); }
 try {
   db.enablePersistence({ synchronizeTabs: true })
     .then(function(){ PERSIST.state='on'; })
@@ -787,6 +802,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
+const BUILD = '2026-08-12.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[] };
 let uid = null;
@@ -1657,11 +1673,14 @@ function showInfoModal(title, bodyHtml) {
 function setSyncDot(s) {
   const d = document.getElementById('sync-dot');
   if (!d) return;
-  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'');
+  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'') + (s==='stuck'?' stuck':'');
   d.title = s==='busy' ? 'Saving…'
           : s==='offline' ? 'Offline — saved on this device, will sync when back online'
           : s==='err' ? 'Sync issue — saved locally, will retry'
+          : s==='stuck' ? 'Not reaching the server — data is queued on this device. Tap ⋮ → Sync Status.'
           : 'Synced ✓';
+  d.style.cursor = 'pointer';
+  if(!d._wired){ d._wired=1; d.onclick=function(){ try{ openSyncStatus(); }catch(_e){} }; }
 }
 function updateSyncUI(){ refreshSyncDot(); }
 
@@ -1774,14 +1793,53 @@ function noteWriteFail(coll, e){
     refreshSyncDot();
   }
 }
+/* ── STUCK-STREAM WATCHDOG ──
+   A busy dot is normal for a second or two. A busy dot that never clears means the listen
+   stream died (or never came up) and Firestore will NOT retry the handshake on its own — it
+   just keeps serving cache and queueing writes. Cycling the network forces the SDK to tear the
+   channel down and re-establish it, which is what actually recovers a stuck session (and also
+   releases a stale multi-tab primary lease). Reads/writes are never dropped by this: queued
+   writes survive disableNetwork and flush on enableNetwork.
+   Escalating backoff so a genuinely offline network isn't hammered. */
+var STUCK = { since:0, tries:0, lastTry:0, recovered:0, reason:'' };
+var STUCK_WARN_MS = 12000;      // dot turns solid orange + Sync Status explains
+var STUCK_FIRST_MS = 20000;     // first auto-reconnect attempt
+function _stuckBackoffMs(){ return Math.min(300000, 30000 * Math.pow(2, Math.max(0,STUCK.tries-1))); }
+function forceReconnect(manual){
+  if(!db || !db.disableNetwork) return Promise.resolve(false);
+  STUCK.tries++; STUCK.lastTry = Date.now();
+  console.warn('SYNC WATCHDOG: cycling Firestore network (attempt '+STUCK.tries+(manual?', manual':'')+')');
+  return db.disableNetwork()
+    .then(function(){ return db.enableNetwork(); })
+    .then(function(){ if(typeof renderSyncStatus==='function' && document.getElementById('sync-body')) renderSyncStatus(); return true; })
+    .catch(function(e){ console.warn('reconnect failed:', e && e.code, e); return false; });
+}
+function _watchdogTick(){
+  if(!STUCK.since || !isOnline) return;
+  var stuckFor = Date.now() - STUCK.since;
+  var due = STUCK.tries===0 ? STUCK_FIRST_MS : (STUCK.lastTry ? (Date.now()-STUCK.lastTry >= _stuckBackoffMs() ? 0 : 1) : 0);
+  if(STUCK.tries===0 ? stuckFor >= STUCK_FIRST_MS : due===0) forceReconnect(false);
+  refreshSyncDot();
+}
+setInterval(_watchdogTick, 5000);
+
 function refreshSyncDot(){
-  if(!isOnline){ setSyncDot('offline'); return; }
+  if(!isOnline){ STUCK.since=0; setSyncDot('offline'); return; }
   const keys = Object.keys(SYNC);
   const req  = keys.filter(k=>!SYNC_OPTIONAL[k]);
-  if(_writeFails || _saveBlocked){ setSyncDot('err'); return; }
-  if(req.some(k=>SYNC[k].err)){ setSyncDot('err'); return; }
-  if(keys.some(k=>SYNC[k].pending)){ setSyncDot('busy'); return; }   // our own write in flight
-  if(req.some(k=>SYNC[k].cache)){ setSyncDot('busy'); return; }      // still waiting on the server
+  if(_writeFails || _saveBlocked){ STUCK.since=0; setSyncDot('err'); return; }
+  if(req.some(k=>SYNC[k].err)){ STUCK.since=0; setSyncDot('err'); return; }
+  const pend  = keys.filter(k=>SYNC[k].pending);      // our own write in flight
+  const stale = req.filter(k=>SYNC[k].cache);         // still waiting on the server
+  if(pend.length || stale.length){
+    if(!STUCK.since) STUCK.since = Date.now();
+    STUCK.reason = (stale.length ? 'no server response: '+stale.join(', ')
+                                 : 'writes queued: '+pend.join(', '));
+    setSyncDot((Date.now()-STUCK.since >= STUCK_WARN_MS) ? 'stuck' : 'busy');
+    return;
+  }
+  if(STUCK.since){ STUCK.recovered++; }
+  STUCK.since=0; STUCK.tries=0; STUCK.lastTry=0; STUCK.reason='';
   setSyncDot('ok');
 }
 function syncReport(){
@@ -3396,6 +3454,13 @@ function renderSyncStatus(){
   el.innerHTML=`
     <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
       Browser reports <strong>${isOnline?'online':'OFFLINE'}</strong>. Initial read confirmed: <strong>${loadedOnce?'yes':'no'}</strong>.
+      <div style="margin-top:5px">Build: <strong>${BUILD}</strong> &nbsp;·&nbsp; Transport: <strong style="color:${TRANSPORT.state==='auto-detect'?'#065F46':'#B91C1C'}">${TRANSPORT.state==='auto-detect'?'auto (long-poll fallback ON)':'DEFAULT ('+esc(TRANSPORT.code)+')'}</strong></div>
+      ${STUCK.since?`<div style="background:#FFEDD5;border:1px solid #FDBA74;border-radius:9px;padding:9px 11px;margin-top:9px;color:#9A3412;font-size:11.5px">
+        <strong>Not reaching the server for ${Math.round((Date.now()-STUCK.since)/1000)}s.</strong> ${esc(STUCK.reason)}.<br>
+        Everything you entered is safe on this device${PERSIST.state==='on'?' (queued in the offline cache) and will upload automatically the moment the connection recovers':' — but the offline cache is OFF, so do not close this tab until it turns green'}.
+        Auto-reconnect attempts so far: <strong>${STUCK.tries}</strong>.
+      </div>`:''}
+      ${STUCK.recovered?`<div style="color:#065F46;margin-top:6px;font-size:11px">Recovered from ${STUCK.recovered} stall(s) this session.</div>`:''}
       <div style="margin-top:7px">Offline cache: <strong style="color:${PERSIST.state==='on'?'#065F46':PERSIST.state==='off'?'#B91C1C':'#92400E'}">${PERSIST.state==='on'?'ON':PERSIST.state==='off'?'OFF ('+esc(PERSIST.code)+')':'starting…'}</strong></div>
       ${PERSIST.state==='off'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">Firestore's offline cache is <strong>not active</strong>, so edits made offline are not queued and are lost on reload.${PERSIST.code==='failed-precondition'?' Cause: the app is open in more than one tab.':''}${PERSIST.code==='unimplemented'?' Cause: this browser or private-browsing mode does not support it.':''}</div>`:''}
       <div style="margin-top:5px">Local backup: <strong style="color:${LOCAL.state==='ok'?'#065F46':LOCAL.state==='trimmed'?'#92400E':'#B91C1C'}">${LOCAL.state==='ok'?'OK':LOCAL.state==='trimmed'?'TRIMMED':'FAILED'}</strong>${LOCAL.bytes?` <span style="color:#999">· ${Math.round(LOCAL.bytes/1024)} KB</span>`:''}${LOCAL.code?` <span style="color:#B91C1C">· ${esc(LOCAL.code)}</span>`:''}</div>
@@ -3407,7 +3472,10 @@ function renderSyncStatus(){
       <div style="flex:1">COLLECTION</div><div style="width:44px;text-align:right">DOCS</div><div style="width:82px;text-align:right">STATE</div>
     </div>
     ${rows||'<div style="text-align:center;color:#999;padding:20px;font-size:12.5px">No listeners attached.</div>'}
-    <button class="btn" style="width:100%;justify-content:center;margin-top:12px" onclick="renderSyncStatus()">↻ Refresh</button>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn" style="flex:1;justify-content:center" onclick="renderSyncStatus()">↻ Refresh</button>
+      <button class="btn" style="flex:1;justify-content:center;background:#FFF7ED;border-color:#FDBA74;color:#9A3412" onclick="forceReconnect(true).then(function(){setTimeout(renderSyncStatus,1200);})">⟳ Reconnect now</button>
+    </div>
     <div style="font-size:10.5px;color:#999;margin-top:9px;line-height:1.5">
       <strong>SYNCED</strong> = confirmed by the server. <strong>NO SERVER</strong> = reading from this
       device's cache only. <strong>BLOCKED</strong> = the server refused the read.
