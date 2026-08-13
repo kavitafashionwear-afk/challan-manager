@@ -49,7 +49,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 .sync-dot.busy{background:#FCD34D;animation:pulse .8s infinite}
 .sync-dot.offline{background:#9CA3AF}
 .sync-dot.err{background:#F87171}
-.sync-dot.stuck{background:#F97316;animation:pulse 1.6s infinite;box-shadow:0 0 0 2px rgba(249,115,22,.25)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ── BOTTOM NAV ── */
@@ -339,6 +338,11 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     <div class="pg" id="items-content"></div>
   </div>
 
+  <!-- CASH IN HAND -->
+  <div class="cscreen" id="cs-cash">
+    <div class="pg" id="cash-content"></div>
+  </div>
+
   <!-- STOCK -->
   <div class="cscreen" id="cs-stock">
     <div class="pg" id="stock-content"></div>
@@ -439,6 +443,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
   <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
+  <div class="umi" onclick="goTab('cash');closeMenu()">💰 Cash in Hand</div>
   <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
   <div class="umi" onclick="goTab('items');closeMenu()">🏷️ Item Master</div>
   <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
@@ -768,20 +773,6 @@ const _mergedBills = {};  // billIds already merged this session (guards double-
 /* ── OFFLINE-FIRST: local cache so writes queue offline and auto-flush online ── */
 var PERSIST = { state:'pending', code:'' };   // surfaced in Sync Status — a silent failure here
                                               // means nothing queues offline and no data survives a reload
-/* ── TRANSPORT (must run before ANY Firestore read/write, incl. enablePersistence) ──
-   ROOT CAUSE of "dot blinks amber forever + nothing reaches the cloud":
-   the Firestore SDK defaults to a bidirectional WebChannel stream. On Windows Chrome behind
-   certain ISPs, corporate proxies or antivirus TLS-inspection, that stream's handshake is
-   silently swallowed — the socket never errors, it just never completes. Result: every
-   listener stays fromCache:true forever (→ dot pinned to busy) and every write sits in the
-   local queue forever (→ "not saving"), while navigator.onLine still reports online.
-   experimentalAutoDetectLongPolling makes the SDK detect that and fall back to HTTP
-   long-polling, which those middleboxes do pass. useFetchStreams:false avoids the fetch()
-   streaming path that the same middleboxes break. */
-var TRANSPORT = { state:'auto-detect', code:'' };
-try {
-  db.settings({ experimentalAutoDetectLongPolling:true, useFetchStreams:false, merge:true });
-} catch(e) { TRANSPORT.state='default'; TRANSPORT.code=(e&&e.message)||'settings rejected'; console.warn('Firestore settings skipped', e); }
 try {
   db.enablePersistence({ synchronizeTabs: true })
     .then(function(){ PERSIST.state='on'; })
@@ -802,9 +793,9 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-08-12.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
-          stock:[], stockMv:[], stockFrom:'', lots:[], returns:[] };
+          stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
+          expenses:[], cashOpen:null, ctPays:[], ctAdv:[] };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1673,14 +1664,11 @@ function showInfoModal(title, bodyHtml) {
 function setSyncDot(s) {
   const d = document.getElementById('sync-dot');
   if (!d) return;
-  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'') + (s==='stuck'?' stuck':'');
+  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'');
   d.title = s==='busy' ? 'Saving…'
           : s==='offline' ? 'Offline — saved on this device, will sync when back online'
           : s==='err' ? 'Sync issue — saved locally, will retry'
-          : s==='stuck' ? 'Not reaching the server — data is queued on this device. Tap ⋮ → Sync Status.'
           : 'Synced ✓';
-  d.style.cursor = 'pointer';
-  if(!d._wired){ d._wired=1; d.onclick=function(){ try{ openSyncStatus(); }catch(_e){} }; }
 }
 function updateSyncUI(){ refreshSyncDot(); }
 
@@ -1699,7 +1687,8 @@ function saveLocal(){
     parties:S.parties, challans:S.challans, payments:S.payments,
     settlements:S.settlements, overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash,
     pC:S.pC, cC:S.cC, pyC:S.pyC, seasons:S.seasons, curSeason:S.curSeason,
-    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns
+    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns,
+    expenses:S.expenses, cashOpen:S.cashOpen, cashModes:S.cashModes, exC:S.exC
   };
   // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
   var tiers = [
@@ -1732,7 +1721,8 @@ function loadLocal(){
     S.settlements=d.settlements||[]; S.overrides=d.overrides||[]; S.items=d.items||[]; S.itemMap=d.itemMap||[]; S.trash=d.trash||[];
     S.pC=d.pC||0; S.cC=d.cC||0; S.pyC=d.pyC||0;
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
-    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; invalidateStock();
+    S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; S.expenses=d.expenses||[]; S.cashOpen=d.cashOpen||null;
+    if(d.cashModes) S.cashModes=d.cashModes; S.exC=d.exC||0; invalidateStock(); invalidateCash();
     // S.lots is not in the local backup by design — Firestore's own cache restores it.
     return true;
   }catch(e){ return false; }
@@ -1754,9 +1744,9 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{} };
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{}, expenses:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
-let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null;
+let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null, _subExp=null, _subCtPays=null, _subCtAdv=null;
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 /* ── SYNC STATE (aggregate, not last-writer-wins) ──
@@ -1767,7 +1757,7 @@ let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconci
    ct_lots is OPTIONAL — it is owned by the Contractor Tracker and only read opportunistically for
    stock, so it must never be able to make this app look broken. */
 const SYNC = {};
-const SYNC_OPTIONAL = { ct_lots:1 };
+const SYNC_OPTIONAL = { ct_lots:1, ct_pays:1, ct_advances:1 };
 let _writeFails = 0, _lastWriteErr = '', _saveBlocked = false;
 function syncMark(coll, meta, n){
   const s = SYNC[coll] || (SYNC[coll] = {});
@@ -1793,57 +1783,18 @@ function noteWriteFail(coll, e){
     refreshSyncDot();
   }
 }
-/* ── STUCK-STREAM WATCHDOG ──
-   A busy dot is normal for a second or two. A busy dot that never clears means the listen
-   stream died (or never came up) and Firestore will NOT retry the handshake on its own — it
-   just keeps serving cache and queueing writes. Cycling the network forces the SDK to tear the
-   channel down and re-establish it, which is what actually recovers a stuck session (and also
-   releases a stale multi-tab primary lease). Reads/writes are never dropped by this: queued
-   writes survive disableNetwork and flush on enableNetwork.
-   Escalating backoff so a genuinely offline network isn't hammered. */
-var STUCK = { since:0, tries:0, lastTry:0, recovered:0, reason:'' };
-var STUCK_WARN_MS = 12000;      // dot turns solid orange + Sync Status explains
-var STUCK_FIRST_MS = 20000;     // first auto-reconnect attempt
-function _stuckBackoffMs(){ return Math.min(300000, 30000 * Math.pow(2, Math.max(0,STUCK.tries-1))); }
-function forceReconnect(manual){
-  if(!db || !db.disableNetwork) return Promise.resolve(false);
-  STUCK.tries++; STUCK.lastTry = Date.now();
-  console.warn('SYNC WATCHDOG: cycling Firestore network (attempt '+STUCK.tries+(manual?', manual':'')+')');
-  return db.disableNetwork()
-    .then(function(){ return db.enableNetwork(); })
-    .then(function(){ if(typeof renderSyncStatus==='function' && document.getElementById('sync-body')) renderSyncStatus(); return true; })
-    .catch(function(e){ console.warn('reconnect failed:', e && e.code, e); return false; });
-}
-function _watchdogTick(){
-  if(!STUCK.since || !isOnline) return;
-  var stuckFor = Date.now() - STUCK.since;
-  var due = STUCK.tries===0 ? STUCK_FIRST_MS : (STUCK.lastTry ? (Date.now()-STUCK.lastTry >= _stuckBackoffMs() ? 0 : 1) : 0);
-  if(STUCK.tries===0 ? stuckFor >= STUCK_FIRST_MS : due===0) forceReconnect(false);
-  refreshSyncDot();
-}
-setInterval(_watchdogTick, 5000);
-
 function refreshSyncDot(){
-  if(!isOnline){ STUCK.since=0; setSyncDot('offline'); return; }
+  if(!isOnline){ setSyncDot('offline'); return; }
   const keys = Object.keys(SYNC);
   const req  = keys.filter(k=>!SYNC_OPTIONAL[k]);
-  if(_writeFails || _saveBlocked){ STUCK.since=0; setSyncDot('err'); return; }
-  if(req.some(k=>SYNC[k].err)){ STUCK.since=0; setSyncDot('err'); return; }
-  const pend  = keys.filter(k=>SYNC[k].pending);      // our own write in flight
-  const stale = req.filter(k=>SYNC[k].cache);         // still waiting on the server
-  if(pend.length || stale.length){
-    if(!STUCK.since) STUCK.since = Date.now();
-    STUCK.reason = (stale.length ? 'no server response: '+stale.join(', ')
-                                 : 'writes queued: '+pend.join(', '));
-    setSyncDot((Date.now()-STUCK.since >= STUCK_WARN_MS) ? 'stuck' : 'busy');
-    return;
-  }
-  if(STUCK.since){ STUCK.recovered++; }
-  STUCK.since=0; STUCK.tries=0; STUCK.lastTry=0; STUCK.reason='';
+  if(_writeFails || _saveBlocked){ setSyncDot('err'); return; }
+  if(req.some(k=>SYNC[k].err)){ setSyncDot('err'); return; }
+  if(keys.some(k=>SYNC[k].pending)){ setSyncDot('busy'); return; }   // our own write in flight
+  if(req.some(k=>SYNC[k].cache)){ setSyncDot('busy'); return; }      // still waiting on the server
   setSyncDot('ok');
 }
 function syncReport(){
-  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','ct_lots','meta'];
+  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','expenses','ct_lots','ct_pays','ct_advances','meta'];
   return order.filter(k=>k in SYNC).map(k=>{
     const s=SYNC[k];
     return { coll:k, optional:!!SYNC_OPTIONAL[k], err:s.err||null, cache:!!s.cache,
@@ -1971,6 +1922,13 @@ function attachDataListeners(){
     invalidateStock();
     markLoaded(snap.metadata, 'returns', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('returns',err));
+  // Business expenses paid out of hand.
+  _subExp = _col('expenses').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.expenses = snap.docs.map(d=>d.data());
+    _lastSaved.expenses = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
+    invalidateCash();
+    markLoaded(snap.metadata, 'expenses', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('expenses',err));
   /* ── Contractor Tracker bridge — STRICTLY READ ONLY ──
      Both apps live under the same owner document (users/{OWNER_UID}/…), so this app can read
      ct_lots directly. Finished-goods receivals become stock IN via stockContractorIn().
@@ -1984,12 +1942,26 @@ function attachDataListeners(){
     _tokDFCache = null;          // lot item names join the fuzzy-matching corpus
     markLoaded(snap.metadata, 'ct_lots', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('ct_lots',err));
+  /* Contractor payments and advances — READ ONLY, same rule as ct_lots. They are real money
+     leaving the business, so they reduce cash in hand. Never written from this app. */
+  _subCtPays = _col('ct_pays').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.ctPays = snap.docs.map(d=>d.data());
+    invalidateCash();
+    markLoaded(snap.metadata, 'ct_pays', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('ct_pays',err));
+  _subCtAdv = _col('ct_advances').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.ctAdv = snap.docs.map(d=>d.data());
+    invalidateCash();
+    markLoaded(snap.metadata, 'ct_advances', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('ct_advances',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
-    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
+    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC);
+      if(d.cashOpen!==undefined){ S.cashOpen=d.cashOpen; invalidateCash(); }
+      if(d.cashModes!==undefined && d.cashModes){ S.cashModes=d.cashModes; invalidateCash(); } if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subLots,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subExp,_subLots,_subCtPays,_subCtAdv,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -2037,9 +2009,10 @@ function saveToCloud() {
     diffWrite('stock',       S.stock,       _lastSaved.stock,       x=>x.id);
     diffWrite('stockmv',     S.stockMv,     _lastSaved.stockMv,     x=>x.id);
     diffWrite('returns',     S.returns,     _lastSaved.returns,     x=>x.id);
+    diffWrite('expenses',    S.expenses,    _lastSaved.expenses,    x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'' };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -2154,6 +2127,7 @@ function renderAll() {
   invalidateAllAlloc();
   _itemCanonIdx = null;   // item/mapping/challan data may have changed   // derived state is recomputed fresh each render pass from the ledger
   invalidateStock();      // on-hand depends on items, mappings, challans and stock docs
+  invalidateCash();       // cash depends on payments, expenses and contractor payouts
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
@@ -2161,6 +2135,7 @@ function renderAll() {
   if (curTab==='reports')  renderReports();
   if (curTab==='items')    renderItems();
   if (curTab==='stock')    renderStock();
+  if (curTab==='cash')     renderCash();
   if (curTab==='trash')    renderTrash();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
@@ -2176,7 +2151,7 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   const nt=document.getElementById('nt-'+tab); if(nt) nt.classList.add('on');   // reports has no bottom-nav tab
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock') ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock'||tab==='cash') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
@@ -2184,6 +2159,7 @@ function goTab(tab) {
     tab==='daybook'  ? '📅 Daybook' :
     tab==='reports'  ? '📊 Reports' :
     tab==='stock'    ? '📦 Stock' :
+    tab==='cash'     ? '💰 Cash in Hand' :
     tab==='items'    ? '🏷️ Item Master' : '🗑️ Recycle Bin';
   renderAll();
 }
@@ -3450,17 +3426,10 @@ function renderSyncStatus(){
       <div style="font-size:11px;color:#999;width:44px;text-align:right">${r.n}</div>
       <div style="width:82px;text-align:right">${st}</div>
     </div>`;}).join('');
-  const missing=12-rep.length;
+  const missing=15-rep.length;
   el.innerHTML=`
     <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
       Browser reports <strong>${isOnline?'online':'OFFLINE'}</strong>. Initial read confirmed: <strong>${loadedOnce?'yes':'no'}</strong>.
-      <div style="margin-top:5px">Build: <strong>${BUILD}</strong> &nbsp;·&nbsp; Transport: <strong style="color:${TRANSPORT.state==='auto-detect'?'#065F46':'#B91C1C'}">${TRANSPORT.state==='auto-detect'?'auto (long-poll fallback ON)':'DEFAULT ('+esc(TRANSPORT.code)+')'}</strong></div>
-      ${STUCK.since?`<div style="background:#FFEDD5;border:1px solid #FDBA74;border-radius:9px;padding:9px 11px;margin-top:9px;color:#9A3412;font-size:11.5px">
-        <strong>Not reaching the server for ${Math.round((Date.now()-STUCK.since)/1000)}s.</strong> ${esc(STUCK.reason)}.<br>
-        Everything you entered is safe on this device${PERSIST.state==='on'?' (queued in the offline cache) and will upload automatically the moment the connection recovers':' — but the offline cache is OFF, so do not close this tab until it turns green'}.
-        Auto-reconnect attempts so far: <strong>${STUCK.tries}</strong>.
-      </div>`:''}
-      ${STUCK.recovered?`<div style="color:#065F46;margin-top:6px;font-size:11px">Recovered from ${STUCK.recovered} stall(s) this session.</div>`:''}
       <div style="margin-top:7px">Offline cache: <strong style="color:${PERSIST.state==='on'?'#065F46':PERSIST.state==='off'?'#B91C1C':'#92400E'}">${PERSIST.state==='on'?'ON':PERSIST.state==='off'?'OFF ('+esc(PERSIST.code)+')':'starting…'}</strong></div>
       ${PERSIST.state==='off'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">Firestore's offline cache is <strong>not active</strong>, so edits made offline are not queued and are lost on reload.${PERSIST.code==='failed-precondition'?' Cause: the app is open in more than one tab.':''}${PERSIST.code==='unimplemented'?' Cause: this browser or private-browsing mode does not support it.':''}</div>`:''}
       <div style="margin-top:5px">Local backup: <strong style="color:${LOCAL.state==='ok'?'#065F46':LOCAL.state==='trimmed'?'#92400E':'#B91C1C'}">${LOCAL.state==='ok'?'OK':LOCAL.state==='trimmed'?'TRIMMED':'FAILED'}</strong>${LOCAL.bytes?` <span style="color:#999">· ${Math.round(LOCAL.bytes/1024)} KB</span>`:''}${LOCAL.code?` <span style="color:#B91C1C">· ${esc(LOCAL.code)}</span>`:''}</div>
@@ -3472,14 +3441,344 @@ function renderSyncStatus(){
       <div style="flex:1">COLLECTION</div><div style="width:44px;text-align:right">DOCS</div><div style="width:82px;text-align:right">STATE</div>
     </div>
     ${rows||'<div style="text-align:center;color:#999;padding:20px;font-size:12.5px">No listeners attached.</div>'}
-    <div style="display:flex;gap:8px;margin-top:12px">
-      <button class="btn" style="flex:1;justify-content:center" onclick="renderSyncStatus()">↻ Refresh</button>
-      <button class="btn" style="flex:1;justify-content:center;background:#FFF7ED;border-color:#FDBA74;color:#9A3412" onclick="forceReconnect(true).then(function(){setTimeout(renderSyncStatus,1200);})">⟳ Reconnect now</button>
-    </div>
+    <button class="btn" style="width:100%;justify-content:center;margin-top:12px" onclick="renderSyncStatus()">↻ Refresh</button>
     <div style="font-size:10.5px;color:#999;margin-top:9px;line-height:1.5">
       <strong>SYNCED</strong> = confirmed by the server. <strong>NO SERVER</strong> = reading from this
       device's cache only. <strong>BLOCKED</strong> = the server refused the read.
       Anything marked <em>optional</em> cannot affect the dot.
+    </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   CASH IN HAND
+   Balance is DERIVED, never stored. Persisted records are only:
+     • expenses        — money paid out for running the business
+     • meta.cashOpen   — {amount, date} the opening float
+     • meta.cashModes  — which payment modes count as "in hand"
+   Everything else is read live:
+     • IN   = party payments whose mode counts as in-hand
+     • OUT  = expenses, plus contractor payments and advances from the Contractor Tracker
+   WHY MODES MATTER: a NEFT or cheque receipt lands in the bank, not in your hand. Counting it
+   here would overstate cash. Default in-hand modes are Cash and UPI (matching how the business
+   actually treats them); this is user-configurable.
+   CONTRACTOR PAYMENTS: ct_pays rows with fromAdvance:true are NOT money leaving — they settle a
+   lot against an advance that was already paid and already counted. Counting them would
+   double-deduct. They are excluded.
+   Only movements ON OR AFTER the opening date count; the opening float already contains
+   everything before it.
+══════════════════════════════════════════════════════════════════════ */
+const CASH_MODES_DEFAULT = { 'Cash':1, 'UPI':1 };
+/* INTERNAL modes are book-keeping entries, NOT money movements, and can never be counted as
+   cash however the mode settings are configured:
+     'Advance Adjustment' — a ct_pays row settling a lot out of the advance pool. The cash left
+                            when the ADVANCE was created; this row only reassigns it.
+     'Adjustment'         — an advance created by moveOverpayToPool() from an over-paid CASH row.
+                            That cash was already counted when the payment row was made; this
+                            record just parks the surplus back in the pool.
+   Counting either would double-deduct. This is enforced here rather than left to the mode
+   checkboxes, so ticking "Other" can never corrupt the balance. */
+const CASH_MODES_INTERNAL = { 'Advance Adjustment':1, 'Adjustment':1 };
+function cashModes(){ return S.cashModes || CASH_MODES_DEFAULT; }
+function isInternalMode(mode){ return !!CASH_MODES_INTERNAL[String(mode||'').trim()]; }
+function isCashMode(mode){
+  const m = String(mode||'Cash').trim();
+  if(isInternalMode(m)) return false;          // never, regardless of settings
+  return !!cashModes()[m];
+}
+let _cashIdx = null;
+function invalidateCash(){ _cashIdx = null; }
+function cashOpenAmt(){ return S.cashOpen ? (+S.cashOpen.amount||0) : 0; }
+function cashOpenDate(){ return S.cashOpen ? (S.cashOpen.date||'') : ''; }
+function cashReady(){ return !!(S.cashOpen && S.cashOpen.date); }
+
+function cashLedger(){
+  if(_cashIdx) return _cashIdx;
+  const cut = cashOpenDate();
+  const rows = [];
+  if(cashReady()) rows.push({ date:cut, kind:'open', label:'Opening cash in hand', amt:cashOpenAmt(), ref:'', src:'open' });
+
+  // IN — party payments in an in-hand mode
+  (S.payments||[]).forEach(p=>{
+    if(!p) return;
+    const amt = +p.amount||0; if(!amt) return;
+    if(!isCashMode(p.mode)) return;
+    if(!_onOrAfter(p.date, cut)) return;
+    rows.push({ date:p.date, kind:'in', label:(p.pname||partyName(p.pid)||'Payment received'),
+                amt, ref:(p.mode||'Cash')+(p.remarks?' · '+p.remarks:''), src:'pay', id:p.id });
+  });
+
+  // OUT — business expenses
+  (S.expenses||[]).forEach(e=>{
+    if(!e) return;
+    const amt = +e.amount||0; if(!amt) return;
+    if(!isCashMode(e.mode)) return;
+    if(!_onOrAfter(e.date, cut)) return;
+    rows.push({ date:e.date, kind:'out', label:e.head||'Expense', amt:-amt,
+                ref:(e.mode||'Cash')+(e.remarks?' · '+e.remarks:''), src:'exp', id:e.id });
+  });
+
+  /* OUT — Contractor Tracker payment history (read only).
+     Both record types are real money leaving when they carry a real payment mode:
+       • ct_advances   — cash/UPI handed over as an advance
+       • ct_pays       — cash/UPI paid directly against a lot
+     The advance is spent later against lots, but that spending is recorded as an internal
+     'Advance Adjustment' row, so the money is only ever counted once — at the moment it left. */
+  (S.ctPays||[]).forEach(p=>{
+    if(!p) return;
+    const amt = +p.amount||0; if(!amt) return;
+    if(!isCashMode(p.mode)) return;            // excludes 'Advance Adjustment' pool settlements
+    if(!_onOrAfter(p.date, cut)) return;
+    rows.push({ date:p.date, kind:'out', label:(p.contractorName||'Contractor')+' — '+ctLotLabel(p.lotId),
+                amt:-amt, ref:(p.mode||'Cash')+(p.remarks?' · '+p.remarks:''), src:'ct', id:p.id });
+  });
+  (S.ctAdv||[]).forEach(a=>{
+    if(!a) return;
+    const amt = +a.amount||0; if(!amt) return;
+    if(!isCashMode(a.mode)) return;            // excludes 'Adjustment' overpay parking records
+    if(!_onOrAfter(a.date, cut)) return;
+    rows.push({ date:a.date, kind:'out', label:(a.contractorName||'Contractor')+' — advance',
+                amt:-amt, ref:(a.mode||'Cash')+(a.remarks?' · '+a.remarks:''), src:'ctadv', id:a.id });
+  });
+
+  rows.sort((a,b)=> String(a.date||'').localeCompare(String(b.date||''))
+                 || (a.kind==='open'?-1:b.kind==='open'?1:0));
+  let run = 0;
+  rows.forEach(r=>{ run = _r2(run + r.amt); r.bal = run; });
+
+  const sum = k => _r2(rows.filter(k).reduce((s,r)=>s+Math.abs(r.amt),0));
+  return _cashIdx = {
+    rows,
+    open:  cashOpenAmt(),
+    inPay: sum(r=>r.src==='pay'),
+    outExp:sum(r=>r.src==='exp'),
+    outCt: _r2(sum(r=>r.src==='ct') + sum(r=>r.src==='ctadv')),
+    balance: run
+  };
+}
+function cashBalance(){ return cashLedger().balance; }
+function partyName(pid){ const p=(S.parties||[]).find(x=>x&&x.id===pid); return p?p.name:''; }
+/* Name a contractor payment by the lot it paid, using the ct_lots mirror already loaded. */
+function ctLotLabel(lotId){
+  if(!lotId) return 'payment';
+  const l = (S.lots||[]).find(x=>x&&x.id===lotId);
+  if(!l) return 'payment';
+  const bits = [];
+  if(l.lotNumber!=null && l.lotNumber!=='') bits.push('Lot '+l.lotNumber);
+  if(l.item) bits.push(l.item);
+  return bits.length ? bits.join(' · ') : 'payment';
+}
+
+/* Money out that this app cannot see because the mode is not an in-hand mode — shown so the
+   figure is never silently incomplete. */
+function cashExcluded(){
+  const cut = cashOpenDate();
+  let n=0, amt=0;
+  // Internal book-keeping rows are not "excluded money" — no cash was involved at all.
+  const chk=(d,m,a)=>{ if(!isCashMode(m) && !isInternalMode(m) && _onOrAfter(d,cut) && a){ n++; amt=_r2(amt+Math.abs(a)); } };
+  (S.payments||[]).forEach(p=>p&&chk(p.date,p.mode,+p.amount||0));
+  (S.expenses||[]).forEach(e=>e&&chk(e.date,e.mode,+e.amount||0));
+  (S.ctPays||[]).forEach(p=>p&&chk(p.date,p.mode,+p.amount||0));
+  (S.ctAdv||[]).forEach(a=>a&&chk(a.date,a.mode,+a.amount||0));
+  return {count:n, amount:amt};
+}
+
+/* ── Mutations ── */
+function setCashOpening(amount, date){
+  if(!date){ alert('Pick the date your cash count starts from.'); return false; }
+  const amt = +amount;
+  if(isNaN(amt)){ alert('Enter the cash amount you had on that date.'); return false; }
+  S.cashOpen = { amount:_r2(amt), date };
+  invalidateCash(); saveToCloud(); renderCash();
+  return true;
+}
+function toggleCashMode(mode){
+  if(isInternalMode(mode)){ alert('"'+mode+'" is an internal record, not a payment. Counting it would deduct the same money twice.'); return; }
+  const cur = Object.assign({}, cashModes());
+  if(cur[mode]) delete cur[mode]; else cur[mode]=1;
+  if(!Object.keys(cur).length){ alert('At least one mode must count as cash in hand.'); return; }
+  S.cashModes = cur;
+  invalidateCash(); saveToCloud(); renderCash();
+}
+function addExpense(){
+  const head = document.getElementById('ex-head').value.trim();
+  const amt  = +document.getElementById('ex-amt').value;
+  const date = document.getElementById('ex-date').value;
+  const mode = document.getElementById('ex-mode').value;
+  const rmk  = document.getElementById('ex-rmk').value.trim();
+  if(!head){ alert('What was the expense for?'); return; }
+  if(!amt || amt<=0){ alert('Enter an amount greater than 0.'); return; }
+  if(!date){ alert('Pick a date.'); return; }
+  const cut = cashOpenDate();
+  if(cut && date < cut){ alert('That date is before your cash start date ('+fmtD(cut)+').\n\nThe opening figure already covers everything before it, so this would double-count.'); return; }
+  if(isCashMode(mode)){
+    const after = _r2(cashBalance() - amt);
+    if(after < 0 && !confirm('This takes cash in hand to '+fmt(after)+' — negative.\n\nUsually that means a receipt or the opening balance has not been entered. Save anyway?')) return;
+  }
+  S.exC = (S.exC||0)+1;
+  S.expenses.push({ id:uniqId('EX'), num:'EX-'+pad(S.exC), head, amount:_r2(amt), date, mode, remarks:rmk });
+  invalidateCash();
+  document.getElementById('ex-head').value='';
+  document.getElementById('ex-amt').value='';
+  document.getElementById('ex-rmk').value='';
+  saveToCloud(); renderCash();
+}
+function delExpense(id){
+  const e = (S.expenses||[]).find(x=>x&&x.id===id); if(!e) return;
+  if(!confirm('Delete this expense?\n\n'+e.head+' — '+fmt(e.amount)+'\n'+fmtD(e.date)+'\n\nCash in hand will be recalculated.')) return;
+  S.expenses = S.expenses.filter(x=>x&&x.id!==id);
+  invalidateCash(); saveToCloud(); renderCash();
+}
+
+/* ── Cash UI ── */
+let cashView = 'ledger';     // 'ledger' | 'expenses' | 'settings'
+let cashMonth = '';          // '' = all
+function setCashView(v){ cashView=v; renderCash(); }
+function renderCash(){
+  const el = document.getElementById('cash-content'); if(!el) return;
+  const ae = document.activeElement;
+  const foc = (ae && ae.id && typeof ae.selectionStart==='number') ? {id:ae.id,pos:ae.selectionStart} : null;
+  if(!cashReady())              renderCashSetup(el);
+  else if(cashView==='expenses') renderCashExpenses(el);
+  else if(cashView==='settings') renderCashSettings(el);
+  else                           renderCashLedger(el);
+  if(foc){ const e2=document.getElementById(foc.id); if(e2){ e2.focus(); try{e2.setSelectionRange(foc.pos,foc.pos);}catch(_e){} } }
+}
+function renderCashSetup(el){
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:18px">
+      <div style="font-size:15px;font-weight:800;color:#1A2E5A;margin-bottom:8px">💰 Set up Cash in Hand</div>
+      <div style="font-size:13px;color:#555;line-height:1.6;margin-bottom:14px">
+        Enter the cash you physically hold today and the date you counted it. From then on,
+        payments received are added, and expenses and contractor payments are deducted.
+        <br><br>
+        Nothing before this date is counted — the opening figure already represents it.
+      </div>
+      <div class="fr">
+        <div><label>Cash in hand (Rs.) *</label><input id="co-amt" type="number" inputmode="decimal" placeholder="0"></div>
+        <div><label>As on date *</label><input id="co-date" type="date" value="${today()}"></div>
+      </div>
+      <button class="btn pri" style="width:100%;justify-content:center;margin-top:6px"
+        onclick="setCashOpening(document.getElementById('co-amt').value, document.getElementById('co-date').value)">Start tracking cash</button>
+    </div>`;
+}
+function cashMonths(){
+  const ms = {};
+  cashLedger().rows.forEach(r=>{ if(r.date) ms[String(r.date).slice(0,7)]=1; });
+  return Object.keys(ms).sort().reverse();
+}
+function renderCashLedger(el){
+  const L = cashLedger();
+  let rows = L.rows.slice().reverse();
+  if(cashMonth) rows = rows.filter(r=>String(r.date||'').slice(0,7)===cashMonth || r.kind==='open');
+  const ex = cashExcluded();
+  const bal = L.balance;
+  const col = bal<0 ? '#DC2626' : '#065F46';
+  const icon = { open:'🔹', in:'▲', out:'▼' };
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:16px;margin-bottom:12px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">CASH IN HAND</div>
+      <div style="font-size:30px;font-weight:800;color:${col};margin-top:2px">${fmt(bal)}</div>
+      <div style="font-size:11px;color:#999;margin-top:2px">since ${fmtD(cashOpenDate())}</div>
+      <div style="display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid #F0F0F0;font-size:11.5px;color:#555;flex-wrap:wrap">
+        <span>Opening <strong>${fmt(L.open)}</strong></span>
+        <span>Received <strong style="color:#065F46">+${fmt(L.inPay)}</strong></span>
+        <span>Expenses <strong style="color:#DC2626">−${fmt(L.outExp)}</strong></span>
+        <span>Contractors <strong style="color:#DC2626">−${fmt(L.outCt)}</strong></span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setCashView('expenses')">🧾 Add Expense</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setCashView('settings')">⚙️ Settings</button>
+    </div>
+    ${ex.count?`<div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:11px 13px;margin-bottom:12px;font-size:11.5px;color:#92400E">
+      <strong>${ex.count} entr${ex.count===1?'y':'ies'} (${fmt(ex.amount)}) not counted here</strong> — bank, cheque or other non-cash modes. Change which modes count in Settings.</div>`:''}
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <label style="font-size:11px;color:#888;flex-shrink:0">Month</label>
+      <select onchange="cashMonth=this.value;renderCash()" style="flex:1;font-size:12px;padding:7px">
+        <option value=""${cashMonth?'':' selected'}>All</option>
+        ${cashMonths().map(m=>`<option value="${m}"${cashMonth===m?' selected':''}>${fmtD(m+'-01').replace(/^\d+\s/,'')}</option>`).join('')}
+      </select>
+    </div>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:10px 12px">
+      <div style="display:flex;gap:10px;padding:0 4px 8px;border-bottom:1.5px solid #EEE;font-size:10px;font-weight:800;color:#999;letter-spacing:.3px">
+        <div style="flex:1">ENTRY</div><div style="width:74px;text-align:right">AMOUNT</div><div style="width:74px;text-align:right">BALANCE</div>
+      </div>
+      ${rows.length ? rows.map(r=>`
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid #F4F4F4">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12.5px;font-weight:700;color:#1A1A1A">${icon[r.kind]||''} ${esc(r.label)}</div>
+            <div style="font-size:10.5px;color:#999;margin-top:1px">${fmtD(r.date)}${r.ref?' · '+esc(r.ref):''}</div>
+          </div>
+          <div style="font-size:13px;font-weight:800;color:${r.amt>=0?'#065F46':'#DC2626'};width:74px;text-align:right">${r.amt>=0?'+':''}${fmt(r.amt)}</div>
+          <div style="font-size:12px;font-weight:700;color:#888;width:74px;text-align:right">${fmt(r.bal)}</div>
+        </div>`).join('')
+      : `<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">No entries yet.</div>`}
+    </div>`;
+}
+function renderCashExpenses(el){
+  const list = (S.expenses||[]).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  const heads = ['Rent','Salary / Wages','Transport / Freight','Electricity','Packing material','Tea / Food','Repairs','Stationery','Phone / Internet','Misc'];
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setCashView('ledger')">← Back to cash</button>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">🧾 Add Expense</div>
+      <div class="fg"><label>Paid for *</label>
+        <input id="ex-head" list="ex-heads" placeholder="e.g. Transport, Rent, Tea">
+        <datalist id="ex-heads">${heads.map(h=>`<option value="${h}">`).join('')}</datalist>
+      </div>
+      <div class="fr">
+        <div><label>Amount (Rs.) *</label><input id="ex-amt" type="number" inputmode="decimal" placeholder="0"></div>
+        <div><label>Date *</label><input id="ex-date" type="date" value="${today()}"></div>
+      </div>
+      <div class="fr">
+        <div><label>Mode</label><select id="ex-mode"><option>Cash</option><option>UPI</option><option>NEFT/RTGS</option><option>Cheque</option><option>Other</option></select></div>
+        <div><label>Remarks</label><input id="ex-rmk" placeholder="optional"></div>
+      </div>
+      <button class="btn pri" style="width:100%;justify-content:center;margin-top:6px" onclick="addExpense()">✓ Add Expense</button>
+    </div>
+    ${list.length ? list.map(e=>`
+      <div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:700;color:#1A1A1A">${esc(e.head)}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">${esc(e.num||'')} · ${fmtD(e.date)} · ${esc(e.mode||'Cash')}${e.remarks?' · '+esc(e.remarks):''}${!isCashMode(e.mode)?' · <span style="color:#B45309">not in cash</span>':''}</div>
+        </div>
+        <div style="font-size:14px;font-weight:800;color:#DC2626;flex-shrink:0">−${fmt(e.amount)}</div>
+        <button class="btn sm red" onclick="delExpense('${e.id}')" style="border:none;background:none;flex-shrink:0">🗑</button>
+      </div>`).join('')
+    : `<div style="text-align:center;color:#999;padding:30px 20px;font-size:13px">No expenses recorded yet.</div>`}`;
+}
+function renderCashSettings(el){
+  const all = ['Cash','UPI','NEFT/RTGS','Cheque','Bank Transfer','Other'];
+  const set = cashModes();
+  const L = cashLedger();
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setCashView('ledger')">← Back to cash</button>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:6px">⚙️ Which modes count as cash in hand?</div>
+      <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
+        Money received by cheque or bank transfer goes to the bank, not to your hand — so it should
+        normally stay off. Entries in unticked modes are still recorded, just not counted here.
+      </div>
+      ${all.map(m=>`
+        <div onclick="toggleCashMode('${m}')" style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid #F4F4F4;cursor:pointer">
+          <span style="width:21px;height:21px;min-width:21px;border:2px solid ${set[m]?'#1A2E5A':'#CBD5E1'};background:${set[m]?'#1A2E5A':'#fff'};border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:900">${set[m]?'✓':''}</span>
+          <span style="font-size:13px;font-weight:600;color:#1A1A1A">${m}</span>
+        </div>`).join('')}
+      <div style="font-size:11px;color:#999;margin-top:10px;line-height:1.5;padding-top:10px;border-top:1px solid #F4F4F4">
+        <strong>Advance Adjustment</strong> and <strong>Adjustment</strong> are always excluded and cannot be ticked.
+        They are the Contractor Tracker's internal records for spending an advance that was already
+        paid — counting them would deduct the same money twice.
+      </div>
+    </div>
+    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px">
+      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">Opening balance</div>
+      <div class="fr">
+        <div><label>Cash in hand (Rs.)</label><input id="co-amt" type="number" inputmode="decimal" value="${cashOpenAmt()}"></div>
+        <div><label>As on date</label><input id="co-date" type="date" value="${esc(cashOpenDate())}"></div>
+      </div>
+      <button class="btn" style="width:100%;justify-content:center"
+        onclick="setCashOpening(document.getElementById('co-amt').value, document.getElementById('co-date').value)">Update opening balance</button>
+      <div style="font-size:11px;color:#999;margin-top:8px;line-height:1.5">Changing the date re-bases everything: entries before it stop counting.</div>
     </div>`;
 }
 
