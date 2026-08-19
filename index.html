@@ -723,7 +723,10 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
         <div><label>Amount (Rs.) *</label><input id="es-amt" type="number" placeholder="0" inputmode="numeric" oninput="previewESBalance()"></div>
         <div><label>Date *</label><input id="es-date" type="date"></div>
       </div>
-      <div class="fg"><label>Remarks</label><input id="es-rmk" placeholder="e.g. Correction / Adjustment"></div>
+      <div class="fr">
+        <div><label>Mode</label><select id="es-mode"><option>Cash</option><option>UPI</option><option>NEFT/RTGS</option><option>Cheque</option><option>Other</option></select></div>
+        <div><label>Remarks</label><input id="es-rmk" placeholder="e.g. Correction / Adjustment"></div>
+      </div>
       <div id="es-balance-preview" style="display:none" class="ibox"></div>
     </div>
   </div>
@@ -2201,8 +2204,8 @@ function renderHome() {
       <span style="color:#1A2E5A;font-size:12px;font-weight:800">📊 View Reports →</span>
     </div>
     <div class="stat"><div class="sl">📦 Challans</div><div class="sv">${S.challans.length}</div></div>
-    <div class="stat"><div class="sl">💰 Outstanding</div><div class="sv r">${fmt(totalOut)}</div></div>
-    <div class="stat"><div class="sl">✅ Received</div><div class="sv g">${fmt(totalPd)}</div></div>
+    <div class="stat"><div class="sl">💰 Outstanding <span style="font-weight:600;color:#BBB">· all time</span></div><div class="sv r">${fmt(totalOut)}</div></div>
+    <div class="stat"><div class="sl">✅ Received <span style="font-weight:600;color:#BBB">· all time</span></div><div class="sv g">${fmt(totalPd)}</div></div>
     <div class="stat"><div class="sl">⏳ Pending</div><div class="sv a">${pending}</div></div>
     <div class="stat"><div class="sl">📅 Today's Sales</div><div class="sv">${fmt(todaySales)}</div></div>
     <div class="stat"><div class="sl">🗓️ This Month</div><div class="sv">${fmt(monthSales)}</div></div>
@@ -2391,6 +2394,7 @@ function challanCard(c, showParty) {
         <span>${st==='S'?'✅ Settled':'⏳ Due: '+fmt(due)}</span>
         <div class="cfoot-btns">
           <button class="btn sm pur" onclick="printChallan('${c.id}')">🖨 Print</button>
+          <button class="btn sm" onclick="shareChallanPDF('${c.id}')" style="background:#25D366;color:#fff;border-color:#25D366">📤 Share PDF</button>
           <button class="btn sm" onclick="downloadChallanPDF('${c.id}')" style="color:#059669;border-color:#A7F3D0;background:#ECFDF5">⬇ PDF</button>
           <button class="btn sm" onclick="openEditChallan('${c.id}')" style="color:#1A2E5A;border-color:#BFDBFE;background:#EFF6FF" title="Edit challan details">✏️ Edit Challan</button>
           <button class="btn sm" onclick="openEditSettle('${c.id}')" style="color:#D97706;border-color:#FDE68A;background:#FFFBEB" title="Edit payment settlements">💳 Payments</button>
@@ -2816,6 +2820,7 @@ function savePayment() {
   S.pyC++;
   const payId=uniqId('PAY');
   S.payments.push({id:payId,pid,date:dt,amount:amt,mode,remarks:rmk});
+  invalidateCash();
   // Re-derive only this party's FIFO allocation (manual pins preserved), then save.
   recomputeParty(pid);
   closeModal('payment');
@@ -3468,19 +3473,29 @@ function renderSyncStatus(){
    everything before it.
 ══════════════════════════════════════════════════════════════════════ */
 const CASH_MODES_DEFAULT = { 'Cash':1, 'UPI':1 };
-/* INTERNAL modes are book-keeping entries, NOT money movements, and can never be counted as
-   cash however the mode settings are configured:
+/* INTERNAL modes are Contractor Tracker book-keeping entries, NOT money movements:
      'Advance Adjustment' — a ct_pays row settling a lot out of the advance pool. The cash left
                             when the ADVANCE was created; this row only reassigns it.
      'Adjustment'         — an advance created by moveOverpayToPool() from an over-paid CASH row.
-                            That cash was already counted when the payment row was made; this
-                            record just parks the surplus back in the pool.
-   Counting either would double-deduct. This is enforced here rather than left to the mode
-   checkboxes, so ticking "Other" can never corrupt the balance. */
+                            That cash was already counted when the payment row was made.
+   Counting either would double-deduct.
+
+   SCOPE IS CRITICAL. The two apps use the SAME string 'Adjustment' for opposite things:
+     • Contractor Tracker, ct_advances → overpay parking, NO money moved.
+     • Challan Manager,   payments     → a real manual payment against a bill, money RECEIVED.
+   So this rule is applied ONLY to contractor records. Applying it globally silently drops every
+   manual bill payment from cash in hand. */
 const CASH_MODES_INTERNAL = { 'Advance Adjustment':1, 'Adjustment':1 };
 function cashModes(){ return S.cashModes || CASH_MODES_DEFAULT; }
 function isInternalMode(mode){ return !!CASH_MODES_INTERNAL[String(mode||'').trim()]; }
-function isCashMode(mode){
+/* Manual bill payments predate the mode selector and were stored as 'Adjustment'. They are real
+   receipts, so they are read as Cash unless a real mode was recorded. */
+function payModeOf(p){
+  const m = String((p&&p.mode)||'Cash').trim();
+  return (m==='Adjustment' || m==='') ? 'Cash' : m;
+}
+function isCashMode(mode){ return !!cashModes()[String(mode||'Cash').trim()]; }
+function isCtCashMode(mode){
   const m = String(mode||'Cash').trim();
   if(isInternalMode(m)) return false;          // never, regardless of settings
   return !!cashModes()[m];
@@ -3501,10 +3516,11 @@ function cashLedger(){
   (S.payments||[]).forEach(p=>{
     if(!p) return;
     const amt = +p.amount||0; if(!amt) return;
-    if(!isCashMode(p.mode)) return;
+    const md = payModeOf(p);
+    if(!isCashMode(md)) return;
     if(!_onOrAfter(p.date, cut)) return;
     rows.push({ date:p.date, kind:'in', label:(p.pname||partyName(p.pid)||'Payment received'),
-                amt, ref:(p.mode||'Cash')+(p.remarks?' · '+p.remarks:''), src:'pay', id:p.id });
+                amt, ref:md+(p.remarks?' · '+p.remarks:''), src:'pay', id:p.id });
   });
 
   // OUT — business expenses
@@ -3526,7 +3542,7 @@ function cashLedger(){
   (S.ctPays||[]).forEach(p=>{
     if(!p) return;
     const amt = +p.amount||0; if(!amt) return;
-    if(!isCashMode(p.mode)) return;            // excludes 'Advance Adjustment' pool settlements
+    if(!isCtCashMode(p.mode)) return;          // excludes 'Advance Adjustment' pool settlements
     if(!_onOrAfter(p.date, cut)) return;
     rows.push({ date:p.date, kind:'out', label:(p.contractorName||'Contractor')+' — '+ctLotLabel(p.lotId),
                 amt:-amt, ref:(p.mode||'Cash')+(p.remarks?' · '+p.remarks:''), src:'ct', id:p.id });
@@ -3534,7 +3550,7 @@ function cashLedger(){
   (S.ctAdv||[]).forEach(a=>{
     if(!a) return;
     const amt = +a.amount||0; if(!amt) return;
-    if(!isCashMode(a.mode)) return;            // excludes 'Adjustment' overpay parking records
+    if(!isCtCashMode(a.mode)) return;          // excludes 'Adjustment' overpay parking records
     if(!_onOrAfter(a.date, cut)) return;
     rows.push({ date:a.date, kind:'out', label:(a.contractorName||'Contractor')+' — advance',
                 amt:-amt, ref:(a.mode||'Cash')+(a.remarks?' · '+a.remarks:''), src:'ctadv', id:a.id });
@@ -3573,12 +3589,13 @@ function ctLotLabel(lotId){
 function cashExcluded(){
   const cut = cashOpenDate();
   let n=0, amt=0;
-  // Internal book-keeping rows are not "excluded money" — no cash was involved at all.
-  const chk=(d,m,a)=>{ if(!isCashMode(m) && !isInternalMode(m) && _onOrAfter(d,cut) && a){ n++; amt=_r2(amt+Math.abs(a)); } };
-  (S.payments||[]).forEach(p=>p&&chk(p.date,p.mode,+p.amount||0));
+  // Internal contractor rows are not "excluded money" — no cash was involved at all.
+  const chk=(d,m,a)=>{ if(!isCashMode(m) && _onOrAfter(d,cut) && a){ n++; amt=_r2(amt+Math.abs(a)); } };
+  const chkCt=(d,m,a)=>{ if(!isInternalMode(m)) chk(d,m,a); };
+  (S.payments||[]).forEach(p=>p&&chk(p.date,payModeOf(p),+p.amount||0));
   (S.expenses||[]).forEach(e=>e&&chk(e.date,e.mode,+e.amount||0));
-  (S.ctPays||[]).forEach(p=>p&&chk(p.date,p.mode,+p.amount||0));
-  (S.ctAdv||[]).forEach(a=>a&&chk(a.date,a.mode,+a.amount||0));
+  (S.ctPays||[]).forEach(p=>p&&chkCt(p.date,p.mode,+p.amount||0));
+  (S.ctAdv||[]).forEach(a=>a&&chkCt(a.date,a.mode,+a.amount||0));
   return {count:n, amount:amt};
 }
 
@@ -4632,6 +4649,46 @@ const repTh=(t,align)=>`<th style="text-align:${align||'right'};padding:6px;colo
 const repTd=(v,opts)=>`<td style="padding:7px 6px;text-align:${(opts&&opts.align)||'right'};${(opts&&opts.style)||''};white-space:nowrap">${v}</td>`;
 function growthCell(g){ return g==null?'<span style="color:#999">—</span>':`<span style="font-weight:700;color:${g>=0?'#059669':'#DC2626'}">${g>=0?'▲':'▼'} ${Math.abs(g).toFixed(1)}%</span>`; }
 
+/* ══════════════════════════════════════════════════════════════════════
+   RECONCILIATION
+   The home tiles are three DIFFERENT scopes and were never meant to add up:
+     • Outstanding — ALL-TIME, includes opening balances, clamped at 0 per party
+     • Received    — ALL-TIME cash, every financial year
+     • FY Sales    — the CURRENT financial year only
+   The only identity that must hold is:
+        all-time billed + opening balances − cash received − return credits
+      = Σ net party balances   (advances counted as negative)
+   This builds that bridge from live data so any real discrepancy is visible, rather than being
+   hidden behind three differently-scoped headline numbers.
+══════════════════════════════════════════════════════════════════════ */
+function reconcileTotals(){
+  const fyNow = fyOf(today());
+  let billedAll=0, billedFY=0, ob=0, cash=0, rets=0, netBal=0, outClamped=0, advances=0;
+  (S.challans||[]).forEach(c=>{
+    if(!c) return;
+    const t=+c.total||0;
+    billedAll += t;
+    if(fyOf(c.date)===fyNow) billedFY += t;
+  });
+  (S.parties||[]).forEach(p=>{
+    if(!p) return;
+    ob += +p.ob||0;
+    const b = getAlloc(p.id).partyBalance;
+    netBal += b;
+    if(b>0) outClamped += b; else advances += -b;
+  });
+  (S.payments||[]).forEach(p=>{ if(p) cash += +p.amount||0; });
+  (S.returns||[]).forEach(r=>{ if(r) rets += +r.total||0; });
+
+  const expected = _r2(billedAll + ob - cash - rets);
+  return {
+    fyNow, billedAll:_r2(billedAll), billedFY:_r2(billedFY), priorFY:_r2(billedAll-billedFY),
+    ob:_r2(ob), cash:_r2(cash), rets:_r2(rets),
+    netBal:_r2(netBal), outClamped:_r2(outClamped), advances:_r2(advances),
+    expected, drift:_r2(netBal - expected)
+  };
+}
+
 function renderReports(){
   const el=document.getElementById('reports-content'); if(!el) return;
   const {chs,pays}=repSets();
@@ -4821,8 +4878,44 @@ function renderReports(){
     <button class="btn sm" onclick="exportReportCSV()" style="font-size:11px">📥 Excel (CSV)</button>
   </div>`;
 
+  /* ── reconciliation: bridge all-time billing to what is actually outstanding ── */
+  const RC = reconcileTotals();
+  const rcRow = (lbl,val,opt) => {
+    const o = opt||{};
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 2px;${o.top?'border-top:1.5px solid #E8E8E8;':''}border-bottom:1px solid #F4F4F4">
+      <div style="flex:1;font-size:12.5px;${o.bold?'font-weight:800;color:#1A2E5A':'color:#444'}">${lbl}</div>
+      <div style="font-size:13px;font-weight:${o.bold?'800':'700'};color:${o.col||'#1A1A1A'};text-align:right">${o.sign||''}${fmt(Math.abs(val))}</div>
+    </div>`;
+  };
+  const reconTable = `
+    <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
+      The headline tiles use three different scopes, so they are not meant to add up:
+      <strong>FY Sales</strong> covers ${fyLbl(RC.fyNow)} only, while <strong>Outstanding</strong> and
+      <strong>Received</strong> are all-time. This is the bridge between them.
+    </div>
+    ${rcRow('Billed — '+fyLbl(RC.fyNow), RC.billedFY)}
+    ${rcRow('Billed — earlier years', RC.priorFY, {sign:'+'})}
+    ${rcRow('Total billed, all time', RC.billedAll, {bold:true, top:true})}
+    ${rcRow('Opening balances carried in', RC.ob, {sign:'+', col:'#B45309'})}
+    ${rcRow('Cash received, all time', RC.cash, {sign:'−', col:'#DC2626'})}
+    ${rcRow('Goods return credits', RC.rets, {sign:'−', col:'#DC2626'})}
+    ${rcRow('Net receivable', RC.expected, {bold:true, top:true, col:RC.expected<0?'#059669':'#1A2E5A'})}
+    ${rcRow('Advances held by parties', RC.advances, {sign:'+', col:'#059669'})}
+    ${rcRow('Outstanding shown on the dashboard', RC.outClamped, {bold:true, top:true, col:'#DC2626'})}
+    ${Math.abs(RC.drift)>1?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:10px 12px;margin-top:10px;font-size:12px;color:#B91C1C">
+       <strong>Unexplained difference: ${fmt(RC.drift)}</strong><br>Party balances do not match billed + opening − received − returns. This is a real discrepancy worth investigating.</div>`
+     :`<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:9px;padding:10px 12px;margin-top:10px;font-size:12px;color:#065F46">
+       ✓ Every rupee reconciles. Party balances match billed + opening − received − returns exactly.</div>`}
+    <div style="font-size:11px;color:#888;margin-top:10px;line-height:1.5">
+      <strong>Why the dashboard figures don't sum:</strong> Outstanding excludes parties who are in
+      advance (${fmt(RC.advances)} held), includes ${fmt(RC.ob)} of opening balances that were never
+      billed here, and Received covers every year — not just ${fyLbl(RC.fyNow)}
+      (${fmt(RC.priorFY)} was billed in earlier years).
+    </div>`;
+
   el.innerHTML=filterBar
     +`<div style="display:flex;gap:8px;flex-wrap:wrap">${cards}</div>`
+    +repSect('Reconciliation — where the money is', reconTable)
     +repSect('Monthly Performance · '+fyLbl(repFY)+(repSeason?' · '+esc(repSeason):''), monthlyTable)
     +repSect('Sales Trend · '+fyLbl(repFY), `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${tsel}</div>`+svgLines(FY_MONTHS,T.arr,prevArr,T.lbl,T.F)+(prevArr?`<div style="font-size:10px;color:#999;margin-top:4px">— ${fyLbl(repFY)} &nbsp; - - ${fyLbl(repFY-1)}</div>`:''))
     +repSect('Fiscal Year Comparison', fyCmpGraph+`<div style="overflow-x:auto;margin-top:10px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="border-bottom:2px solid #E8E8E8">${repTh('YEAR','left')}${repTh('SALES')}${repTh('COLLECTION')}${repTh('BILLS')}${repTh('AVG BILL')}${repTh('COLL EFF')}${repTh('GROWTH')}</tr>${fyCmpRows}</table></div>`)
@@ -5520,6 +5613,7 @@ function openEditSettle(cid) {
   document.getElementById('es-amt').value = '';
   document.getElementById('es-date').value = today();
   document.getElementById('es-rmk').value = '';
+  document.getElementById('es-mode').value = 'Cash';
   document.getElementById('es-balance-preview').style.display = 'none';
   document.getElementById('mo-edit-settle').classList.add('open');
 }
@@ -5608,6 +5702,7 @@ function deleteSettlement(cid, payId) {
   // pinned elsewhere, remove the adjustment payment too so it doesn't linger as floating credit.
   if (isAdj && !S.overrides.some(o=>o && o.payId===payId)) {
     S.payments = S.payments.filter(p=>p.id!==payId);
+    invalidateCash();
     invalidateParty(partyOfChallan(cid));
   }
   saveToCloud();
@@ -5633,9 +5728,13 @@ function saveESAdjustment() {
   // per-party FIFO pass never moves it.
   S.pyC++;
   const payId = uniqId('PAY');
-  S.payments.push({ id:payId, pid:c.pid, date:dt, amount:amt, mode:'Adjustment', remarks:rmk||'Manual adjustment' });
+  // Record the real mode so cash in hand is accurate. (Older rows saved as 'Adjustment' are
+  // read as Cash by payModeOf(); this stores what actually happened.)
+  const esMode = (document.getElementById('es-mode')||{}).value || 'Cash';
+  S.payments.push({ id:payId, pid:c.pid, date:dt, amount:amt, mode:esMode, remarks:rmk||'Manual adjustment' });
   upsertOverride(payId, cid, amt, dt);
 
+  invalidateCash();
   saveToCloud();
   renderAll();
   if (curParty) renderPartyDetail(curParty);
@@ -5688,69 +5787,331 @@ function saveQuickParty() {
 /* ══════════════════════════════
    PDF DOWNLOAD
 ══════════════════════════════ */
-function downloadChallanPDF(cid) {
-  const c = S.challans.find(x=>x.id===cid); if(!c) return;
-  const party = S.parties.find(p=>p.id===c.pid);
-  const paid  = challanPaid(cid);
-  const due   = c.total - paid;
-  const pct   = Math.min(100, Math.round((paid/c.total)*100));
-  const setts = getAlloc(c.pid).allocations.filter(s=>s.cid===cid);
-  const _st = challanStatus(c);
-  const sc = _st==='S'?'#065F46':_st==='T'?'#92400E':'#1E40AF';
-  const sb = _st==='S'?'#D1FAE5':_st==='T'?'#FEF3C7':'#DBEAFE';
-  const sl = _st==='S'?'SETTLED':_st==='T'?'PARTIAL':'PENDING';
-  const iR = c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(it.name)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
-  const pR = setts.length ? setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join('') : `<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
-
-  const htmlContent = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(c.num)}</title><style>
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}
-.pg{max-width:720px;margin:0 auto;padding:20px}
-.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}
-.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}
-.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}
-.ml{padding:8px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}
-.mv{padding:8px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}
-.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}
-.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}
-.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}
-.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}
-.bf{background:#1A2E5A;height:7px;border-radius:4px}
-.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}
-.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}
-.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}
-.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}
-</style></head><body><div class="pg">
-<div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div><div style="font-size:22px;font-weight:700;color:#1A2E5A">${esc(c.num)}</div><div style="margin-top:5px;display:inline-block;background:${sb};color:${sc};padding:2px 12px;border-radius:20px;font-size:11px;font-weight:700">${sl}</div></div></div>
-<div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
-${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> ${esc(c.remarks)}</div>`:''}
-<div class="sec">ITEM DETAILS</div>
-<table><thead><tr><th style="width:44%">Item</th><th style="width:14%;text-align:center">Qty</th><th style="width:20%;text-align:right">Rate</th><th style="width:22%;text-align:right">Amount</th></tr></thead><tbody>${iR}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:8px 10px;border:1px solid #BFDBFE">Subtotal</td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:center;color:#1A2E5A">${c.items.reduce((s,i)=>s+(+i.qty||0),0)} pcs</td><td style="padding:8px 10px;border:1px solid #BFDBFE"></td><td style="padding:8px 10px;border:1px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.items.reduce((s,i)=>s+(+i.amount||0),0))}</td></tr>${c.freight?`<tr style="background:#F0F4FF"><td colspan="3" style="padding:7px 10px;border:1px solid #BFDBFE;color:#555">🚚 Freight / Transport</td><td style="padding:7px 10px;border:1px solid #BFDBFE;text-align:right;font-weight:700;color:#555">+ ${fmt(c.freight)}</td></tr>`:''}<tr style="background:#EFF6FF;font-weight:700"><td colspan="2" style="padding:9px 10px;border:1px solid #BFDBFE;font-size:14px;color:#1A2E5A">GRAND TOTAL</td><td style="padding:9px 10px;border:1px solid #BFDBFE"></td><td style="padding:9px 10px;border:1px solid #BFDBFE;text-align:right;font-size:15px;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table>
-<div class="sum"><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Total</div><div style="font-size:15px;font-weight:700;color:#1A2E5A">${fmt(c.total)}</div></div><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Received</div><div style="font-size:15px;font-weight:700;color:#059669">${fmt(paid)}</div></div><div class="sb"><div style="font-size:10px;color:#888;margin-bottom:4px">Balance</div><div style="font-size:15px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)}</div></div></div>
-<div style="font-size:11px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px"><span>Paid: ${pct}%</span><span>${fmt(paid)} / ${fmt(c.total)}</span></div><div class="bb"><div class="bf" style="width:${pct}%"></div></div>
-<div class="sec">PAYMENT HISTORY</div>
-<table><thead><tr><th style="width:22%">Date</th><th style="width:22%">Amount</th><th style="width:18%">Mode</th><th>Remarks</th></tr></thead><tbody>${pR}</tbody></table>
-<div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">BALANCE DUE<div style="font-size:10px;font-weight:400;color:#6B7280;margin-top:1px">This challan only</div></div><div style="font-size:22px;font-weight:700;color:${due>0?'#DC2626':'#059669'}">${fmt(due)} ${due<=0?'✅ SETTLED':''}</div></div>
-
-<div class="sig"><div><div class="sl">Receiver's Signature<br><strong>${esc(party?party.name:c.pname)}</strong></div></div><div><div class="sl">Authorised Signatory<br><strong>Modrobe Impex</strong></div></div></div>
-<div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(c.num)}${c.staffGenerated?' · Billed by staff: '+esc(c.staffEmail||c.staffName||''):''}</div>
-</div></body></html>`;
-
-  // Create blob and trigger download
-  const blob = new Blob([htmlContent], {type:'text/html'});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `${c.num}-${(party?party.name:c.pname).replace(/\s+/g,'-')}.html`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-
-  // Show tip after download
-  setTimeout(()=>alert('File downloaded!\n\nTo convert to PDF:\n• Open the downloaded file in Chrome\n• Press Ctrl+P (or Cmd+P on Mac)\n• Choose "Save as PDF" as destination\n• Click Save'), 500);
+/* ══════════════════════════════════════════════════════════════════════
+   MINIMAL PDF WRITER
+   Produces a real vector PDF with no external library, so it works offline and keeps this app a
+   single file. Uses the 14 standard Type1 fonts (Helvetica / Helvetica-Bold), which every PDF
+   reader has built in — nothing is embedded, so files stay a few KB and text stays selectable.
+   Text is encoded WinAnsi: Latin characters only. Non-Latin (e.g. Devanagari) cannot be drawn by
+   a standard font, so it is transliterated to '?' rather than producing a corrupt file.
+══════════════════════════════════════════════════════════════════════ */
+const _PDF_W_REG = {};
+const _PDF_W_BLD = {};
+(function(){
+  // Adobe AFM advance widths (per 1000 units) for ASCII 32..126.
+  const reg = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,
+    667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    278,278,278,469,556,333,
+    556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,
+    334,260,334,584];
+  const bld = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,
+    722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    333,278,333,584,556,333,
+    556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,
+    389,280,389,584];
+  for(let i=0;i<reg.length;i++){ _PDF_W_REG[String.fromCharCode(32+i)] = reg[i]; }
+  for(let i=0;i<bld.length;i++){ _PDF_W_BLD[String.fromCharCode(32+i)] = bld[i]; }
+})();
+function _pdfSafe(s){
+  return String(s==null?'':s).replace(/[^\x20-\x7E]/g, ch=>{
+    const c = ch.charCodeAt(0);
+    if(c===0x20B9) return 'Rs.';          // ₹
+    if(c>=0xA0 && c<=0xFF) return ch;     // Latin-1 supplement is fine in WinAnsi
+    return '?';
+  });
 }
+function _pdfEsc(s){ return _pdfSafe(s).replace(/\\/g,'\\\\').replace(/\(/g,'\\(').replace(/\)/g,'\\)'); }
+function pdfTextWidth(str, size, bold){
+  const T = bold ? _PDF_W_BLD : _PDF_W_REG, s = _pdfSafe(str);
+  let w = 0;
+  for(let i=0;i<s.length;i++) w += (T[s[i]] != null ? T[s[i]] : 556);
+  return w * size / 1000;
+}
+function pdfEllipsize(str, size, bold, maxW){
+  if(pdfTextWidth(str,size,bold) <= maxW) return String(str==null?'':str);
+  let s = String(str==null?'':str);
+  while(s.length && pdfTextWidth(s+'…',size,bold) > maxW) s = s.slice(0,-1);
+  return s + '\u2026';
+}
+function PDFDoc(opts){
+  const o = opts||{};
+  this.W = o.width  || 595.28;      // A4 portrait
+  this.H = o.height || 841.89;
+  this.pages = [];
+  this.cur = null;
+  this.newPage();
+}
+PDFDoc.prototype.newPage = function(){ this.cur = []; this.pages.push(this.cur); return this; };
+PDFDoc.prototype._col = function(c){
+  if(!c) return '0 0 0';
+  const h = c.replace('#','');
+  const n = parseInt(h.length===3 ? h.split('').map(x=>x+x).join('') : h, 16);
+  return ((n>>16&255)/255).toFixed(3)+' '+((n>>8&255)/255).toFixed(3)+' '+((n&255)/255).toFixed(3);
+};
+PDFDoc.prototype.text = function(x, y, str, opt){
+  const p = opt||{}, size = p.size||10, bold = !!p.bold;
+  let s = String(str==null?'':str);
+  if(p.maxWidth) s = pdfEllipsize(s, size, bold, p.maxWidth);
+  let tx = x;
+  if(p.align==='right')  tx = x - pdfTextWidth(s,size,bold);
+  if(p.align==='center') tx = x - pdfTextWidth(s,size,bold)/2;
+  this.cur.push('BT '+this._col(p.color)+' rg /'+(bold?'F2':'F1')+' '+size+' Tf 1 0 0 1 '+
+                tx.toFixed(2)+' '+(this.H-y).toFixed(2)+' Tm ('+_pdfEsc(s)+') Tj ET');
+  return this;
+};
+PDFDoc.prototype.rect = function(x, y, w, h, opt){
+  const p = opt||{};
+  if(p.fill){ this.cur.push(this._col(p.fill)+' rg '+x.toFixed(2)+' '+(this.H-y-h).toFixed(2)+' '+w.toFixed(2)+' '+h.toFixed(2)+' re f'); }
+  if(p.stroke){ this.cur.push(this._col(p.stroke)+' RG '+(p.lw||0.6)+' w '+x.toFixed(2)+' '+(this.H-y-h).toFixed(2)+' '+w.toFixed(2)+' '+h.toFixed(2)+' re S'); }
+  return this;
+};
+PDFDoc.prototype.line = function(x1,y1,x2,y2,opt){
+  const p = opt||{};
+  this.cur.push(this._col(p.color||'#000')+' RG '+(p.lw||0.6)+' w '+
+    x1.toFixed(2)+' '+(this.H-y1).toFixed(2)+' m '+x2.toFixed(2)+' '+(this.H-y2).toFixed(2)+' l S');
+  return this;
+};
+PDFDoc.prototype.blob = function(){
+  const objs = [];
+  const push = s => { objs.push(s); return objs.length; };      // 1-based object numbers
+  const catalog = push(''), pagesObj = push('');
+  const f1 = push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  const f2 = push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+  const kids = [];
+  this.pages.forEach(ops=>{
+    const stream = ops.join('\n');
+    const cId = push('<< /Length '+stream.length+' >>\nstream\n'+stream+'\nendstream');
+    const pId = push('<< /Type /Page /Parent '+pagesObj+' 0 R /MediaBox [0 0 '+this.W.toFixed(2)+' '+this.H.toFixed(2)+
+                     '] /Resources << /Font << /F1 '+f1+' 0 R /F2 '+f2+' 0 R >> >> /Contents '+cId+' 0 R >>');
+    kids.push(pId+' 0 R');
+  });
+  objs[catalog-1] = '<< /Type /Catalog /Pages '+pagesObj+' 0 R >>';
+  objs[pagesObj-1] = '<< /Type /Pages /Kids ['+kids.join(' ')+'] /Count '+kids.length+' >>';
+
+  let out = '%PDF-1.4\n';
+  const offs = [];
+  objs.forEach((body,i)=>{ offs.push(out.length); out += (i+1)+' 0 obj\n'+body+'\nendobj\n'; });
+  const xref = out.length;
+  out += 'xref\n0 '+(objs.length+1)+'\n0000000000 65535 f \n';
+  offs.forEach(off=>{ out += String(off).padStart(10,'0')+' 00000 n \n'; });
+  out += 'trailer\n<< /Size '+(objs.length+1)+' /Root '+catalog+' 0 R >>\nstartxref\n'+xref+'\n%%EOF';
+
+  const bytes = new Uint8Array(out.length);
+  for(let i=0;i<out.length;i++) bytes[i] = out.charCodeAt(i) & 0xFF;
+  return new Blob([bytes], {type:'application/pdf'});
+};
+
+/* Renders a challan onto a PDF, matching the printed layout. Paginates automatically when the
+   item or payment tables run long, repeating table headers on each page. */
+function buildChallanPDF(cid){
+  const c = S.challans.find(x=>x.id===cid); if(!c) return null;
+  const party = S.parties.find(p=>p.id===c.pid);
+  const pname = party ? party.name : c.pname;
+  const paid = challanPaid(cid), due = _r2(c.total - paid);
+  const pct = c.total ? Math.min(100, Math.round(paid/c.total*100)) : 0;
+  const setts = getAlloc(c.pid).allocations.filter(s=>s.cid===cid);
+  const st = challanStatus(c);
+  const sl = st==='S'?'SETTLED':st==='T'?'PARTIAL':'PENDING';
+  const sc = st==='S'?'#065F46':st==='T'?'#92400E':'#1E40AF';
+  const sb = st==='S'?'#D1FAE5':st==='T'?'#FEF3C7':'#DBEAFE';
+
+  const d = new PDFDoc();
+  const M = 36, W = d.W - M*2, NAVY = '#1A2E5A';
+  let y = M;
+  const bottom = d.H - M - 20;
+
+  const header = () => {
+    d.text(M, y+13, 'Modrobe Impex', {size:16, bold:true, color:NAVY});
+    d.text(M, y+26, 'Wholesale Readymade Garments  ·  New Delhi', {size:8, color:'#888'});
+    d.text(d.W-M, y+9,  'DELIVERY CHALLAN', {size:9, bold:true, color:NAVY, align:'right'});
+    d.text(d.W-M, y+27, String(c.num||''), {size:18, bold:true, color:NAVY, align:'right'});
+    const pw = pdfTextWidth(sl, 8, true) + 16;
+    d.rect(d.W-M-pw, y+32, pw, 13, {fill:sb});
+    d.text(d.W-M-pw/2, y+41, sl, {size:8, bold:true, color:sc, align:'center'});
+    y += 52;
+    d.rect(M, y, W, 2, {fill:NAVY});
+    y += 12;
+  };
+  const sectionBar = (label) => {
+    d.rect(M, y, W, 16, {fill:NAVY});
+    d.text(M+8, y+11.5, label, {size:9, bold:true, color:'#FFFFFF'});
+    y += 16;
+  };
+  const pageBreak = (need) => {
+    if(y + need <= bottom) return false;
+    d.newPage(); y = M; header(); return true;
+  };
+
+  header();
+
+  // ── meta grid
+  const rowH = 17, half = W/2;
+  const meta = [['Party', pname], ['Date', fmtD(c.date)],
+                ['Phone', (party&&party.phone)||'-'], ['City', (party&&party.city)||'-']];
+  d.rect(M, y, W, rowH*2, {stroke:'#E0E0E0'});
+  for(let i=0;i<4;i++){
+    const cx = M + (i%2)*half, cy = y + Math.floor(i/2)*rowH;
+    d.rect(cx, cy, 58, rowH, {fill:'#F5F7FA'});
+    d.text(cx+6, cy+11.5, meta[i][0], {size:8.5, color:'#555', bold:true});
+    d.text(cx+64, cy+11.5, meta[i][1], {size:9.5, bold:true, color:i===0?NAVY:'#1A1A1A', maxWidth:half-70});
+    d.line(cx, cy+rowH, cx+half, cy+rowH, {color:'#E8E8E8', lw:0.5});
+  }
+  d.line(M+half, y, M+half, y+rowH*2, {color:'#E8E8E8', lw:0.5});
+  y += rowH*2 + 10;
+
+  if(c.remarks){
+    const h = 18;
+    d.rect(M, y, W, h, {fill:'#FFFBEB', stroke:'#FDE68A'});
+    d.text(M+8, y+12, 'Remarks: '+c.remarks, {size:8.5, color:'#92400E', maxWidth:W-16});
+    y += h + 8;
+  }
+
+  // ── items
+  sectionBar('ITEM DETAILS');
+  const cols = [M, M+W*0.46, M+W*0.62, M+W*0.80];      // x starts
+  const colR = [M+W*0.46-6, M+W*0.62-6, M+W*0.80-6, M+W-6];
+  const thead = () => {
+    d.rect(M, y, W, 16, {fill:'#E8EEF7', stroke:'#C8D5E8'});
+    d.text(cols[0]+6, y+11, 'Item',   {size:8, bold:true, color:NAVY});
+    d.text(colR[1],   y+11, 'Qty',    {size:8, bold:true, color:NAVY, align:'right'});
+    d.text(colR[2],   y+11, 'Rate',   {size:8, bold:true, color:NAVY, align:'right'});
+    d.text(colR[3],   y+11, 'Amount', {size:8, bold:true, color:NAVY, align:'right'});
+    y += 16;
+  };
+  thead();
+  (c.items||[]).forEach((it,i)=>{
+    if(pageBreak(18)) { sectionBar('ITEM DETAILS (contd.)'); thead(); }
+    if(i%2) d.rect(M, y, W, 16, {fill:'#F9F9F9'});
+    d.rect(M, y, W, 16, {stroke:'#E8E8E8', lw:0.4});
+    d.text(cols[0]+6, y+11, it.name, {size:9, maxWidth:W*0.46-14});
+    d.text(colR[1], y+11, String(it.qty||0), {size:9, align:'right'});
+    d.text(colR[2], y+11, fmtR(it.rate), {size:9, align:'right'});
+    d.text(colR[3], y+11, fmt(it.amount), {size:9, bold:true, align:'right'});
+    y += 16;
+  });
+  pageBreak(70);
+  const totQty = (c.items||[]).reduce((s,i)=>s+(+i.qty||0),0);
+  const subTot = (c.items||[]).reduce((s,i)=>s+(+i.amount||0),0);
+  d.rect(M, y, W, 16, {fill:'#F0F4FF', stroke:'#BFDBFE'});
+  d.text(cols[0]+6, y+11, 'Subtotal', {size:9, bold:true});
+  d.text(colR[1], y+11, totQty+' pcs', {size:9, bold:true, color:NAVY, align:'right'});
+  d.text(colR[3], y+11, fmt(subTot), {size:9, bold:true, color:NAVY, align:'right'});
+  y += 16;
+  if(c.freight){
+    d.rect(M, y, W, 15, {fill:'#F0F4FF', stroke:'#BFDBFE'});
+    d.text(cols[0]+6, y+10.5, 'Freight / Transport', {size:8.5, color:'#555'});
+    d.text(colR[3], y+10.5, '+ '+fmt(c.freight), {size:8.5, bold:true, color:'#555', align:'right'});
+    y += 15;
+  }
+  d.rect(M, y, W, 20, {fill:'#EFF6FF', stroke:'#BFDBFE'});
+  d.text(cols[0]+6, y+13.5, 'GRAND TOTAL', {size:11, bold:true, color:NAVY});
+  d.text(colR[3], y+13.5, fmt(c.total), {size:12, bold:true, color:NAVY, align:'right'});
+  y += 30;
+
+  // ── summary boxes
+  pageBreak(50);
+  const bw = (W-16)/3;
+  [['Total', fmt(c.total), NAVY], ['Received', fmt(paid), '#059669'],
+   ['Balance', fmt(due), due>0?'#DC2626':'#059669']].forEach((b,i)=>{
+    const bx = M + i*(bw+8);
+    d.rect(bx, y, bw, 34, {stroke:'#E0E0E0', lw:1.2});
+    d.text(bx+bw/2, y+13, b[0], {size:8, color:'#888', align:'center'});
+    d.text(bx+bw/2, y+27, b[1], {size:12, bold:true, color:b[2], align:'center'});
+  });
+  y += 42;
+  d.text(M, y, 'Paid: '+pct+'%', {size:8, color:'#888'});
+  d.text(d.W-M, y, fmt(paid)+' / '+fmt(c.total), {size:8, color:'#888', align:'right'});
+  y += 4;
+  d.rect(M, y, W, 6, {fill:'#E5E7EB'});
+  if(pct>0) d.rect(M, y, W*pct/100, 6, {fill:NAVY});
+  y += 18;
+
+  // ── payment history
+  pageBreak(60);
+  sectionBar('PAYMENT HISTORY');
+  const ph = () => {
+    d.rect(M, y, W, 16, {fill:'#E8EEF7', stroke:'#C8D5E8'});
+    d.text(M+6,       y+11, 'Date',    {size:8, bold:true, color:NAVY});
+    d.text(M+W*0.42,  y+11, 'Amount',  {size:8, bold:true, color:NAVY, align:'right'});
+    d.text(M+W*0.50,  y+11, 'Mode',    {size:8, bold:true, color:NAVY});
+    d.text(M+W*0.70,  y+11, 'Remarks', {size:8, bold:true, color:NAVY});
+    y += 16;
+  };
+  ph();
+  if(setts.length){
+    setts.forEach((s,i)=>{
+      if(pageBreak(18)) { sectionBar('PAYMENT HISTORY (contd.)'); ph(); }
+      const py = S.payments.find(x=>x.id===s.payId);
+      if(i%2) d.rect(M, y, W, 15, {fill:'#F9F9F9'});
+      d.rect(M, y, W, 15, {stroke:'#E8E8E8', lw:0.4});
+      d.text(M+6,      y+10.5, fmtD(s.date), {size:8.5});
+      d.text(M+W*0.42, y+10.5, fmt(s.amount), {size:8.5, bold:true, color:'#059669', align:'right'});
+      d.text(M+W*0.50, y+10.5, (py?py.mode:'-'), {size:8.5, maxWidth:W*0.18});
+      d.text(M+W*0.70, y+10.5, (py&&py.remarks?py.remarks:'-'), {size:8.5, color:'#666', maxWidth:W*0.28});
+      y += 15;
+    });
+  } else {
+    d.rect(M, y, W, 18, {stroke:'#E8E8E8', lw:0.4});
+    d.text(M+W/2, y+12, 'No payments yet', {size:8.5, color:'#999', align:'center'});
+    y += 18;
+  }
+  y += 12;
+
+  // ── balance due
+  pageBreak(48);
+  d.rect(M, y, W, 36, {fill:'#EFF6FF', stroke:NAVY, lw:1.5});
+  d.text(M+12, y+15, 'BALANCE DUE', {size:10, bold:true, color:NAVY});
+  d.text(M+12, y+27, 'This challan only', {size:7.5, color:'#6B7280'});
+  d.text(d.W-M-12, y+24, fmt(due)+(due<=0?'  SETTLED':''), {size:16, bold:true, color:due>0?'#DC2626':'#059669', align:'right'});
+  y += 48;
+
+  // ── signatures
+  pageBreak(70);
+  y += 26;
+  const sw = (W-40)/2;
+  [[pname,"Receiver's Signature"], ['Modrobe Impex','Authorised Signatory']].forEach((sg,i)=>{
+    const sx = M + i*(sw+40);
+    d.line(sx, y, sx+sw, y, {color:'#1A1A1A', lw:1});
+    d.text(sx+sw/2, y+11, sg[1], {size:8, bold:true, color:'#555', align:'center'});
+    d.text(sx+sw/2, y+21, sg[0], {size:8.5, bold:true, align:'center', maxWidth:sw});
+  });
+  y += 34;
+  d.line(M, y, d.W-M, y, {color:'#F0F0F0', lw:0.5});
+  d.text(d.W/2, y+11, 'Generated: '+new Date().toLocaleString('en-IN')+'  ·  '+(c.num||''),
+         {size:7, color:'#AAA', align:'center'});
+
+  return { blob: d.blob(), name: (c.num||'Challan').replace(/\s+/g,'-')+'_'+String(pname||'Party').replace(/[^\w]+/g,'-')+'.pdf', c, party, due };
+}
+
+/* Share the challan as a PDF. Falls back to a download when the device cannot share files. */
+async function shareChallanPDF(cid){
+  const out = buildChallanPDF(cid);
+  if(!out){ alert('Challan not found.'); return; }
+  const pname = out.party ? out.party.name : out.c.pname;
+  const text = 'Delivery Challan '+(out.c.num||'')+'\nParty: '+pname+'\nDate: '+fmtD(out.c.date)+
+               '\nTotal: '+fmt(out.c.total)+'\nBalance: '+fmt(out.due)+'\n\nModrobe Impex';
+  try{
+    const file = new File([out.blob], out.name, {type:'application/pdf'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({ title:'Challan '+(out.c.num||''), text, files:[file] });
+      return;
+    }
+  }catch(e){ if(e && e.name==='AbortError') return; }
+  const url = URL.createObjectURL(out.blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = out.name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1500);
+}
+function downloadChallanPDF(cid){
+  const out = buildChallanPDF(cid); if(!out) return;
+  const url = URL.createObjectURL(out.blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = out.name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1500);
+}
+
 function printChallan(cid) {
   const c=S.challans.find(x=>x.id===cid); if(!c) return;
   const party=S.parties.find(p=>p.id===c.pid);
@@ -5769,7 +6130,7 @@ function printChallan(cid) {
   const iR=c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(it.name)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
   const pR=setts.length?setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join(''):`<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
   const challanHTML=`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
-<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 Share via WhatsApp</button><button onclick="shareNativeChallan()" style="background:#6D28D9;color:#fff">📤 Share File</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
+<div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 Share PDF</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
 <div class="top"><div><div class="co">🧵 Modrobe Impex</div><div class="cs">Wholesale Readymade Garments · New Delhi</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#1A2E5A">DELIVERY CHALLAN</div><div style="font-size:22px;font-weight:700;color:#1A2E5A">${esc(c.num)}</div><div style="margin-top:5px;display:inline-block;background:${sb};color:${sc};padding:2px 12px;border-radius:20px;font-size:11px;font-weight:700">${sl}</div></div></div>
 <div class="meta"><div class="ml">Party</div><div class="mv" style="color:#1A2E5A;font-size:14px">${esc(party?party.name:c.pname)}</div><div class="ml">Date</div><div class="mv">${fmtD(c.date)}</div><div class="ml">Phone</div><div class="mv">${esc(party&&party.phone?party.phone:'-')}</div><div class="ml">City</div><div class="mv">${esc(party&&party.city?party.city:'-')}</div></div>
 ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 12px;margin:10px 0;font-size:12px;color:#92400E"><strong>Remarks:</strong> ${esc(c.remarks)}</div>`:''}
@@ -5795,12 +6156,13 @@ ${c.remarks?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radi
   );
   const shareText = 'Delivery Challan ' + (c.num||'') + '\nParty: ' + (party?party.name:c.pname) + '\nDate: ' + (c.date||'') + '\nTotal: Rs.' + (c.total||0).toLocaleString('en-IN') + '\nBalance: Rs.' + (due||0).toLocaleString('en-IN') + '\n\nModrobe Impex';
   const waURL = 'https://wa.me/?text=' + waText;
-  var challanFileName = (c.num||'Challan').replace(/\s+/g,'-') + '_' + (party?party.name:'Party').replace(/\s+/g,'-') + '.html';
+  /* Share buttons hand back to the main app, which builds a real PDF. Keeping the generator in
+     one place means the print window and the in-app buttons can never drift apart. */
   var shareScript = '<scr'+'ipt>'+
-    'function getCleanHTML(){var clone=document.documentElement.cloneNode(true);var pb=clone.querySelector(".pb");if(pb)pb.remove();return "<!DOCTYPE html>"+clone.outerHTML;}'+
-    'function shareAsFile(title,fname){var html=getCleanHTML();var file=new File([html],fname,{type:"text/html"});if(navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({title:title,files:[file]}).catch(function(){});}else{var blob=new Blob([html],{type:"text/html"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=fname;a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);}}'+
-    'function shareWAChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}'+
-    'function shareNativeChallan(){shareAsFile('+JSON.stringify('Challan - '+(party?party.name:c.pname))+','+JSON.stringify(challanFileName)+');}'+
+    'function sharePDF(){try{if(window.opener&&window.opener.shareChallanPDF){window.opener.shareChallanPDF('+JSON.stringify(cid)+');return;}}catch(e){}'+
+      'alert("Please use the Share PDF button inside the app.");}'+
+    'function shareWAChallan(){sharePDF();}'+
+    'function shareNativeChallan(){sharePDF();}'+
     'window.onload=function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},350);};'+
     '<\/scr'+'ipt>';
   var fullHTML = challanHTML + shareScript + '</body></html>';
