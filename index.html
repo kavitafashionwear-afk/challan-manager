@@ -49,6 +49,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 .sync-dot.busy{background:#FCD34D;animation:pulse .8s infinite}
 .sync-dot.offline{background:#9CA3AF}
 .sync-dot.err{background:#F87171}
+.sync-dot.stuck{background:#F97316;animation:pulse 1.6s infinite;box-shadow:0 0 0 2px rgba(249,115,22,.25)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ── BOTTOM NAV ── */
@@ -894,6 +895,16 @@ const _mergedBills = {};  // billIds already merged this session (guards double-
 /* ── OFFLINE-FIRST: local cache so writes queue offline and auto-flush online ── */
 var PERSIST = { state:'pending', code:'' };   // surfaced in Sync Status — a silent failure here
                                               // means nothing queues offline and no data survives a reload
+/* ── TRANSPORT (must run before ANY Firestore read/write, incl. enablePersistence) ──
+   The SDK defaults to a bidirectional WebChannel stream. Behind some ISPs, proxies and
+   antivirus TLS-inspection that stream's handshake is silently swallowed — the socket never
+   errors, it just never completes. Every listener then stays fromCache:true (dot pinned amber)
+   and every write sits queued forever, while navigator.onLine still reports online.
+   Auto-detect falls back to HTTP long-polling, which those middleboxes do pass. */
+var TRANSPORT = { state:'auto-detect', code:'' };
+try {
+  db.settings({ experimentalAutoDetectLongPolling:true, useFetchStreams:false, merge:true });
+} catch(e) { TRANSPORT.state='default'; TRANSPORT.code=(e&&e.message)||'settings rejected'; console.warn('Firestore settings skipped', e); }
 try {
   db.enablePersistence({ synchronizeTabs: true })
     .then(function(){ PERSIST.state='on'; })
@@ -914,6 +925,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
+const BUILD = '2026-08-26.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -1786,11 +1798,14 @@ function showInfoModal(title, bodyHtml) {
 function setSyncDot(s) {
   const d = document.getElementById('sync-dot');
   if (!d) return;
-  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'');
+  d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'') + (s==='stuck'?' stuck':'');
   d.title = s==='busy' ? 'Saving…'
           : s==='offline' ? 'Offline — saved on this device, will sync when back online'
-          : s==='err' ? 'Sync issue — saved locally, will retry'
+          : s==='err' ? ((typeof _denyList==='function' && _denyList().length) ? 'Server refused: '+_denyList().join(', ')+' — tap for the fix' : 'Sync issue — saved locally, will retry')
+          : s==='stuck' ? 'Not reaching the server — data is queued on this device. Tap for details.'
           : 'Synced ✓';
+  d.style.cursor = 'pointer';
+  if(!d._wired){ d._wired=1; d.onclick=function(){ try{ openSyncStatus(); }catch(_e){} }; }
 }
 function updateSyncUI(){ refreshSyncDot(); }
 
@@ -1884,6 +1899,12 @@ let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconci
 const SYNC = {};
 const SYNC_OPTIONAL = { ct_lots:1, ct_pays:1, ct_advances:1 };
 let _writeFails = 0, _lastWriteErr = '', _saveBlocked = false;
+/* Which collections the server actually refused. A brand-new collection whose security rule
+   has not been added yet fails BOTH ways: the listener errors (red) and every write is
+   rejected (red), while the collection also stays cache-only (amber) — which is exactly the
+   "yellow and red dots" symptom. Naming the collection turns that into a one-line fix. */
+const DENIED = {};
+function _denyList(){ return Object.keys(DENIED).sort(); }
 function syncMark(coll, meta, n){
   const s = SYNC[coll] || (SYNC[coll] = {});
   s.cache   = !!(meta && meta.fromCache);
@@ -1897,6 +1918,7 @@ function syncMark(coll, meta, n){
 function syncErrMark(coll, code){
   const s = SYNC[coll] || (SYNC[coll] = {});
   s.err = code || 'error'; s.at = Date.now();
+  if(code==='permission-denied') DENIED[coll] = 'read';
   refreshSyncDot();
 }
 function noteWriteFail(coll, e){
@@ -1905,17 +1927,52 @@ function noteWriteFail(coll, e){
   // permission-denied / not-found are real, permanent failures — never hide them behind "deferred".
   if(code==='permission-denied' || code==='not-found' || code==='invalid-argument'){
     _writeFails++; _lastWriteErr = coll+': '+code;
+    if(code==='permission-denied') DENIED[coll] = DENIED[coll]==='read' ? 'read+write' : 'write';
     refreshSyncDot();
   }
 }
+/* ── STUCK-STREAM WATCHDOG ──
+   A busy dot for a second or two is normal. A busy dot that never clears means the listen
+   stream died (or never came up) and Firestore will NOT retry the handshake on its own.
+   Cycling the network forces a fresh channel — that is what actually recovers a stuck session
+   (and releases a stale multi-tab primary lease). Queued writes survive disableNetwork and
+   flush on enableNetwork, so nothing is dropped. Escalating backoff. */
+var STUCK = { since:0, tries:0, lastTry:0, recovered:0, reason:'' };
+var STUCK_WARN_MS = 12000, STUCK_FIRST_MS = 20000;
+function _stuckBackoffMs(){ return Math.min(300000, 30000 * Math.pow(2, Math.max(0,STUCK.tries-1))); }
+function forceReconnect(manual){
+  if(!db || !db.disableNetwork) return Promise.resolve(false);
+  STUCK.tries++; STUCK.lastTry = Date.now();
+  console.warn('SYNC WATCHDOG: cycling Firestore network (attempt '+STUCK.tries+(manual?', manual':'')+')');
+  return db.disableNetwork()
+    .then(function(){ return db.enableNetwork(); })
+    .then(function(){ if(typeof renderSyncStatus==='function' && document.getElementById('sync-body')) renderSyncStatus(); return true; })
+    .catch(function(e){ console.warn('reconnect failed:', e && e.code, e); return false; });
+}
+function _watchdogTick(){
+  if(!STUCK.since || !isOnline) return;
+  var stuckFor = Date.now() - STUCK.since;
+  if(STUCK.tries===0 ? stuckFor >= STUCK_FIRST_MS : (Date.now()-STUCK.lastTry >= _stuckBackoffMs())) forceReconnect(false);
+  refreshSyncDot();
+}
+setInterval(_watchdogTick, 5000);
+
 function refreshSyncDot(){
-  if(!isOnline){ setSyncDot('offline'); return; }
+  if(!isOnline){ STUCK.since=0; setSyncDot('offline'); return; }
   const keys = Object.keys(SYNC);
   const req  = keys.filter(k=>!SYNC_OPTIONAL[k]);
-  if(_writeFails || _saveBlocked){ setSyncDot('err'); return; }
-  if(req.some(k=>SYNC[k].err)){ setSyncDot('err'); return; }
-  if(keys.some(k=>SYNC[k].pending)){ setSyncDot('busy'); return; }   // our own write in flight
-  if(req.some(k=>SYNC[k].cache)){ setSyncDot('busy'); return; }      // still waiting on the server
+  if(_writeFails || _saveBlocked){ STUCK.since=0; setSyncDot('err'); return; }
+  if(req.some(k=>SYNC[k].err)){ STUCK.since=0; setSyncDot('err'); return; }
+  const pend  = keys.filter(k=>SYNC[k].pending);
+  const stale = req.filter(k=>SYNC[k].cache);
+  if(pend.length || stale.length){
+    if(!STUCK.since) STUCK.since = Date.now();
+    STUCK.reason = stale.length ? 'no server response: '+stale.join(', ') : 'writes queued: '+pend.join(', ');
+    setSyncDot((Date.now()-STUCK.since >= STUCK_WARN_MS) ? 'stuck' : 'busy');
+    return;
+  }
+  if(STUCK.since) STUCK.recovered++;
+  STUCK.since=0; STUCK.tries=0; STUCK.lastTry=0; STUCK.reason='';
   setSyncDot('ok');
 }
 function syncReport(){
@@ -3582,6 +3639,73 @@ function openSyncStatus(){
   renderSyncStatus();
   document.getElementById('mo-sync').classList.add('open');
 }
+
+/* Shows the exact Firestore rule block covering every collection this app uses, so a newly
+   added collection (the usual cause of a red dot on a fresh feature) can be fixed in one paste.
+   Read-only helper — it changes nothing in the app or in Firestore. */
+const APP_COLLECTIONS = ['parties','challans','payments','settlements','overrides','items','itemmap',
+                         'stock','stockmv','returns','expenses','visits','meta','public','appdata','staff','incomingBills'];
+function firestoreRulesText(){
+  return [
+    'rules_version = \'2\';',
+    'service cloud.firestore {',
+    '  match /databases/{database}/documents {',
+    '',
+    '    // Owner: full access to every collection under their own user document.',
+    '    // The {coll=**} wildcard covers ALL current and FUTURE collections, so a new',
+    '    // feature never gets refused again.',
+    '    match /users/{uid}/{coll=**} {',
+    '      allow read, write: if request.auth != null && request.auth.uid == uid;',
+    '    }',
+    '',
+    '    // Approved staff: read the owner\'s published directories and file new bills.',
+    '    match /users/{owner}/public/{doc} {',
+    '      allow read: if request.auth != null;',
+    '    }',
+    '    match /users/{owner}/staff/{sid} {',
+    '      allow read, write: if request.auth != null;',
+    '    }',
+    '    match /users/{owner}/incomingBills/{bid} {',
+    '      allow read, write: if request.auth != null;',
+    '    }',
+    '  }',
+    '}'
+  ].join('\n');
+}
+function showRulesHelp(){
+  const box=document.getElementById('rules-help'); if(!box) return;
+  const dl=_denyList();
+  box.style.display='block';
+  box.innerHTML=`
+    <div style="background:#F8FAFC;border:1.5px solid #CBD5E1;border-radius:10px;padding:12px 13px;margin:10px 0;font-size:11.5px;color:#334155;line-height:1.6">
+      <div style="font-weight:800;color:#1A2E5A;font-size:12.5px">Fix: update your Firestore rules</div>
+      <div style="margin-top:5px">
+        Open <strong>console.firebase.google.com</strong> → your project → <strong>Firestore Database</strong> →
+        <strong>Rules</strong>, replace what is there with the block below, then press <strong>Publish</strong>.
+        ${dl.length?`It covers <strong>${dl.map(esc).join(', ')}</strong> and every collection added in future.`:''}
+        Nothing in your data changes — rules only control access.
+      </div>
+      <textarea id="rules-text" readonly style="width:100%;height:190px;margin-top:9px;padding:9px;border:1px solid #CBD5E1;border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;line-height:1.45;box-sizing:border-box;background:#fff;color:#1A1A1A">${esc(firestoreRulesText())}</textarea>
+      <div style="display:flex;gap:7px;margin-top:8px">
+        <button class="btn sm" style="flex:1;justify-content:center" onclick="copyRules()">📋 Copy rules</button>
+        <button class="btn sm" style="flex:1;justify-content:center" onclick="document.getElementById('rules-help').style.display='none'">Hide</button>
+      </div>
+      <div style="margin-top:8px;color:#64748B;font-size:10.5px">
+        After publishing, come back here and press <strong>⟳ Reconnect now</strong>. The refused collections
+        should turn SYNCED and everything queued on this device uploads by itself.
+      </div>
+    </div>`;
+}
+function copyRules(){
+  const t=document.getElementById('rules-text'); if(!t) return;
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t.value).then(()=>alert('Rules copied. Paste them into the Firebase console.'))
+        .catch(()=>{ t.select(); document.execCommand('copy'); alert('Rules copied.'); });
+    } else { t.select(); document.execCommand('copy'); alert('Rules copied.'); }
+  }catch(e){ t.select(); alert('Press Ctrl+C to copy the selected rules.'); }
+}
+
 function renderSyncStatus(){
   const el=document.getElementById('sync-body'); if(!el) return;
   const rep=syncReport();
@@ -3604,18 +3728,36 @@ function renderSyncStatus(){
   el.innerHTML=`
     <div style="font-size:11.5px;color:#666;line-height:1.55;margin-bottom:12px">
       Browser reports <strong>${isOnline?'online':'OFFLINE'}</strong>. Initial read confirmed: <strong>${loadedOnce?'yes':'no'}</strong>.
+      <div style="margin-top:5px">Build: <strong>${BUILD}</strong> &nbsp;·&nbsp; Transport: <strong style="color:${TRANSPORT.state==='auto-detect'?'#065F46':'#B91C1C'}">${TRANSPORT.state==='auto-detect'?'auto (long-poll fallback ON)':'DEFAULT ('+esc(TRANSPORT.code)+')'}</strong></div>
+      ${STUCK.since?`<div style="background:#FFEDD5;border:1px solid #FDBA74;border-radius:9px;padding:9px 11px;margin-top:9px;color:#9A3412;font-size:11.5px">
+        <strong>Not reaching the server for ${Math.round((Date.now()-STUCK.since)/1000)}s.</strong> ${esc(STUCK.reason)}.<br>
+        Everything you entered is safe on this device${PERSIST.state==='on'?' and uploads automatically the moment the connection recovers':' — but the offline cache is OFF, so keep this tab open until the dot turns green'}.
+        Auto-reconnect attempts: <strong>${STUCK.tries}</strong>.
+      </div>`:''}
+      ${STUCK.recovered?`<div style="color:#065F46;margin-top:6px;font-size:11px">Recovered from ${STUCK.recovered} stall(s) this session.</div>`:''}
       <div style="margin-top:7px">Offline cache: <strong style="color:${PERSIST.state==='on'?'#065F46':PERSIST.state==='off'?'#B91C1C':'#92400E'}">${PERSIST.state==='on'?'ON':PERSIST.state==='off'?'OFF ('+esc(PERSIST.code)+')':'starting…'}</strong></div>
       ${PERSIST.state==='off'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">Firestore's offline cache is <strong>not active</strong>, so edits made offline are not queued and are lost on reload.${PERSIST.code==='failed-precondition'?' Cause: the app is open in more than one tab.':''}${PERSIST.code==='unimplemented'?' Cause: this browser or private-browsing mode does not support it.':''}</div>`:''}
       <div style="margin-top:5px">Local backup: <strong style="color:${LOCAL.state==='ok'?'#065F46':LOCAL.state==='trimmed'?'#92400E':'#B91C1C'}">${LOCAL.state==='ok'?'OK':LOCAL.state==='trimmed'?'TRIMMED':'FAILED'}</strong>${LOCAL.bytes?` <span style="color:#999">· ${Math.round(LOCAL.bytes/1024)} KB</span>`:''}${LOCAL.code?` <span style="color:#B91C1C">· ${esc(LOCAL.code)}</span>`:''}</div>
       ${LOCAL.state==='failed'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">This device's local backup could not be written (${esc(LOCAL.code)}). Firestore's own offline cache still works, but the extra safety copy is not being kept.</div>`:''}
       ${_writeFails?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:9px;color:#B91C1C;font-size:11.5px"><strong>${_writeFails} write${_writeFails===1?'':'s'} rejected.</strong> Last: ${esc(_lastWriteErr)}.<br>If this says <strong>permission-denied</strong>, your Firestore security rules do not allow that collection yet — data is safe on this device but is NOT reaching the server.</div>`:''}
+      ${(()=>{ const dl=(typeof _denyList==='function')?_denyList():[]; if(!dl.length) return '';
+        return `<div style="background:#FEE2E2;border:1.5px solid #FCA5A5;border-radius:10px;padding:11px 12px;margin-top:10px;color:#B91C1C;font-size:11.5px;line-height:1.6">
+          <strong>Firestore is refusing ${dl.length} collection${dl.length===1?'':'s'}:</strong> ${dl.map(k=>esc(k)+' ('+DENIED[k]+')').join(', ')}.
+          <div style="margin-top:5px">This happens when a collection was added to the app but not yet to your
+          <strong>Firestore security rules</strong>. Your data is safe on this device — it is just not reaching the server.</div>
+          <button class="btn" style="width:100%;justify-content:center;margin-top:9px;background:#fff" onclick="showRulesHelp()">📋 Show the rule to add</button>
+        </div>`; })()}
       ${missing>0?`<div style="color:#92400E;margin-top:8px">${missing} listener${missing===1?'':'s'} have not reported at all yet.</div>`:''}
     </div>
+    <div id="rules-help" style="display:none"></div>
     <div style="display:flex;gap:9px;padding:0 2px 7px;border-bottom:1.5px solid #EEE;font-size:9.5px;font-weight:800;color:#999;letter-spacing:.3px">
       <div style="flex:1">COLLECTION</div><div style="width:44px;text-align:right">DOCS</div><div style="width:82px;text-align:right">STATE</div>
     </div>
     ${rows||'<div style="text-align:center;color:#999;padding:20px;font-size:12.5px">No listeners attached.</div>'}
-    <button class="btn" style="width:100%;justify-content:center;margin-top:12px" onclick="renderSyncStatus()">↻ Refresh</button>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn" style="flex:1;justify-content:center" onclick="renderSyncStatus()">↻ Refresh</button>
+      <button class="btn" style="flex:1;justify-content:center;background:#FFF7ED;border-color:#FDBA74;color:#9A3412" onclick="forceReconnect(true).then(function(){setTimeout(renderSyncStatus,1200);})">⟳ Reconnect now</button>
+    </div>
     <div style="font-size:10.5px;color:#999;margin-top:9px;line-height:1.5">
       <strong>SYNCED</strong> = confirmed by the server. <strong>NO SERVER</strong> = reading from this
       device's cache only. <strong>BLOCKED</strong> = the server refused the read.
@@ -5663,7 +5805,23 @@ function vNorm(v){
   }
   if(!v.sheetId) v.sheetId = 'legacy-'+(v.date||'x');
   if(!v.sheetDate) v.sheetDate = v.date||today();
+  // visitDate = the day this particular assignment is to be done. The first round of a sheet
+  // uses the sheet's own date; follow-up rounds created from a promised date use that date.
+  if(!v.visitDate) v.visitDate = v.sheetDate;
   return v;
+}
+/* A promise is "covered" once somebody has been assigned to that party FOR that date
+   inside the same sheet. Uncovered promises are what the follow-up sub-section offers. */
+function followUpsPending(sheetId){
+  const g = sheetById(sheetId); if(!g) return [];
+  const covered = {};
+  g.entries.forEach(e=>{ covered[e.pid+'|'+e.visitDate] = 1; });
+  const byDate = {};
+  g.entries.filter(e=>e.status==='LATER' && e.nextDate).forEach(e=>{
+    if(covered[e.pid+'|'+e.nextDate]) return;          // already re-assigned for that day
+    (byDate[e.nextDate] = byDate[e.nextDate] || []).push(e);
+  });
+  return Object.keys(byDate).sort().map(d=>({ date:d, entries:byDate[d] }));
 }
 function allVisits(){ return (S.visits||[]).filter(Boolean).map(vNorm); }
 function partyVisits(pid){
@@ -5801,22 +5959,71 @@ function sheetsListHtml(){
 function sheetDetailHtml(id){
   const g=sheetById(id);
   if(!g) return '<div style="text-align:center;color:#999;padding:34px">Sheet not found. <button class="btn sm" onclick="closeSheet()">← Back</button></div>';
-  const byStaff={};
-  g.entries.forEach(e=>{ const k=(e.staff||'—').trim(); (byStaff[k]=byStaff[k]||[]).push(e); });
-  const groups=Object.keys(byStaff).sort().map(k=>{
-    const list=byStaff[k].slice().sort((a,b)=>(a.status==='PENDING'?0:1)-(b.status==='PENDING'?0:1)||String(a.pname||'').localeCompare(String(b.pname||'')));
-    const got=list.filter(e=>e.status==='COLLECTED').reduce((s,e)=>s+(+e.amount||0),0);
-    const left=list.filter(e=>e.status==='PENDING').length;
+  // Rounds: the sheet's own date first, then every follow-up date, each with its own staff split.
+  const byDate={};
+  g.entries.forEach(e=>{ (byDate[e.visitDate]=byDate[e.visitDate]||[]).push(e); });
+  const dates=Object.keys(byDate).sort();
+  const groups=dates.map(dt=>{
+    const dayEntries=byDate[dt];
+    const byStaff={};
+    dayEntries.forEach(e=>{ const k=(e.staff||'—').trim(); (byStaff[k]=byStaff[k]||[]).push(e); });
+    const dGot=dayEntries.filter(e=>e.status==='COLLECTED').reduce((s,e)=>s+(+e.amount||0),0);
+    const dLeft=dayEntries.filter(e=>e.status==='PENDING').length;
+    const isFollow = dt!==g.date;
+    const dd = daysBetweenISO(dt);
+    const staffBlocks=Object.keys(byStaff).sort().map(k=>{
+      const list=byStaff[k].slice().sort((a,b)=>(a.status==='PENDING'?0:1)-(b.status==='PENDING'?0:1)||String(a.pname||'').localeCompare(String(b.pname||'')));
+      const got=list.filter(e=>e.status==='COLLECTED').reduce((s,e)=>s+(+e.amount||0),0);
+      const left=list.filter(e=>e.status==='PENDING').length;
+      return `
+      <div style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1.5px solid #C7D2FE;margin-bottom:8px">
+          <div style="font-size:12.5px;font-weight:800;color:#1A2E5A">🚶 ${esc(k)}</div>
+          <span style="font-size:10px;color:#888;font-weight:700">${list.length} part${list.length===1?'y':'ies'} · ${left} left</span>
+          <span style="flex:1"></span>
+          <span style="font-size:12px;font-weight:800;color:#059669">${fmt(got)}</span>
+        </div>
+        ${list.map(entryCardHtml).join('')}
+      </div>`;}).join('');
     return `
-    <div style="margin-bottom:16px">
-      <div style="display:flex;align-items:center;gap:8px;padding:8px 2px;border-bottom:2px solid #1A2E5A;margin-bottom:9px">
-        <div style="font-size:13px;font-weight:800;color:#1A2E5A">🚶 ${esc(k)}</div>
-        <span style="font-size:10px;color:#888;font-weight:700">${list.length} part${list.length===1?'y':'ies'} · ${left} left</span>
+    <div style="margin-bottom:18px">
+      <div style="display:flex;align-items:center;gap:8px;background:${isFollow?'#FFFBEB':'#EEF2FF'};border:1px solid ${isFollow?'#FDE68A':'#C7D2FE'};border-radius:10px;padding:9px 12px;margin-bottom:11px">
+        <div style="font-size:13px;font-weight:800;color:${isFollow?'#92400E':'#1A2E5A'}">${isFollow?'🔁 Follow-up round':'📋 Main round'} · ${fmtD(dt)}</div>
+        ${dd===0?'<span style="font-size:9.5px;font-weight:800;background:#DCFCE7;color:#065F46;padding:2px 8px;border-radius:20px">TODAY</span>':(dd>0&&dLeft?'<span style="font-size:9.5px;font-weight:800;background:#FEE2E2;color:#B91C1C;padding:2px 8px;border-radius:20px">'+dd+'D LATE</span>':'')}
         <span style="flex:1"></span>
-        <span style="font-size:12px;font-weight:800;color:#059669">${fmt(got)}</span>
+        <span style="font-size:11px;color:#666;font-weight:700">${dayEntries.length-dLeft}/${dayEntries.length} done</span>
+        <span style="font-size:12px;font-weight:800;color:#059669">${fmt(dGot)}</span>
       </div>
-      ${list.map(entryCardHtml).join('')}
+      <div style="padding-left:4px">${staffBlocks}</div>
+      <div style="padding-left:4px">
+        <button class="btn sm" style="font-size:11px" onclick="openAssignFor('${esc(g.id)}','${dt}')">＋ Add a party to this round</button>
+      </div>
     </div>`;}).join('');
+
+  // Parties that gave a date but have not been handed to anyone for that date yet.
+  const pend=followUpsPending(g.id);
+  const followBox = pend.length ? `
+    <div class="ibox" style="background:#FFFBEB;border-color:#FDE68A;color:#92400E;margin-bottom:12px">
+      <strong>${pend.reduce((s,x)=>s+x.entries.length,0)} party(ies) gave a next date.</strong>
+      Assign each date below to the same staff member or someone else — the new round is added to this sheet.
+    </div>
+    ${pend.map(x=>{
+      const dd=daysBetweenISO(x.date);
+      const bal=x.entries.reduce((s,e)=>s+Math.max(0,getAlloc(e.pid).partyBalance),0);
+      return `
+      <div style="background:#fff;border:1.5px solid #FDBA74;border-radius:11px;padding:12px 13px;margin-bottom:9px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="font-size:13.5px;font-weight:800;color:#9A3412">📅 ${fmtD(x.date)}</div>
+          ${dd===0?'<span style="font-size:9.5px;font-weight:800;background:#DCFCE7;color:#065F46;padding:2px 8px;border-radius:20px">TODAY</span>':(dd>0?'<span style="font-size:9.5px;font-weight:800;background:#FEE2E2;color:#B91C1C;padding:2px 8px;border-radius:20px">'+dd+'D LATE</span>':'<span style="font-size:9.5px;font-weight:700;color:#888">in '+Math.abs(dd)+'d</span>')}
+          <span style="flex:1"></span>
+          <span style="font-size:13px;font-weight:800;color:#DC2626">${fmt(bal)}</span>
+        </div>
+        <div style="font-size:11.5px;color:#666;margin-top:6px;line-height:1.6">
+          ${x.entries.map(e=>`${esc(e.pname)}<span style="color:#AAA"> — was with ${esc(e.staff||'—')}${e.amount?', promised '+fmt(e.amount):''}</span>`).join('<br>')}
+        </div>
+        <button class="btn sm" style="width:100%;justify-content:center;margin-top:9px;background:#FFF7ED;border-color:#FDBA74;color:#9A3412;font-weight:700"
+                onclick="openFollowRound('${esc(g.id)}','${x.date}')">🚶 Assign staff for ${fmtD(x.date)}</button>
+      </div>`;}).join('')}` : '';
   const pct=g.total?Math.round(g.done/g.total*100):0;
   return `
     <button class="btn sm" style="margin-bottom:12px" onclick="closeSheet()">← All sheets</button>
@@ -5832,6 +6039,7 @@ function sheetDetailHtml(id){
       <button class="btn sm" style="flex:1;justify-content:center;font-size:11.5px" onclick="openAssign('${esc(g.id)}')">＋ Assign parties</button>
       <button class="btn sm" style="font-size:11.5px;color:#DC2626;border-color:#FCA5A5" onclick="delSheet('${esc(g.id)}')">🗑 Delete sheet</button>
     </div>
+    ${followBox}
     ${groups}`;
 }
 
@@ -5918,6 +6126,7 @@ function dueHtml(){
         <button class="btn sm" style="font-size:11.5px;background:#ECFDF5;color:#059669;border-color:#A7F3D0;font-weight:700" onclick="openCollect('${v.id}')">💵 Payment Collected</button>
         <button class="btn sm" style="font-size:11.5px;background:#FFFBEB;color:#92400E;border-color:#FDE68A;font-weight:700" onclick="openLater('${v.id}')">📅 New Date</button>
         ${f.party.phone?`<a class="btn sm" style="font-size:11.5px;text-decoration:none" href="tel:${esc(f.party.phone)}">📞 Call</a>`:''}
+        <button class="btn sm" style="font-size:11.5px" onclick="openFollowRound('${esc(v.sheetId)}','${v.nextDate}')">🚶 Assign staff</button>
         <button class="btn sm" style="font-size:11.5px" onclick="openSheet('${esc(v.sheetId)}')">→ Sheet</button>
       </div>
     </div>`;};
@@ -5989,6 +6198,7 @@ function setDefaultCreditDays(val){
    SHEET CREATION + ASSIGNMENT
 ══════════════════════════════ */
 let assignSheetId='', assignSheetDate='', assignSheetTitle='', assignPicked={};
+let assignVisitDate='';   // the day THIS batch of assignments is for (sheet date, or a follow-up date)
 
 function openNewSheet(){
   document.getElementById('vsh-date').value=today();
@@ -5999,20 +6209,43 @@ function createSheet(){
   const dt=document.getElementById('vsh-date').value||today();
   const ti=document.getElementById('vsh-title').value.trim();
   closeModal('vsheet');
-  assignSheetId=uniqId('SH'); assignSheetDate=dt; assignSheetTitle=ti;
+  assignSheetId=uniqId('SH'); assignSheetDate=dt; assignSheetTitle=ti; assignVisitDate=dt;
   _openAssignModal();
 }
 function openAssign(sheetId){
   const g=sheetById(sheetId); if(!g) return;
-  assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title;
+  assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title; assignVisitDate=g.date;
   _openAssignModal();
+}
+// Add one more party to an existing round (main or follow-up) without preselecting anyone.
+function openAssignFor(sheetId, dateISO){
+  const g=sheetById(sheetId); if(!g) return;
+  assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title; assignVisitDate=dateISO||g.date;
+  _openAssignModal();
+}
+/* Follow-up round: the parties that promised this date are pre-ticked, so you only choose who
+   goes. Creates fresh PENDING assignments dated that day inside the SAME sheet. */
+function openFollowRound(sheetId, dateISO){
+  const g=sheetById(sheetId); if(!g) return;
+  assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title; assignVisitDate=dateISO;
+  const grp=followUpsPending(sheetId).find(x=>x.date===dateISO);
+  _openAssignModal();
+  if(grp){
+    grp.entries.forEach(e=>{ assignPicked[e.pid]=1; });
+    // Suggest the staff member who took the promise when it was a single person.
+    const who=Object.keys(grp.entries.reduce((o,e)=>{o[(e.staff||'').trim()]=1;return o;},{})).filter(Boolean);
+    if(who.length===1) document.getElementById('vas-staff').value=who[0];
+    renderAssignList();
+  }
 }
 function _openAssignModal(){
   assignPicked={};
   document.getElementById('vas-staff').value='';
   document.getElementById('vas-q').value='';
   document.getElementById('vas-dl').innerHTML=collectorNames().map(n=>`<option value="${esc(n)}"></option>`).join('');
-  document.getElementById('vas-sub').textContent='Round of '+fmtD(assignSheetDate);
+  document.getElementById('vas-sub').textContent =
+    (assignVisitDate && assignVisitDate!==assignSheetDate ? '🔁 Follow-up round · ' : '📋 ')
+    + fmtD(assignVisitDate||assignSheetDate);
   assignSort='days';
   renderAssignList();
   document.getElementById('mo-vassign').classList.add('open');
@@ -6022,7 +6255,8 @@ function setAssignSort(v){ assignSort=v; renderAssignList(); }
 // Parties already on this sheet cannot be added twice.
 function assignCandidates(){
   const g=sheetById(assignSheetId);
-  const taken={}; if(g) g.entries.forEach(e=>{ taken[e.pid]=1; });
+  // A party can appear on several dates of the same sheet — only block a duplicate on THIS date.
+  const taken={}; if(g) g.entries.forEach(e=>{ if(e.visitDate===(assignVisitDate||assignSheetDate)) taken[e.pid]=1; });
   const q=(document.getElementById('vas-q')?.value||'').trim().toLowerCase();
   let list=(S.parties||[]).filter(p=>p&&p.id&&!taken[p.id]).map(p=>followUp(p.id)).filter(f=>f.bal>0);
   if(q) list=list.filter(f=>String(f.party.name||'').toLowerCase().includes(q)||String(f.party.city||'').toLowerCase().includes(q)||String(f.party.phone||'').includes(q));
@@ -6077,6 +6311,7 @@ function saveAssign(){
     S.visits.push({
       id:uniqId('V'), num:'VS-'+pad(S.vC),
       sheetId:assignSheetId, sheetDate:assignSheetDate, sheetTitle:assignSheetTitle,
+      visitDate:assignVisitDate||assignSheetDate,
       staff, pid, pname:p.name||'', status:'PENDING',
       amount:0, mode:'', payId:'', nextDate:'', reason:'', doneDate:'',
       createdAt:new Date().toISOString()
@@ -6240,6 +6475,7 @@ function openVisitFor(pid){
   assignSheetId = g ? g.id : uniqId('SH');
   assignSheetDate = g ? g.date : t;
   assignSheetTitle = g ? g.title : '';
+  assignVisitDate = t;
   _openAssignModal();
   assignPicked[pid]=1;
   renderAssignList();
