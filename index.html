@@ -284,6 +284,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
       <div style="margin-bottom:12px;position:relative">
         <input id="party-search" type="text" placeholder="🔍 Search parties..." oninput="renderParties()" autocomplete="off" style="padding-left:14px;font-size:14px;border-radius:10px;border:1.5px solid #DDD;width:100%;padding:11px 14px;font-family:inherit;outline:none">
       </div>
+      <div class="fbar" id="pt-filter-bar"></div>
       <div id="parties-list"></div>
     </div>
   </div>
@@ -954,7 +955,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-08-27.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-08-27.2';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2441,17 +2442,74 @@ function renderHome() {
 /* ══════════════════════════════
    RENDER PARTIES
 ══════════════════════════════ */
+/* Filter bar for the party list. Counts are live so the tab itself tells you how bad it is. */
+function renderPartyFilterBar(){
+  const bar=document.getElementById('pt-filter-bar'); if(!bar) return;
+  const all=(S.parties||[]).filter(p=>p&&p.id);
+  let nDue=0, nOver=0, nProm=0, nClear=0, overSum=0;
+  all.forEach(p=>{
+    const f=followUp(p.id);
+    if(f.bal>0){
+      nDue++;
+      if(f.overdueBy!=null && f.overdueBy>0){ nOver++; overSum+=f.bal; }
+      if(f.promise && f.promise.nextDate) nProm++;
+    } else nClear++;
+  });
+  const b=(k,lbl,cnt,col)=>`<button class="btn sm" style="font-size:11.5px;${partyFilter===k
+      ? 'background:'+(col||'#1A2E5A')+';color:#fff;border-color:'+(col||'#1A2E5A')
+      : (col&&cnt?'color:'+col+';border-color:'+col:'')}" onclick="setPartyFilter('${k}')">${lbl}${cnt!=null?' ('+cnt+')':''}</button>`;
+  bar.innerHTML =
+    b('ALL','👥 All', all.length) +
+    b('DUE','💰 With balance', nDue) +
+    b('OVERLIMIT','⏱️ Over day limit', nOver, '#DC2626') +
+    b('PROMISED','📅 Gave a date', nProm, '#92400E') +
+    b('CLEAR','✅ Cleared', nClear, '#059669') +
+    (partyFilter==='OVERLIMIT' && nOver
+      ? `<div style="width:100%;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:3px;font-size:11.5px;color:#B91C1C;line-height:1.55">
+           <strong>${nOver} part${nOver===1?'y has':'ies have'} crossed the payment day limit</strong> — ${fmt(overSum)} outstanding between them.
+           Limits are set in <strong>Visits → ⏱️ Day Limits</strong>.
+         </div>` : '');
+}
+
+/* Party list filters. OVERLIMIT is the one that matters day to day: days since the party's
+   last payment have passed its own limit (or the default) while money is still owed. The clock
+   and the limit come from the same followUp() the Visits screen uses, so the two views can
+   never disagree. */
+let partyFilter = 'ALL';   // ALL | DUE | OVERLIMIT | PROMISED | CLEAR
+function setPartyFilter(f){ partyFilter=f; renderParties(); }
+function partyMatchesFilter(p){
+  if(partyFilter==='ALL') return true;
+  const f=followUp(p.id);
+  if(partyFilter==='DUE')      return f.bal>0;
+  if(partyFilter==='CLEAR')    return f.bal<=0;
+  if(partyFilter==='OVERLIMIT')return f.bal>0 && f.overdueBy!=null && f.overdueBy>0;
+  if(partyFilter==='PROMISED') return f.bal>0 && !!(f.promise && f.promise.nextDate);
+  return true;
+}
 function renderParties() {
   const el = document.getElementById('parties-list');
   const query = (document.getElementById('party-search')?.value||'').trim().toLowerCase();
   if (!S.parties.length) { el.innerHTML='<div class="empty"><div class="ei">👥</div><p>No parties yet. Add your first party.</p></div>'; return; }
+  renderPartyFilterBar();
   const sorted = [...S.parties].sort((a,b)=>partyBal(b.id)-partyBal(a.id));
-  const filtered = query ? sorted.filter(p=>
+  let filtered = query ? sorted.filter(p=>
     p.name.toLowerCase().includes(query) ||
     (p.phone||'').includes(query) ||
     (p.city||'').toLowerCase().includes(query)
   ) : sorted;
-  if (!filtered.length) { el.innerHTML=`<div class="empty"><div class="ei">🔍</div><p>No parties matching "<strong>${esc(query)}</strong>"</p></div>`; return; }
+  filtered = filtered.filter(partyMatchesFilter);
+  // Worst breach first — that is the order you would actually work the list in.
+  if(partyFilter==='OVERLIMIT') filtered.sort((a,b)=>(followUp(b.id).overdueBy||0)-(followUp(a.id).overdueBy||0));
+  if(partyFilter==='PROMISED')  filtered.sort((a,b)=>String((followUp(a.id).promise||{}).nextDate||'').localeCompare(String((followUp(b.id).promise||{}).nextDate||'')));
+  if (!filtered.length) {
+    el.innerHTML=`<div class="empty"><div class="ei">${query?'🔍':'✅'}</div><p>${
+      query ? `No parties matching "<strong>${esc(query)}</strong>"${partyFilter!=='ALL'?' in this filter':''}`
+            : (partyFilter==='OVERLIMIT' ? 'No party has crossed its payment day limit. 🎉'
+             : partyFilter==='PROMISED'  ? 'No party has given a collection date.'
+             : partyFilter==='CLEAR'     ? 'No party is fully cleared yet.'
+             : 'No parties with an outstanding balance.')}</p></div>`;
+    return;
+  }
   el.innerHTML = filtered.map((p) => {
     const i   = sorted.indexOf(p);
     const bal = partyBal(p.id);
@@ -2468,6 +2526,19 @@ function renderParties() {
         ${i<3&&bal>0&&!query?`<span class="rank">#${i+1} Highest Due</span>`:''}
         <div class="pn">${displayName}</div>
         <div class="pm">${ch} challan(s) · ${pend} pending${p.phone?' · '+esc(p.phone):''}${p.ob?' · 📌 Prev bal: '+fmt(p.ob):''}</div>
+        ${(()=>{ const f=followUp(p.id);
+          if(f.bal<=0) return '';
+          const showClock = partyFilter==='OVERLIMIT' || partyFilter==='PROMISED' || (f.overdueBy!=null && f.overdueBy>0);
+          if(!showClock) return '';
+          const c=VLEVEL[f.level];
+          const clk=f.clock;
+          const age = clk.days==null ? 'no payment history'
+            : (clk.anchor==='payment' ? clk.days+'d since last payment' : 'never paid · oldest bill '+clk.days+'d old');
+          return `<div class="pm" style="margin-top:3px">
+            <span style="font-size:9px;font-weight:800;background:${c.bg};color:${c.fg};padding:1px 7px;border-radius:10px">${c.lbl}</span>
+            <span style="color:${f.overdueBy>0?'#B91C1C':'#888'}"> ${age} · limit ${f.limit}d${f.overdueBy>0?' · over by '+f.overdueBy+'d':''}</span>
+            ${f.promise&&f.promise.nextDate?`<span style="color:${f.promiseDays>0?'#B91C1C':'#065F46'}"> · 📅 ${fmtD(f.promise.nextDate)}</span>`:''}
+          </div>`; })()}
       </div>
       <div class="pbal-wrap"><div class="pbal ${bc}">${fmt(Math.abs(bal))}</div><div class="pbl">${bal>0?'due':bal<0?'credit':'clear'}</div></div>
     </div>`;
