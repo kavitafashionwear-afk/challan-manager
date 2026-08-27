@@ -669,7 +669,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     </div>
     <div id="vas-list"></div>
     <div style="font-size:11px;color:#888;line-height:1.55;margin-top:9px">
-      Only parties with an outstanding balance are listed. Use <strong>Save &amp; add another</strong> to assign a different set of parties to the next staff member on the same sheet.
+      Use <strong>Save &amp; add another</strong> to split the round: save this person's parties, then tick the rest for the next staff member. Parties already assigned for this date drop off the list.
     </div>
   </div>
   <div class="mfoot" style="display:flex;gap:8px">
@@ -697,6 +697,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     </div>
     <div class="ibox grn" style="margin:0">
       Balance now <strong id="vc-bal">-</strong> → after this payment <strong id="vc-after">-</strong>
+      <div id="vc-fifo" style="font-size:11px;margin-top:4px"></div>
     </div>
     <div style="font-size:11px;color:#888;line-height:1.55;background:#F8F8F8;border-radius:9px;padding:9px 11px;margin-top:10px">
       This creates a <strong>real payment</strong> in the ledger and settles challans FIFO, exactly like entering it by hand. Undoing the outcome removes it again.
@@ -705,6 +706,34 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="mfoot" style="display:flex;gap:8px">
     <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('vcollect')">Cancel</button>
     <button class="btn pri" style="flex:1;justify-content:center" onclick="saveCollect()">✓ Record Payment</button>
+  </div>
+</div></div>
+
+<!-- ══════════ VISITS: MONEY RETURNED FROM A ROUND (BATCH) ══════════ -->
+<div class="overlay" id="mo-vbatch">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>💵 Money Returned</h3><div style="font-size:12px;color:#888" id="vb-sub"></div></div>
+    <button class="xbtn" onclick="closeModal('vbatch')">✕</button>
+  </div>
+  <div class="mbody">
+    <div class="fr">
+      <div><label>Payment date *</label><input id="vb-date" type="date"></div>
+      <div><label>Mode</label><select id="vb-mode"><option>Cash</option><option>NEFT/RTGS</option><option>Cheque</option><option>UPI</option><option>Other</option></select></div>
+    </div>
+    <div style="font-size:11.5px;color:#888;margin-bottom:7px">Enter what came back for each party. Leave blank to keep that party pending.</div>
+    <div id="vb-list" style="border:1px solid #EEE;border-radius:10px;max-height:320px;overflow-y:auto"></div>
+    <div style="display:flex;align-items:center;gap:9px;background:#F0FDF4;border:1px solid #A7F3D0;border-radius:10px;padding:11px 13px;margin-top:11px">
+      <div style="flex:1;font-size:12.5px;font-weight:800;color:#065F46">Total coming in</div>
+      <div id="vb-total" style="font-size:16px;font-weight:800;color:#059669">Rs.0</div>
+    </div>
+    <div style="font-size:11px;color:#888;line-height:1.55;background:#F8F8F8;border-radius:9px;padding:9px 11px;margin-top:10px">
+      Each amount becomes a <strong>real payment</strong> for that party and is allocated to its <strong>oldest bills first (FIFO)</strong>, exactly like entering it by hand. Anything above the balance sits as an advance.
+    </div>
+  </div>
+  <div class="mfoot" style="display:flex;gap:8px">
+    <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('vbatch')">Cancel</button>
+    <button class="btn pri" style="flex:1;justify-content:center" onclick="saveBatchCollect()">✓ Record All</button>
   </div>
 </div></div>
 
@@ -925,7 +954,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-08-26.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-08-27.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -5977,12 +6006,13 @@ function sheetDetailHtml(id){
       const left=list.filter(e=>e.status==='PENDING').length;
       return `
       <div style="margin-bottom:14px">
-        <div style="display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1.5px solid #C7D2FE;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1.5px solid #C7D2FE;margin-bottom:8px;flex-wrap:wrap">
           <div style="font-size:12.5px;font-weight:800;color:#1A2E5A">🚶 ${esc(k)}</div>
           <span style="font-size:10px;color:#888;font-weight:700">${list.length} part${list.length===1?'y':'ies'} · ${left} left</span>
           <span style="flex:1"></span>
           <span style="font-size:12px;font-weight:800;color:#059669">${fmt(got)}</span>
         </div>
+        ${left?`<button class="btn sm" style="width:100%;justify-content:center;font-size:11.5px;background:#ECFDF5;color:#059669;border-color:#A7F3D0;font-weight:800;margin-bottom:9px" onclick="openStaffCollect('${esc(g.id)}','${dt}','${esc(k).replace(/'/g,"\\'")}')">💵 ${esc(k)} returned with money — enter all ${left} at once</button>`:''}
         ${list.map(entryCardHtml).join('')}
       </div>`;}).join('');
     return `
@@ -6081,8 +6111,17 @@ function entryCardHtml(e){
       </div>`:''}
     <div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap">
       ${e.status==='PENDING'?`
-        <button class="btn sm" style="font-size:11.5px;background:#ECFDF5;color:#059669;border-color:#A7F3D0;font-weight:700" onclick="openCollect('${e.id}')">💵 Payment Collected</button>
+        <div style="display:flex;gap:6px;align-items:center;width:100%">
+          <span style="font-size:13px;font-weight:800;color:#059669">Rs.</span>
+          <input id="qc-${e.id}" type="number" inputmode="numeric" placeholder="Amount brought back"
+                 oninput="quickCollectPreview('${e.id}')"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();quickCollect('${e.id}');}"
+                 style="flex:1;min-width:90px;padding:8px 10px;border:1.5px solid #A7F3D0;border-radius:8px;font-size:13.5px;box-sizing:border-box;font-family:inherit">
+          <button class="btn sm" style="font-size:11.5px;background:#059669;color:#fff;border-color:#059669;font-weight:800" onclick="quickCollect('${e.id}')">✓ Collect</button>
+        </div>
+        <div id="qc-hint-${e.id}" style="width:100%;font-size:10.5px;color:#059669;margin:-3px 0 1px"></div>
         <button class="btn sm" style="font-size:11.5px;background:#FFFBEB;color:#92400E;border-color:#FDE68A;font-weight:700" onclick="openLater('${e.id}')">📅 Come Another Day</button>
+        <button class="btn sm" style="font-size:11.5px" onclick="openCollect('${e.id}')" title="Different date, mode or remarks">⋯ Details</button>
         <button class="btn sm" style="font-size:11.5px;color:#888" onclick="markNoCollect('${e.id}')">✕ Couldn't collect</button>
       `:`
         <button class="btn sm" style="font-size:11.5px" onclick="undoEntry('${e.id}')">↩ Undo</button>
@@ -6210,33 +6249,35 @@ function createSheet(){
   const ti=document.getElementById('vsh-title').value.trim();
   closeModal('vsheet');
   assignSheetId=uniqId('SH'); assignSheetDate=dt; assignSheetTitle=ti; assignVisitDate=dt;
+  assignDayPids=null; assignScope='all'; assignPromiseBy={};
   _openAssignModal();
 }
 function openAssign(sheetId){
   const g=sheetById(sheetId); if(!g) return;
   assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title; assignVisitDate=g.date;
+  assignDayPids=null; assignScope='all'; assignPromiseBy={};
   _openAssignModal();
 }
 // Add one more party to an existing round (main or follow-up) without preselecting anyone.
 function openAssignFor(sheetId, dateISO){
   const g=sheetById(sheetId); if(!g) return;
   assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title; assignVisitDate=dateISO||g.date;
+  assignDayPids=null; assignScope='all';
   _openAssignModal();
 }
-/* Follow-up round: the parties that promised this date are pre-ticked, so you only choose who
-   goes. Creates fresh PENDING assignments dated that day inside the SAME sheet. */
+/* Follow-up round. Only the parties that promised THIS date are listed, because that is the
+   round being staffed — the full party list is noise here. Nothing is pre-ticked: you tick the
+   share going to the first staff member, save, and the modal reopens with only the parties
+   still unassigned for that day, so a round can be split across two or three people. */
 function openFollowRound(sheetId, dateISO){
   const g=sheetById(sheetId); if(!g) return;
   assignSheetId=g.id; assignSheetDate=g.date; assignSheetTitle=g.title; assignVisitDate=dateISO;
   const grp=followUpsPending(sheetId).find(x=>x.date===dateISO);
+  assignDayPids = grp ? grp.entries.map(e=>e.pid) : [];
+  assignPromiseBy = {};
+  if(grp) grp.entries.forEach(e=>{ assignPromiseBy[e.pid] = { staff:e.staff||'', amount:+e.amount||0, reason:e.reason||'' }; });
+  assignScope = assignDayPids.length ? 'day' : 'all';
   _openAssignModal();
-  if(grp){
-    grp.entries.forEach(e=>{ assignPicked[e.pid]=1; });
-    // Suggest the staff member who took the promise when it was a single person.
-    const who=Object.keys(grp.entries.reduce((o,e)=>{o[(e.staff||'').trim()]=1;return o;},{})).filter(Boolean);
-    if(who.length===1) document.getElementById('vas-staff').value=who[0];
-    renderAssignList();
-  }
 }
 function _openAssignModal(){
   assignPicked={};
@@ -6250,15 +6291,32 @@ function _openAssignModal(){
   renderAssignList();
   document.getElementById('mo-vassign').classList.add('open');
 }
-let assignSort='days';    // 'days' | 'bal' | 'name'
+let assignSort='days';            // 'days' | 'bal' | 'name'
+let assignScope='all';            // 'day' = only parties promised this date, 'all' = every party with a balance
+let assignDayPids=null;           // pids promised the date being staffed
+let assignPromiseBy={};           // pid -> who took the promise, and what was promised
 function setAssignSort(v){ assignSort=v; renderAssignList(); }
-// Parties already on this sheet cannot be added twice.
+function setAssignScope(v){ assignScope=v; renderAssignList(); }
+
+// Parties promised this date that nobody has been assigned to yet.
+function assignDayRemaining(){
+  if(!assignDayPids) return [];
+  const g=sheetById(assignSheetId);
+  const taken={};
+  if(g) g.entries.forEach(e=>{ if(e.visitDate===assignVisitDate) taken[e.pid]=1; });
+  return assignDayPids.filter(pid=>!taken[pid]);
+}
 function assignCandidates(){
   const g=sheetById(assignSheetId);
-  // A party can appear on several dates of the same sheet — only block a duplicate on THIS date.
-  const taken={}; if(g) g.entries.forEach(e=>{ if(e.visitDate===(assignVisitDate||assignSheetDate)) taken[e.pid]=1; });
+  const vd=assignVisitDate||assignSheetDate;
+  // A party can sit on several dates of the same sheet — only block a duplicate on THIS date.
+  const taken={}; if(g) g.entries.forEach(e=>{ if(e.visitDate===vd) taken[e.pid]=1; });
+  const dayOnly = assignScope==='day' && assignDayPids && assignDayPids.length;
+  const inDay = {}; if(dayOnly) assignDayPids.forEach(p=>{ inDay[p]=1; });
   const q=(document.getElementById('vas-q')?.value||'').trim().toLowerCase();
-  let list=(S.parties||[]).filter(p=>p&&p.id&&!taken[p.id]).map(p=>followUp(p.id)).filter(f=>f.bal>0);
+  let list=(S.parties||[]).filter(p=>p&&p.id&&!taken[p.id]&&(!dayOnly||inDay[p.id]))
+    .map(p=>followUp(p.id))
+    .filter(f=>dayOnly || f.bal>0);      // the day list is shown whatever the balance now reads
   if(q) list=list.filter(f=>String(f.party.name||'').toLowerCase().includes(q)||String(f.party.city||'').toLowerCase().includes(q)||String(f.party.phone||'').includes(q));
   const rank={over:0,broken:1,soon:2,ok:3};
   if(assignSort==='bal')       list.sort((a,b)=>b.bal-a.bal);
@@ -6266,14 +6324,31 @@ function assignCandidates(){
   else                         list.sort((a,b)=>(rank[a.level]-rank[b.level])||((b.clock.days||0)-(a.clock.days||0)));
   return list;
 }
+function selectAllAssign(){ assignCandidates().forEach(f=>{ assignPicked[f.pid]=1; }); renderAssignList(); }
+function clearAssign(){ assignPicked={}; renderAssignList(); }
+
 function renderAssignList(){
   const box=document.getElementById('vas-list'); if(!box) return;
   const list=assignCandidates();
-  const sbtn=(k,l)=>`<button class="btn sm" style="font-size:11px;${assignSort===k?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setAssignSort('${k}')">${l}</button>`;
   const n=Object.keys(assignPicked).length;
+  const hasDay = assignDayPids && assignDayPids.length;
+  const remaining = hasDay ? assignDayRemaining().length : 0;
+  const dayOnly = assignScope==='day' && hasDay;
+  const sbtn=(k,l)=>`<button class="btn sm" style="font-size:11px;${assignSort===k?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setAssignSort('${k}')">${l}</button>`;
+  const cbtn=(k,l)=>`<button class="btn sm" style="font-size:11px;${assignScope===k?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setAssignScope('${k}')">${l}</button>`;
   box.innerHTML=`
+    ${hasDay?`
+    <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:9px;font-size:11.5px;color:#92400E;line-height:1.55">
+      <strong>${remaining} of ${assignDayPids.length} part${assignDayPids.length===1?'y':'ies'} still unassigned for ${fmtD(assignVisitDate)}.</strong>
+      Tick the ones this staff member takes, then use <strong>Save &amp; add another</strong> for the next person.
+    </div>
+    <div style="display:flex;gap:5px;margin-bottom:9px;flex-wrap:wrap">
+      ${cbtn('day','📅 This day only ('+remaining+')')}${cbtn('all','👥 All parties with balance')}
+    </div>`:''}
     <div style="display:flex;gap:5px;margin-bottom:9px;flex-wrap:wrap;align-items:center">
-      ${sbtn('days','⏱️ Oldest dues')}${sbtn('bal','💰 Biggest balance')}${sbtn('name','🔤 Name')}
+      ${dayOnly?'':sbtn('days','⏱️ Oldest dues')+sbtn('bal','💰 Biggest balance')+sbtn('name','🔤 Name')}
+      <button class="btn sm" style="font-size:11px" onclick="selectAllAssign()">Select all</button>
+      ${n?`<button class="btn sm" style="font-size:11px" onclick="clearAssign()">Clear</button>`:''}
       <span style="flex:1"></span>
       <span style="font-size:11.5px;font-weight:800;color:${n?'#1A2E5A':'#999'}">${n} selected</span>
     </div>
@@ -6281,30 +6356,36 @@ function renderAssignList(){
     ${list.length?list.map(f=>{
       const c=VLEVEL[f.level];
       const on=!!assignPicked[f.pid];
+      const pm=assignPromiseBy[f.pid];
       const pr=f.promise&&f.promise.nextDate;
       return `<div onclick="toggleAssign('${f.pid}')" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #F4F4F4;cursor:pointer;background:${on?'#EEF2FF':'#fff'}">
         <div style="width:17px;height:17px;border-radius:5px;border:2px solid ${on?'#1A2E5A':'#CCC'};background:${on?'#1A2E5A':'#fff'};color:#fff;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;flex-shrink:0">${on?'✓':''}</div>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:700;color:#1A1A1A">${esc(f.party.name||'—')}</div>
           <div style="font-size:10.5px;color:#888;margin-top:1px">
-            ${f.clock.days!=null?f.clock.days+'d since '+(f.clock.anchor==='payment'?'payment':'oldest bill'):'no history'}
-            · limit ${f.limit}d${pr?' · promised '+fmtD(f.promise.nextDate):''}
+            ${dayOnly&&pm
+              ? `was with ${esc(pm.staff||'—')}${pm.amount?' · promised '+fmt(pm.amount):''}${pm.reason?' · “'+esc(pm.reason)+'”':''}`
+              : `${f.clock.days!=null?f.clock.days+'d since '+(f.clock.anchor==='payment'?'payment':'oldest bill'):'no history'} · limit ${f.limit}d${pr?' · promised '+fmtD(f.promise.nextDate):''}`}
           </div>
         </div>
         <div style="text-align:right;flex-shrink:0">
-          <div style="font-size:12.5px;font-weight:800;color:#DC2626">${fmt(f.bal)}</div>
+          <div style="font-size:12.5px;font-weight:800;color:${f.bal>0?'#DC2626':'#059669'}">${fmt(f.bal)}</div>
           <div style="font-size:8.5px;font-weight:800;color:${c.fg};background:${c.bg};padding:1px 6px;border-radius:10px;display:inline-block;margin-top:2px">${c.lbl}</div>
         </div>
       </div>`;}).join('')
-    :'<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">No parties with an outstanding balance left to assign.</div>'}
+    :`<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">${
+        dayOnly ? 'Everybody promised for '+fmtD(assignVisitDate)+' has been assigned.<br>Switch to <strong>All parties</strong> to add someone else.'
+                : 'No parties with an outstanding balance left to assign.'}</div>`}
     </div>`;
 }
 function toggleAssign(pid){ if(assignPicked[pid]) delete assignPicked[pid]; else assignPicked[pid]=1; renderAssignList(); }
-function saveAssign(){
+
+// Returns true when the assignments were actually written.
+function _commitAssign(){
   const staff=document.getElementById('vas-staff').value.trim();
-  if(!staff){ alert('Enter which staff member is visiting'); return; }
+  if(!staff){ alert('Enter which staff member is visiting'); return false; }
   const pids=Object.keys(assignPicked);
-  if(!pids.length){ alert('Select at least one party'); return; }
+  if(!pids.length){ alert('Select at least one party'); return false; }
   pids.forEach(pid=>{
     const p=S.parties.find(x=>x&&x.id===pid); if(!p) return;
     S.vC=(+S.vC||0)+1;
@@ -6317,22 +6398,180 @@ function saveAssign(){
       createdAt:new Date().toISOString()
     });
   });
+  assignPicked={};
   saveToCloud();
+  return true;
+}
+function saveAssign(){
+  if(!_commitAssign()) return;
   closeModal('vassign');
   visitSheetId=assignSheetId; visitView='sheets';
   renderAll();
 }
-// Assign more parties to the same sheet without closing it (staff field kept).
+/* Split a round between staff: save this person's share and stay in the modal. The parties just
+   assigned drop off the list automatically, so the next person only sees who is left. */
 function saveAssignAndContinue(){
-  const staff=document.getElementById('vas-staff').value.trim();
-  saveAssign();
-  if(Object.keys(assignPicked).length===0){
-    assignPicked={};
-    document.getElementById('vas-staff').value='';
-    document.getElementById('vas-q').value='';
-    renderAssignList();
-    document.getElementById('mo-vassign').classList.add('open');
+  const n=Object.keys(assignPicked).length;
+  if(!_commitAssign()) return;
+  const staffBox=document.getElementById('vas-staff');
+  const done=staffBox.value.trim();
+  staffBox.value='';
+  document.getElementById('vas-q').value='';
+  renderAssignList();
+  renderVisits();
+  const left=(assignDayPids&&assignDayPids.length)?assignDayRemaining().length:null;
+  const sub=document.getElementById('vas-sub');
+  if(sub) sub.textContent=n+' assigned to '+done+(left!=null?' · '+left+' left for '+fmtD(assignVisitDate):'');
+  staffBox.focus();
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   MONEY BACK FROM THE ROUND
+   Every path below funnels into _recordCollection(), which writes a normal payment
+   into S.payments and calls recomputeParty() — the same two lines savePayment() runs.
+   So FIFO allocation, manual pins, statuses and balances behave identically to a
+   hand-entered payment. allocateParty() stays the sole producer of derived state.
+   The payment id is stored on the assignment so Undo can remove it again.
+══════════════════════════════════════════════════════════════════════ */
+function _recordCollection(e, amt, dt, mode, rmk){
+  const a=_r2(amt); if(!(a>0)) return null;
+  S.pyC++;
+  const payId=uniqId('PAY');
+  S.payments.push({ id:payId, pid:e.pid, date:dt||today(), amount:a, mode:mode||'Cash',
+                    remarks:(rmk?rmk+' · ':'')+'Collected by '+(e.staff||'staff') });
+  invalidateCash();
+  recomputeParty(e.pid);
+  S.visits=S.visits.map(v=>(v&&v.id===e.id)
+    ? Object.assign({}, v, { status:'COLLECTED', amount:a, mode:mode||'Cash', payId,
+                             doneDate:dt||today(), reason:rmk||'', nextDate:'' })
+    : v);
+  return payId;
+}
+/* What this money will clear, computed the same way allocateParty() walks the bills:
+   oldest unsettled challan first, remainder carried forward. Preview only — it writes nothing. */
+function fifoPreview(pid, amt){
+  const a=getAlloc(pid);
+  let rem=_r2(amt);
+  const open=(S.challans||[]).filter(c=>c&&c.pid===pid&&a.status[c.id]!=='S')
+    .sort((x,y)=>String(x.date).localeCompare(String(y.date))||String(x.num).localeCompare(String(y.num)));
+  const full=[], part=[];
+  for(const c of open){
+    if(rem<=0) break;
+    const due=_r2((+c.total||0)-challanPaid(c.id));
+    if(due<=0) continue;
+    if(rem>=due){ full.push(c.num); rem=_r2(rem-due); }
+    else { part.push(c.num); rem=0; }
   }
+  return { full, part, left:rem };   // left > 0 → advance sitting on the party
+}
+function fifoPreviewText(pid, amt){
+  if(!(+amt>0)) return '';
+  const r=fifoPreview(pid, amt);
+  const bits=[];
+  if(r.full.length) bits.push('clears '+r.full.join(', '));
+  if(r.part.length) bits.push('part-pays '+r.part.join(', '));
+  if(r.left>0)      bits.push(fmt(r.left)+' stays as advance');
+  return bits.join(' · ');
+}
+
+/* ── inline: type the amount straight on the party's card and press ✓ ── */
+function quickCollectPreview(id){
+  const e=findEntry(id); if(!e) return;
+  const box=document.getElementById('qc-hint-'+id);
+  const amt=+(document.getElementById('qc-'+id)||{}).value||0;
+  if(box) box.innerHTML = amt>0 ? esc(fifoPreviewText(e.pid, amt)) : '';
+}
+function quickCollect(id){
+  const e=findEntry(id); if(!e) return;
+  const inp=document.getElementById('qc-'+id);
+  const amt=+(inp&&inp.value)||0;
+  if(!(amt>0)){ alert('Enter the amount the staff brought back for '+(e.pname||'this party')+'.'); if(inp) inp.focus(); return; }
+  const bal=Math.max(0,getAlloc(e.pid).partyBalance);
+  if(amt>bal && !confirm(fmt(amt)+' is more than '+(e.pname||'this party')+"'s balance of "+fmt(bal)+
+     '.\n\nThe extra will sit as an advance. Record it anyway?')) return;
+  _recordCollection(e, amt, today(), 'Cash', '');
+  saveToCloud(); renderAll();
+  if(curParty) renderPartyDetail(curParty);
+}
+
+/* ── batch: the staff member walks in with the day's cash, enter every party at once ── */
+let batchKey=null;   // { sheetId, visitDate, staff }
+function openStaffCollect(sheetId, visitDate, staff){
+  const g=sheetById(sheetId); if(!g) return;
+  batchKey={ sheetId, visitDate, staff };
+  document.getElementById('vb-date').value=today();
+  document.getElementById('vb-mode').value='Cash';
+  document.getElementById('vb-sub').textContent=staff+' · round of '+fmtD(visitDate);
+  renderBatchList();
+  document.getElementById('mo-vbatch').classList.add('open');
+}
+function batchEntries(){
+  if(!batchKey) return [];
+  const g=sheetById(batchKey.sheetId); if(!g) return [];
+  return g.entries.filter(e=>e.visitDate===batchKey.visitDate
+                          && (e.staff||'').trim()===batchKey.staff
+                          && e.status==='PENDING')
+                  .sort((a,b)=>String(a.pname||'').localeCompare(String(b.pname||'')));
+}
+function renderBatchList(){
+  const box=document.getElementById('vb-list'); if(!box) return;
+  const list=batchEntries();
+  if(!list.length){
+    box.innerHTML='<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">Every party in this round is already settled.</div>';
+    document.getElementById('vb-total').textContent=fmt(0);
+    return;
+  }
+  box.innerHTML=list.map(e=>{
+    const bal=Math.max(0,getAlloc(e.pid).partyBalance);
+    return `
+    <div style="display:flex;align-items:center;gap:9px;padding:10px 11px;border-bottom:1px solid #F4F4F4">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700;color:#1A1A1A">${esc(e.pname||'—')}</div>
+        <div style="font-size:10.5px;color:#888;margin-top:1px">balance ${fmt(bal)}</div>
+        <div id="vb-hint-${e.id}" style="font-size:10px;color:#059669;margin-top:2px"></div>
+      </div>
+      <button class="btn sm" style="font-size:10.5px;flex-shrink:0" onclick="batchFull('${e.id}',${bal})">Full</button>
+      <input id="vb-${e.id}" type="number" inputmode="numeric" placeholder="0" oninput="batchSum()"
+             style="width:96px;padding:8px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;text-align:right;box-sizing:border-box;font-family:inherit;flex-shrink:0">
+    </div>`;}).join('');
+  batchSum();
+}
+function batchFull(id, bal){
+  const inp=document.getElementById('vb-'+id); if(!inp) return;
+  inp.value = bal>0 ? Math.round(bal) : '';
+  batchSum();
+}
+function batchSum(){
+  let tot=0;
+  batchEntries().forEach(e=>{
+    const amt=+(document.getElementById('vb-'+e.id)||{}).value||0;
+    tot+=amt;
+    const h=document.getElementById('vb-hint-'+e.id);
+    if(h) h.innerHTML = amt>0 ? esc(fifoPreviewText(e.pid, amt)) : '';
+  });
+  const t=document.getElementById('vb-total'); if(t) t.textContent=fmt(tot);
+}
+function saveBatchCollect(){
+  const list=batchEntries();
+  const dt=document.getElementById('vb-date').value||today();
+  const mode=document.getElementById('vb-mode').value||'Cash';
+  const picks=[];
+  list.forEach(e=>{
+    const amt=+(document.getElementById('vb-'+e.id)||{}).value||0;
+    if(amt>0) picks.push({ e, amt });
+  });
+  if(!picks.length){ alert('Enter at least one amount.'); return; }
+  const over=picks.filter(x=>x.amt>Math.max(0,getAlloc(x.e.pid).partyBalance));
+  if(over.length && !confirm(over.length+' amount(s) exceed the party balance:\n\n'+
+      over.map(x=>x.e.pname+': '+fmt(x.amt)+' vs '+fmt(Math.max(0,getAlloc(x.e.pid).partyBalance))).join('\n')+
+      '\n\nThe extra will sit as an advance. Record anyway?')) return;
+  const total=picks.reduce((s,x)=>s+x.amt,0);
+  if(!confirm('Record '+picks.length+' payment(s) totalling '+fmt(total)+
+      ' from '+batchKey.staff+'?\n\nEach one is allocated to that party\'s oldest bills first.')) return;
+  picks.forEach(x=>{ _recordCollection(x.e, x.amt, dt, mode, ''); });
+  saveToCloud(); closeModal('vbatch'); renderAll();
+  if(curParty) renderPartyDetail(curParty);
 }
 
 /* ══════════════════════════════
@@ -6352,6 +6591,7 @@ function openCollect(id){
   document.getElementById('vc-rmk').value='';
   document.getElementById('vc-bal').textContent=fmt(f.bal);
   document.getElementById('vc-after').textContent=fmt(f.bal);
+  document.getElementById('vc-fifo').innerHTML='';
   document.getElementById('mo-vcollect').classList.add('open');
 }
 function vcPreview(){
@@ -6359,6 +6599,8 @@ function vcPreview(){
   const bal=Math.max(0,getAlloc(e.pid).partyBalance);
   const amt=+document.getElementById('vc-amt').value||0;
   document.getElementById('vc-after').textContent=fmt(Math.max(0,bal-amt));
+  const f=document.getElementById('vc-fifo');
+  if(f) f.innerHTML = amt>0 ? esc(fifoPreviewText(e.pid, amt)) : '';
 }
 function saveCollect(){
   const e=findEntry(curEntryId); if(!e) return;
@@ -6367,17 +6609,7 @@ function saveCollect(){
   if(!(amt>0)){ alert('Enter the amount collected'); return; }
   const mode=document.getElementById('vc-mode').value;
   const rmk =document.getElementById('vc-rmk').value.trim();
-  // Real ledger entry — identical shape to savePayment(), so FIFO allocation is unchanged.
-  S.pyC++;
-  const payId=uniqId('PAY');
-  S.payments.push({ id:payId, pid:e.pid, date:dt, amount:_r2(amt), mode,
-                    remarks:(rmk?rmk+' · ':'')+'Collected by '+(e.staff||'staff') });
-  invalidateCash();
-  recomputeParty(e.pid);
-  // Replace the entry object (never mutate in place) so diffWrite sees the change.
-  S.visits=S.visits.map(v=>(v&&v.id===e.id)
-    ? Object.assign({}, v, { status:'COLLECTED', amount:_r2(amt), mode, payId, doneDate:dt, reason:rmk, nextDate:'' })
-    : v);
+  _recordCollection(e, amt, dt, mode, rmk);
   saveToCloud(); closeModal('vcollect'); renderAll();
   if(curParty) renderPartyDetail(curParty);
 }
@@ -6476,6 +6708,7 @@ function openVisitFor(pid){
   assignSheetDate = g ? g.date : t;
   assignSheetTitle = g ? g.title : '';
   assignVisitDate = t;
+  assignDayPids=null; assignScope='all'; assignPromiseBy={};
   _openAssignModal();
   assignPicked[pid]=1;
   renderAssignList();
