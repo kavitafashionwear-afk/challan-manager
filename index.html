@@ -467,6 +467,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
   <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
+  <div class="umi" onclick="openBackfillSeason();closeMenu()">🏷️ Label Bills by Season</div>
   <div class="umi" onclick="openBackup()">💾 Backup &amp; Restore</div>
   <div class="umi" onclick="goTab('visits');closeMenu()">🚶 Visits &amp; Follow-ups <span id="visits-due-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="goTab('cash');closeMenu()">💰 Cash in Hand</div>
@@ -520,6 +521,15 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
       <div><label>Item Code</label><input id="ie-code" placeholder="e.g. CK101"></div>
       <div><label>Default Rate (Rs.) *</label><input id="ie-rate" type="number" inputmode="decimal" placeholder="0"></div>
     </div>
+    <div class="fg"><label>Season</label>
+      <select id="ie-season">
+        <option value="ALL">Both seasons</option>
+        <option value="SUMMER">☀️ Summer item</option>
+        <option value="WINTER">❄️ Winter item</option>
+      </select>
+      <div style="font-size:11px;color:#888;margin-top:4px">A Summer item never shows in the Winter stock book.</div>
+    </div>
+    <button class="btn" style="width:100%;justify-content:center;margin-bottom:10px" onclick="closeItemEdit();openDesigns(ieId2)">🎨 Manage designs<span id="ie-dzn" style="margin-left:6px;opacity:.7"></span></button>
     <div id="ie-warn" style="display:none;font-size:11.5px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px;color:#92400E"></div>
     <div style="display:flex;gap:8px;margin-top:6px">
       <button class="btn" style="flex:1;justify-content:center" onclick="closeItemEdit()">Cancel</button>
@@ -650,6 +660,31 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   </div>
 </div></div>
 
+<!-- ══════════ DESIGNS ══════════ -->
+<div class="overlay" id="mo-designs">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>🎨 Designs</h3><div style="font-size:12px;color:#888" id="dz-sub"></div></div>
+    <button class="xbtn" onclick="closeModal('designs')">✕</button>
+  </div>
+  <div class="mbody" id="dz-body"></div>
+  <div class="mfoot"><button class="btn pri" style="width:100%;justify-content:center" onclick="closeModal('designs');renderItems()">✓ Done</button></div>
+</div></div>
+
+<!-- ══════════ LABEL UNLABELLED BILLS ══════════ -->
+<div class="overlay" id="mo-backfill">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>🏷️ Label Bills by Season</h3><div style="font-size:12px;color:#888">For challans written before seasons were used</div></div>
+    <button class="xbtn" onclick="closeModal('backfill')">✕</button>
+  </div>
+  <div class="mbody" id="bf-body"></div>
+  <div class="mfoot" style="display:flex;gap:8px">
+    <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('backfill')">Cancel</button>
+    <button class="btn pri" style="flex:1;justify-content:center" onclick="runBackfillSeason()">✓ Label them</button>
+  </div>
+</div></div>
+
 <!-- ══════════ CLOSE SEASON ══════════ -->
 <div class="overlay" id="mo-closeseason">
 <div class="mbox"><div class="mhandle"></div>
@@ -660,7 +695,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="mbody" id="sc-body"></div>
   <div class="mfoot" style="display:flex;gap:8px">
     <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('closeseason')">Cancel</button>
-    <button class="btn pri" style="flex:1;justify-content:center" onclick="confirmCloseSeason()">🔒 Close &amp; export</button>
+    <button class="btn pri" id="sc-go" style="flex:1;justify-content:center" onclick="confirmCloseSeason()" disabled>🔒 Close &amp; export</button>
   </div>
 </div></div>
 
@@ -998,7 +1033,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-02.5-seasons';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-02.6';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2473,6 +2508,34 @@ function syncErrMark(coll, code){
   if(code==='permission-denied') DENIED[coll] = 'read';
   refreshSyncDot();
 }
+/* Pending writes are collected here and committed in batches. Firestore caps a batch at 500
+   operations, so we chunk at 400 to leave headroom. A batch is atomic and costs ONE round
+   trip, which is the difference between a bulk edit taking a second and taking a minute. */
+var _writeQueue = [];
+const BATCH_MAX = 400;
+function flushWrites(){
+  if(!_writeQueue.length) return;
+  const jobs = _writeQueue.splice(0, _writeQueue.length);
+  for(let i=0; i<jobs.length; i+=BATCH_MAX){
+    const chunk = jobs.slice(i, i+BATCH_MAX);
+    const bkey  = 'batch/' + Date.now() + '-' + i;
+    PENDING_WRITES[bkey] = { coll:chunk[0].coll, id:chunk.length+' doc(s)', at:Date.now() };
+    try{
+      const batch = db.batch();
+      chunk.forEach(j=>{
+        const ref = _col(j.coll).doc(j.id);
+        if(j.del) batch.delete(ref); else batch.set(ref, j.payload);
+      });
+      batch.commit()
+        .then(function(){ delete PENDING_WRITES[bkey]; refreshSyncDot(); })
+        .catch(function(e){ delete PENDING_WRITES[bkey]; noteWriteFail(chunk[0].coll, e); });
+    }catch(e){
+      delete PENDING_WRITES[bkey];
+      noteWriteFail(chunk[0].coll, e);
+    }
+  }
+}
+
 /* Writes that have been handed to Firestore but never came back. A stuck stream leaves
    these hanging silently: the SDK keeps them queued for ever and reports nothing. */
 var PENDING_WRITES = {};
@@ -2840,13 +2903,9 @@ function saveToCloud() {
     diffWrite('returns',     S.returns,     _lastSaved.returns,     x=>x.id);
     diffWrite('expenses',    S.expenses,    _lastSaved.expenses,    x=>x.id);
     diffWrite('visits',      S.visits,      _lastSaved.visits,      x=>x.id);
-    // Tag any untagged opening/movement rows with the book they were entered in, so they
-    // stop floating between seasons once seasons are in use.
-    if((S.seasonRecs||[]).length && activeStockSeason()){
-      const _sid = activeStockSeason().id;
-      (S.stock||[]).forEach(o=>{ if(o && !o.season) o.season = _sid; });
-      (S.stockMv||[]).forEach(m=>{ if(m && !m.season) m.season = _sid; });
-    }
+    // Deliberately NOT auto-tagging untagged opening rows: that would stamp all legacy stock
+    // with whichever book happened to be open at the time. They stay untagged and are read
+    // through the legacy fallback in seasonOpeningFor() until filed explicitly.
     diffWrite('seasons',     S.seasonRecs,  _lastSaved.seasonRecs,  x=>x.id);
     diffWrite('stockClose',  S.stockClose,  _lastSaved.stockClose,  x=>x.id);
     (S.trash||[]).forEach(_trashId);
@@ -2863,8 +2922,9 @@ function saveToCloud() {
         .then(function(){ refreshSyncDot(); })
         .catch(function(err){ noteWriteFail('meta', err); });
     }
+    flushWrites();                 // one commit per 400 documents, not one per document
     refreshSyncDot();
-  } catch(e){ console.warn('SAVE THREW:', e); _saveBlocked=true; refreshSyncDot(); }
+  } catch(e){ console.warn('SAVE THREW:', e); _saveBlocked=true; _writeQueue.length=0; refreshSyncDot(); }
   publishPartyDirectory();
   publishItemDirectory();
 }
@@ -2888,17 +2948,14 @@ function diffWrite(coll, arr, lastIndex, keyFn){
         return;
       }
       delete OVERSIZE[coll + '/' + id];
-      // Register the write so a promise that never settles becomes visible instead of just
-      // leaving hasPendingWrites stuck on. Firestore never times these out by itself.
-      const wkey = coll + '/' + id;
-      PENDING_WRITES[wkey] = { coll:coll, id:String(id), at:Date.now() };
-      _col(coll).doc(String(id)).set(payload)
-        .then(function(){ delete PENDING_WRITES[wkey]; refreshSyncDot(); })
-        .catch(function(e){ delete PENDING_WRITES[wkey]; noteWriteFail(coll,e); });
+      // Queue rather than fire. Every changed document used to open its own network round
+      // trip, so relabelling 500 challans meant 500 of them — which is what made a big edit
+      // crawl. flushWrites() commits them in batches instead.
+      _writeQueue.push({ coll:coll, id:String(id), payload:payload });
     }
   });
   Object.keys(lastIndex).forEach(id=>{
-    if (!(id in nowIndex)) _col(coll).doc(String(id)).delete().catch(e=>noteWriteFail(coll,e));
+    if (!(id in nowIndex)) _writeQueue.push({ coll:coll, id:String(id), del:true });
   });
   Object.keys(lastIndex).forEach(k=>{ delete lastIndex[k]; });
   // Baseline must be SNAPSHOTS, not live references — otherwise an in-place edit mutates the
@@ -3179,6 +3236,11 @@ function renderHome() {
     <div class="stat"><div class="sl">🗓️ This Month</div><div class="sv">${fmt(monthSales)}</div></div>
     <div class="stat"><div class="sl">📈 Avg Daily (${fyLbl(fyNow).replace('FY ','')})</div><div class="sv">${fmt(Math.round(sales/fyDays))}</div></div>
     <div class="stat"><div class="sl">💼 Sales ${tag}</div><div class="sv">${fmt(sales)}</div></div>
+    ${(()=>{ const un=(typeof untaggedChallans==='function')?untaggedChallans().length:0;
+      return un?`<div class="stat" style="grid-column:1/-1;padding:11px 13px;background:#FFFBEB;border:1.5px solid #FDE68A;cursor:pointer" onclick="openBackfillSeason()">
+        <div style="font-size:12.5px;font-weight:800;color:#92400E">🏷️ ${un} challan(s) have no season</div>
+        <div style="font-size:11px;color:#A16207;margin-top:3px;line-height:1.5">They are missing from every season total. Tap to label them — your Winter bills are already tagged and stay untouched.</div>
+      </div>`:''; })()}
     ${scoping?`<div class="stat" style="grid-column:1/-1;padding:9px 13px;background:#F8FAFC">
       <div style="font-size:11px;color:#64748B;line-height:1.55">
         Whole business: <strong>${fmt(outAll)}</strong> outstanding · <strong>${fmt(recdAll)}</strong> received · ${S.challans.length} challans.
@@ -3566,6 +3628,7 @@ function addItemRow() {
   div.className='icard'; div.id=id;
   div.innerHTML=`<button class="deli" onclick="document.getElementById('${id}').remove();calcTotal()">✕</button>
     ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',false)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
+    <select id="${id}-dz" onchange="pickDesign(this,'${id}',false)" style="width:100%;margin-bottom:6px;font-size:12px;display:none"></select>
     <input type="text" list="items-dl" placeholder="Item name e.g. Lower, Kurta" oninput="ownNameTyped(this,'${id}',false)">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" oninput="calcItem('${id}')"></div>
@@ -3897,8 +3960,11 @@ function saveChallan() {
   document.querySelectorAll('#item-rows .icard').forEach(card=>{
     const inp=card.querySelectorAll('input');
     let name=inp[0].value.trim(), qty=+inp[1].value, rate=+inp[2].value, amount=qty*rate;
-    const _cn=itemCanon(name); if(_cn) name=_cn.name;   // keyword → clean master name (new bills only)
-    if(name&&qty&&rate) items.push({name,qty,rate,amount});
+    const dz=card.dataset.design||'';
+    // A design was picked, so the name already reads "Article — Design". Canonicalising here
+    // would throw the design away, so only do it for plain lines.
+    if(!dz){ const _cn=itemCanon(name); if(_cn) name=_cn.name; }
+    if(name&&qty&&rate) items.push(dz ? {name,qty,rate,amount,design:dz} : {name,qty,rate,amount});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
   if (!confirmStockShortfall('item-rows')) return;
@@ -4160,6 +4226,63 @@ function renderDaybook(){
    data without bloating meta/state. S.seasons (the old array of plain strings) is
    kept in sync for backward compatibility with anything still reading it.
 ══════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════
+   BACKFILL — label bills that have no season
+   Winter bills were tagged as they were written; everything untagged predates that habit and
+   belongs to Summer. This is a deliberate, previewed, one-tap action rather than a guess made
+   silently at load, because it rewrites the season on real challans.
+══════════════════════════════════════════════════════════════════════ */
+function untaggedChallans(){
+  return (S.challans||[]).filter(c=>c && !seasonOf(c));
+}
+function openBackfillSeason(){
+  const un = untaggedChallans();
+  if(!un.length){ alert('Every challan already has a season.'); return; }
+  const byFY = {};
+  un.forEach(c=>{ const f=fyOf(c.date); byFY[f]=(byFY[f]||0)+1; });
+  const total = un.reduce((t,c)=>t+(+c.total||0),0);
+  const dates = un.map(c=>c.date).filter(Boolean).sort();
+  const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
+  const pref = recs.find(x=>x.type==='SUMMER' && x.fy===2026) || recs.find(x=>x.type==='SUMMER') || recs[0];
+  document.getElementById('bf-body').innerHTML = `
+    <div class="ibox amb" style="margin:0 0 12px">
+      <strong>${un.length} challan(s)</strong> have no season, worth <strong>${fmt(total)}</strong>.
+      ${dates.length?`They run from ${fmtD(dates[0])} to ${fmtD(dates[dates.length-1])}.`:''}
+    </div>
+    <div style="font-size:12px;color:#475569;line-height:1.7;margin-bottom:12px">
+      ${Object.keys(byFY).sort().map(f=>`${fyLbl(+f)}: <strong>${byFY[f]}</strong> challan(s)`).join('<br>')}
+    </div>
+    <div class="fg"><label>Label them all as</label>
+      <select id="bf-season">${recs.map(x=>`<option value="${esc(x.id)}" ${pref&&pref.id===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#334155;cursor:pointer">
+      <input type="checkbox" id="bf-thisfy" checked style="width:17px;height:17px">
+      Only bills in ${fyLbl(fyOf(today()))}
+    </label>
+    <div style="font-size:11.5px;color:#94A3B8;margin-top:10px;line-height:1.55">
+      Only the season label changes. Amounts, dates, items and payments are untouched, and
+      already-labelled bills (your Winter ones) are never modified.
+    </div>`;
+  document.getElementById('mo-backfill').classList.add('open');
+}
+function runBackfillSeason(){
+  const sid = document.getElementById('bf-season').value;
+  const onlyFY = document.getElementById('bf-thisfy').checked;
+  const s = seasonById(sid); if(!s){ alert('Pick a season.'); return; }
+  const fy = fyOf(today());
+  const targets = untaggedChallans().filter(c=>!onlyFY || fyOf(c.date)===fy);
+  if(!targets.length){ alert('Nothing matches that filter.'); return; }
+  if(!confirm('Label '+targets.length+' challan(s) as '+s.name+'?\n\nOnly the season changes. This can be undone by editing a challan.')) return;
+  const ids = {}; targets.forEach(c=>{ ids[c.id]=1; });
+  // Replace the objects rather than mutating in place, so diffWrite always sees the change.
+  S.challans = S.challans.map(c=>(c && ids[c.id]) ? Object.assign({}, c, { season:sid }) : c);
+  invalidateStock();
+  saveToCloud();
+  closeModal('backfill');
+  renderAll();
+  alert('✅ '+targets.length+' challan(s) labelled '+s.name+'.');
+}
+
 function seasonType(name){
   const n = String(name||'').toUpperCase();
   if(/WINT/.test(n)) return 'WINTER';
@@ -4480,7 +4603,15 @@ function seasonStockIndex(sid){
   if(_seasonStockIdx && _seasonStockKey===sid) return _seasonStockIdx;
   const rows = {};
   const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, retIn:0, onHand:0});
-  (S.items||[]).forEach(it=>{ if(it&&it.id) row(it.id); });
+  // An article marked Summer never appears in the Winter book, and vice versa. Anything left
+  // as "Both seasons" shows in every book.
+  const sn = seasonById(sid);
+  const wantType = sn ? sn.type : null;
+  const showsHere = it => {
+    const t = (it && it.seasonType) || 'ALL';
+    return t==='ALL' || !wantType || wantType==='OTHER' || t===wantType;
+  };
+  (S.items||[]).forEach(it=>{ if(it&&it.id&&showsHere(it)) row(it.id); });
 
   // Opening: explicit for this season, else carried from the previous same-type season.
   Object.keys(rows).forEach(id=>{ rows[id].open = seasonOpeningFor(id, sid); });
@@ -4535,10 +4666,17 @@ function seasonStockIndex(sid){
 /* ── closing a season ── */
 function seasonClosingRows(sid){
   const idx = seasonStockIndex(sid);
-  return (S.items||[]).filter(it=>it&&it.id).map(it=>{
-    const r = idx.rows[it.id] || {onHand:0};
-    return { itemId:it.id, name:it.name||'', code:it.code||'', rate:+it.rate||0, qty:_r2(r.onHand) };
-  }).filter(r=>r.qty !== 0);
+  return (S.items||[]).filter(it=>it && it.id && (it.id in idx.rows)).map(it=>{
+    const r = idx.rows[it.id] || {open:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0};
+    return {
+      itemId:it.id, name:it.name||'', code:it.code||'', rate:+it.rate||0,
+      seasonType:it.seasonType||'ALL',
+      designs:itemDesigns(it).map(d=>({ code:d.code, fullCode:designFullCode(it,d), name:d.name||'', rate:designRate(it,d) })),
+      open:_r2(r.open||0), sold:_r2(r.out||0), added:_r2(r.manIn||0),
+      removed:_r2(r.manOut||0), returned:_r2(r.retIn||0),
+      qty:_r2(r.onHand)
+    };
+  }).filter(r=>r.qty !== 0 || r.open !== 0 || r.sold !== 0);
 }
 function openCloseSeason(){
   const s = activeStockSeason();
@@ -4567,11 +4705,27 @@ function openCloseSeason(){
     </div>
     <div style="font-size:11.5px;color:#94A3B8;margin-top:10px;line-height:1.55">
       The saved snapshot is what carries forward. The Excel file is your own copy — the app never depends on it.
+    </div>
+    <div class="fg" style="margin-top:14px">
+      <label>Type <strong>${esc(s.name)}</strong> to confirm</label>
+      <input id="sc-confirm" placeholder="${esc(s.name)}" autocomplete="off" oninput="scCheck()">
     </div>`;
+  const btn=document.getElementById('sc-go');
+  if(btn){ btn.disabled=true; btn.style.opacity='.45'; }
   document.getElementById('mo-closeseason').classList.add('open');
+}
+// The button only wakes up once the season name has been typed out in full.
+function scCheck(){
+  const s = activeStockSeason(); const btn = document.getElementById('sc-go');
+  const inp = document.getElementById('sc-confirm');
+  if(!s || !btn || !inp) return;
+  const ok = normIName(inp.value) === normIName(s.name);
+  btn.disabled = !ok; btn.style.opacity = ok ? '1' : '.45';
 }
 async function confirmCloseSeason(){
   const s = activeStockSeason(); if(!s || s.status==='CLOSED') return;
+  const inp = document.getElementById('sc-confirm');
+  if(!inp || normIName(inp.value) !== normIName(s.name)){ alert('Type the season name exactly to confirm.'); return; }
   const rows = seasonClosingRows(s.id);
   const snapId = uniqId('SC');
   if(!S.stockClose) S.stockClose = [];
@@ -4597,23 +4751,47 @@ async function exportSeasonStockXlsx(sid){
   const s = seasonById(sid); if(!s){ alert('Season not found.'); return; }
   const snap = closeRecordFor(sid);
   const rows = snap ? snap.rows : seasonClosingRows(sid);
-  const head = [['Item','Code','Closing Qty','Rate','Value']];
-  rows.forEach(r=>head.push([r.name, r.code||'', +r.qty||0, +r.rate||0, _r2((+r.qty||0)*(+r.rate||0))]));
-  head.push(['','TOTAL', rows.reduce((t,r)=>t+(+r.qty||0),0), '', _r2(rows.reduce((t,r)=>t+(+r.qty||0)*(+r.rate||0),0))]);
+  const T = k => rows.reduce((t,r)=>t+(+r[k]||0), 0);
+  const val = r => _r2((+r.qty||0)*(+r.rate||0));
+
+  // Sheet 1 — the closing count, with the full movement story behind each number.
+  const main = [['Article','Code','Season','Designs','Opening','Added','Returned','Sold','Removed','Closing Qty','Rate','Value']];
+  rows.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name))).forEach(r=>{
+    main.push([r.name, r.code||'', r.seasonType||'ALL', (r.designs||[]).length,
+               +r.open||0, +r.added||0, +r.returned||0, +r.sold||0, +r.removed||0,
+               +r.qty||0, +r.rate||0, val(r)]);
+  });
+  main.push(['TOTAL','','', '', T('open'), T('added'), T('returned'), T('sold'), T('removed'), T('qty'), '',
+             _r2(rows.reduce((t,r)=>t+val(r),0))]);
+
+  // Sheet 2 — every design of every article, with its own full code and rate.
+  const dz = [['Article','Article Code','Design','Design Name','Full Code','Rate','Article Closing Qty']];
+  rows.forEach(r=>{
+    (r.designs||[]).forEach(d=>{
+      dz.push([r.name, r.code||'', d.code, d.name||'', d.fullCode||'', +d.rate||0, +r.qty||0]);
+    });
+  });
+
   const sheets = [
-    { name:'Summary', widths:[26,26], rows:[
+    { name:'Summary', widths:[28,30], rows:[
       ['Closing Stock',''],
       ['Season', s.name],
       ['Type', s.type],
       ['Financial year', s.fy!=null?fyLbl(s.fy):''],
       ['Status', s.status],
       ['Frozen on', snap ? new Date(snap.closedAt).toLocaleString('en-IN') : 'not closed — live figures'],
-      ['Items', rows.length],
-      ['Total pieces', rows.reduce((t,r)=>t+(+r.qty||0),0)],
-      ['Stock value', _r2(rows.reduce((t,r)=>t+(+r.qty||0)*(+r.rate||0),0))]
+      ['Exported on', new Date().toLocaleString('en-IN')],
+      ['',''],
+      ['Articles', rows.length],
+      ['Designs', rows.reduce((t,r)=>t+((r.designs||[]).length), 0)],
+      ['Opening pieces', T('open')],
+      ['Sold pieces', T('sold')],
+      ['Closing pieces', T('qty')],
+      ['Closing value', _r2(rows.reduce((t,r)=>t+val(r),0))]
     ]},
-    { name:'Closing Stock', widths:[38,14,13,11,13], rows:head }
+    { name:'Closing Stock', widths:[34,15,10,9,10,9,10,9,10,12,10,13], rows:main }
   ];
+  if(dz.length > 1) sheets.push({ name:'Designs', widths:[30,15,9,26,18,10,15], rows:dz });
   const blob = await buildXlsx(sheets);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -6070,8 +6248,24 @@ function renderStock(){
   renderStockOnHand(el);
   // The stock book carries its OWN season, shown at the top. It does not follow the Home
   // selector, because a stock book is a thing you work inside, not a view you glance through.
-  el.innerHTML = stockSeasonBarHtml() + el.innerHTML;
+  // Closing lives at the very BOTTOM, far from everything used day to day, because it is
+  // irreversible-ish and must never be hit by accident.
+  el.innerHTML = stockSeasonBarHtml() + el.innerHTML + closeSeasonFooterHtml();
   _done();
+}
+function closeSeasonFooterHtml(){
+  const s = activeStockSeason();
+  if(!s || s.status==='CLOSED') return '';
+  return `
+  <div style="margin-top:34px;padding-top:18px;border-top:2px dashed #E2E8F0">
+    <div style="font-size:12px;color:#94A3B8;line-height:1.6;margin-bottom:10px">
+      Finished with <strong>${esc(s.name)}</strong>? Closing freezes its stock, downloads the Excel
+      sheet, and carries the quantities into the next ${esc(s.type==='OTHER'?'season':s.type.toLowerCase())} season.
+      Do this only at the end of the season.
+    </div>
+    <button class="btn" style="width:100%;justify-content:center;background:#FEF2F2;border-color:#FCA5A5;color:#B91C1C;font-weight:800"
+            onclick="openCloseSeason()">🔒 Close ${esc(s.name)}</button>
+  </div>`;
 }
 function stockSeasonBarHtml(){
   const s = activeStockSeason();
@@ -6101,7 +6295,7 @@ function stockSeasonBarHtml(){
       ${closed
         ? `<button class="btn sm" style="font-size:11.5px" onclick="exportSeasonStockXlsx('${_js(s.id)}')">⬇ Excel</button>
            <button class="btn sm" style="font-size:11.5px" onclick="reopenSeason('${_js(s.id)}')">↩ Re-open</button>`
-        : `<button class="btn sm" style="font-size:11.5px;background:#fff;color:#1A2E5A;font-weight:800" onclick="openCloseSeason()">🔒 Close season</button>`}
+        : `<button class="btn sm" style="font-size:11.5px" onclick="exportSeasonStockXlsx('${_js(s.id)}')">⬇ Excel</button>`}
     </div>
   </div>`;
 }
@@ -6140,7 +6334,9 @@ function stockSummary(){
 function renderStockOnHand(el){
   const idx = activeStockIndex(), sm = stockSummary();
   const q = normIName(stockSearch);
-  let list = (S.items||[]).slice().map(it=>({it, r:stockRow(it.id)}));
+  const _bk = activeStockIndex();
+  let list = (S.items||[]).filter(it=>it && (!(S.seasonRecs||[]).length || (_bk.rows && (it.id in _bk.rows))))
+                          .map(it=>({it, r:stockRow(it.id)}));
   if(q) list = list.filter(x=> normIName(x.it.name).includes(q) || normIName(x.it.code).includes(q));
   if(stockFilter==='neg')  list = list.filter(x=>x.r.onHand < 0);
   if(stockFilter==='zero') list = list.filter(x=>x.r.onHand === 0);
@@ -6371,8 +6567,16 @@ function renderItems(){
       <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">${ed?'✏️ Edit Item':'➕ Add Item'}</div>
       <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" value="${ed?esc(ed.name):''}"></div>
       <div class="fr">
-        <div><label>Item Code</label><input id="im-code" placeholder="e.g. CK101" value="${ed?esc(ed.code||''):''}"></div>
+        <div><label>Item Code</label><input id="im-code" placeholder="e.g. FAD-P91" value="${ed?esc(ed.code||''):''}"></div>
         <div><label>Default Rate (Rs.) *</label><input id="im-rate" type="number" inputmode="decimal" placeholder="0" value="${ed?(+ed.rate||''):''}"></div>
+      </div>
+      <div class="fg"><label>Season</label>
+        <select id="im-season">
+          <option value="ALL" ${(!ed||!ed.seasonType||ed.seasonType==='ALL')?'selected':''}>Both seasons</option>
+          <option value="SUMMER" ${(ed&&ed.seasonType==='SUMMER')?'selected':''}>☀️ Summer item</option>
+          <option value="WINTER" ${(ed&&ed.seasonType==='WINTER')?'selected':''}>❄️ Winter item</option>
+        </select>
+        <div style="font-size:11px;color:#888;margin-top:4px">Summer items are hidden from the Winter stock book, and the other way round.</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:6px">
         ${ed?'<button class="btn" style="flex:1;justify-content:center" onclick="itemEditId=null;renderItems()">Cancel</button>':''}
@@ -6397,10 +6601,13 @@ function renderItems(){
     ${list.length?list.map(it=>`
       <div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
-          <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">${esc(it.name)} ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Default rate: <strong style="color:#059669">${fmt(+it.rate||0)}</strong></div>
+          <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">${esc(it.name)} ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}
+            ${(it.seasonType==='SUMMER')?'<span style="font-size:9.5px;background:#FEF3C7;color:#92400E;padding:1px 7px;border-radius:8px;font-weight:800">☀️ SUMMER</span>':''}
+            ${(it.seasonType==='WINTER')?'<span style="font-size:9.5px;background:#DBEAFE;color:#1E40AF;padding:1px 7px;border-radius:8px;font-weight:800">❄️ WINTER</span>':''}</div>
+          <div style="font-size:11px;color:#888;margin-top:2px">Default rate: <strong style="color:#059669">${fmt(+it.rate||0)}</strong>${itemDesigns(it).length?` · <strong style="color:#1A2E5A">${itemDesigns(it).length} design(s)</strong> ${esc(itemDesigns(it).slice(0,6).map(d=>d.code).join(' '))}${itemDesigns(it).length>6?'…':''}`:''}</div>
         </div>
-        <button class="btn sm" onclick="openItemEdit('${it.id}')" style="font-size:11px">✏️ Edit</button>
+        <button class="btn sm" onclick="openDesigns('${it.id}')" style="font-size:11px">🎨 ${itemDesigns(it).length||''}</button>
+        <button class="btn sm" onclick="openItemEdit('${it.id}')" style="font-size:11px">✏️</button>
         <button class="btn sm red" onclick="delItem('${it.id}')" style="font-size:11px">🗑</button>
       </div>`).join('')
     :'<div style="text-align:center;padding:36px 16px;color:#999">'+(q?'No items match "'+esc(itemSearch)+'"':'No items yet. Add your first item above.<br><span style="font-size:11px">Saved items appear as a dropdown in every challan row.</span>')+'</div>'}`;
@@ -6427,6 +6634,10 @@ function openItemEdit(id){
   document.getElementById('ie-name').value=it.name||'';
   document.getElementById('ie-code').value=it.code||'';
   document.getElementById('ie-rate').value=(+it.rate||0);
+  document.getElementById('ie-season').value=it.seasonType||'ALL';
+  ieId2 = id;                                  // remembered for the Manage designs button
+  const dn = itemDesigns(it).length;
+  document.getElementById('ie-dzn').textContent = dn ? '('+dn+')' : '';
   document.getElementById('ie-warn').style.display='none';
   const u=itemUsageStats(id);
   const parts=[];
@@ -6439,6 +6650,7 @@ function openItemEdit(id){
   document.getElementById('mo-itemedit').classList.add('open');
   setTimeout(()=>{ const n=document.getElementById('ie-name'); if(n){ n.focus(); n.select(); } },60);
 }
+let ieId2 = null;   // survives closeItemEdit() so the designs modal knows which item
 function closeItemEdit(){ ieId=null; document.getElementById('mo-itemedit').classList.remove('open'); }
 function itemEditSave(){
   const it=(S.items||[]).find(x=>x&&x.id===ieId); if(!it){ closeItemEdit(); return; }
@@ -6470,7 +6682,7 @@ function itemEditSave(){
   // New object (never mutate in place), built by COPYING the existing record: `jobRate` is the
   // Contractor Tracker's manufacturing rate and must survive a save here. Replacing the object
   // wholesale would silently delete it for both apps.
-  S.items[i]=Object.assign({}, it, { id:ieId, name, code, rate });
+  S.items[i]=Object.assign({}, it, { id:ieId, name, code, rate, seasonType:(document.getElementById('ie-season')||{}).value||'ALL' });
   // Any mapping pointing here should show the current master name.
   (S.itemMap||[]).forEach((m,mi)=>{ if(m&&m.itemId===ieId&&m.itemName!==name) S.itemMap[mi]=Object.assign({},m,{itemName:name}); });
   _itemCanonIdx=null; invalidateStock();
@@ -6487,10 +6699,138 @@ function itemEditDelete(){
   _itemCanonIdx=null; invalidateStock();
   saveToCloud(); closeItemEdit(); renderItems();
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   DESIGNS
+   One article carries many designs — Plazo (FAD-P91) might have ten. Each design gets an
+   automatic letter, so its full code reads FAD-P91-A, FAD-P91-B, … and a design can carry
+   its own rate that overrides the article's default.
+
+   Letters are assigned once and never reused: deleting design C leaves A, B, D alone, because
+   the letter is printed on old challans and must keep meaning the same thing for ever.
+══════════════════════════════════════════════════════════════════════ */
+function designLetter(n){                 // 0→A … 25→Z, 26→AA, 27→AB …
+  let s = '';
+  n = Math.max(0, n|0);
+  do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+  return s;
+}
+function letterIndex(code){            // A→0 … Z→25, AA→26 …
+  const c = String(code||'').toUpperCase().replace(/[^A-Z]/g,'');
+  if(!c) return -1;
+  let n = 0;
+  for(let i=0; i<c.length; i++) n = n*26 + (c.charCodeAt(i)-64);
+  return n-1;
+}
+/* Always continue PAST the highest letter ever issued, never fill a gap. Deleting design C
+   must not hand C to the next new design — that letter is printed on old challans and has to
+   keep meaning the same thing. dzSeq remembers the high-water mark even if every design is
+   deleted, and existing items fall back to their highest current letter. */
+function nextDesignLetter(item){
+  let hi = -1;
+  ((item && item.designs) || []).forEach(d=>{ const i = letterIndex(d && d.code); if(i > hi) hi = i; });
+  const seq = Math.max((item && +item.dzSeq) || 0, hi + 1);
+  return designLetter(seq);
+}
+function designFullCode(item, d){
+  if(!d) return (item && item.code) || '';
+  return ((item && item.code) ? item.code + '-' : '') + (d.code || '');
+}
+function designRate(item, d){
+  const r = d && d.rate;
+  return (r === '' || r == null || !(+r > 0)) ? (+((item && item.rate) || 0)) : +r;
+}
+function designLabel(item, d){
+  return (item ? item.name : '') + (d ? ' — ' + (d.name || d.code) : '');
+}
+function itemDesigns(item){ return (item && Array.isArray(item.designs)) ? item.designs : []; }
+function findDesign(item, code){
+  return itemDesigns(item).find(d=>d && String(d.code).toUpperCase() === String(code||'').toUpperCase()) || null;
+}
+
+/* ── design editor, inside the item edit modal ── */
+let designItemId = null;
+function openDesigns(itemId){
+  designItemId = itemId;
+  renderDesignList();
+  document.getElementById('mo-designs').classList.add('open');
+}
+function renderDesignList(){
+  const it = (S.items||[]).find(x=>x && x.id===designItemId);
+  const box = document.getElementById('dz-body'); if(!box) return;
+  if(!it){ box.innerHTML = '<div style="color:#999">Item not found.</div>'; return; }
+  const ds = itemDesigns(it);
+  document.getElementById('dz-sub').textContent = it.name + (it.code ? ' · ' + it.code : '');
+  box.innerHTML = `
+    <div class="ibox" style="background:#EEF2FF;border-color:#C7D2FE;color:#1E3A8A;margin:0 0 12px">
+      Each design gets its own letter and full code. Leave a rate blank to use the article's
+      default of <strong>${fmt(+it.rate||0)}</strong>.
+    </div>
+    <div class="fr" style="margin-bottom:4px">
+      <div style="flex:2"><label>New design name</label>
+        <input id="dz-new" placeholder="e.g. Floral Red" onkeydown="if(event.key==='Enter'){event.preventDefault();addDesign();}"></div>
+      <div><label>Rate (optional)</label><input id="dz-rate" type="number" inputmode="decimal" placeholder="${+it.rate||0}"></div>
+    </div>
+    <button class="btn pri" style="width:100%;justify-content:center;margin-bottom:14px" onclick="addDesign()">＋ Add design (${nextDesignLetter(it)})</button>
+    ${ds.length ? `
+      <div style="background:#fff;border:1px solid #E8E8E8;border-radius:10px;overflow:hidden">
+        ${ds.map((d,i)=>`
+          <div style="display:flex;align-items:center;gap:9px;padding:10px 11px;border-bottom:1px solid #F4F4F4">
+            <div style="width:34px;height:34px;border-radius:8px;background:#1A2E5A;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0">${esc(d.code)}</div>
+            <div style="flex:1;min-width:0">
+              <input value="${esc(d.name||'')}" onchange="renameDesign(${i}, this.value)" placeholder="Design name"
+                     style="width:100%;padding:6px 8px;border:1px solid #DDD;border-radius:7px;font-size:12.5px;font-family:inherit;box-sizing:border-box">
+              <div style="font-size:10.5px;color:#94A3B8;margin-top:3px">${esc(designFullCode(it,d))}</div>
+            </div>
+            <input type="number" inputmode="decimal" value="${(d.rate!=null&&d.rate!==''&&+d.rate>0)?+d.rate:''}" placeholder="${+it.rate||0}"
+                   onchange="setDesignRate(${i}, this.value)"
+                   style="width:76px;padding:7px;border:1.5px solid ${(+d.rate>0)?'#1A2E5A':'#DDD'};border-radius:7px;font-size:12.5px;text-align:right;font-family:inherit;box-sizing:border-box;flex-shrink:0">
+            <button class="btn sm" onclick="delDesign(${i})" style="border:none;background:none;color:#DC2626;flex-shrink:0">🗑</button>
+          </div>`).join('')}
+      </div>
+      <div style="font-size:11px;color:#94A3B8;margin-top:9px;line-height:1.55">
+        Deleting a design does not free its letter — old challans printed with that code keep their meaning.
+      </div>`
+    : '<div style="text-align:center;color:#999;padding:22px;font-size:12.5px">No designs yet. Add the first one above.</div>'}`;
+}
+function _updItem(fn){
+  const i = (S.items||[]).findIndex(x=>x && x.id===designItemId); if(i===-1) return;
+  const copy = JSON.parse(JSON.stringify(S.items[i]));
+  if(!Array.isArray(copy.designs)) copy.designs = [];
+  fn(copy);
+  S.items[i] = copy;                       // replace, never mutate in place
+  _itemCanonIdx = null; invalidateStock();
+  saveToCloud(); renderDesignList();
+}
+function addDesign(){
+  const nameEl = document.getElementById('dz-new'), rateEl = document.getElementById('dz-rate');
+  const nm = (nameEl.value||'').trim();
+  if(!nm){ alert('Enter a design name.'); nameEl.focus(); return; }
+  const rt = +rateEl.value;
+  const it = (S.items||[]).find(x=>x && x.id===designItemId); if(!it) return;
+  if(itemDesigns(it).some(d=>normIName(d.name)===normIName(nm))){ alert('“'+nm+'” already exists for this article.'); return; }
+  const letter = nextDesignLetter(it);
+  _updItem(c=>{
+    c.designs.push({ code:letter, name:nm, rate:(rt>0?rt:'') });
+    c.dzSeq = letterIndex(letter) + 1;      // high-water mark, so the letter is never reissued
+  });
+  nameEl.value = ''; rateEl.value = '';
+  setTimeout(()=>{ const e=document.getElementById('dz-new'); if(e) e.focus(); }, 30);
+}
+function renameDesign(i, v){ _updItem(c=>{ if(c.designs[i]) c.designs[i].name = String(v||'').trim(); }); }
+function setDesignRate(i, v){ _updItem(c=>{ if(c.designs[i]) c.designs[i].rate = (+v>0 ? +v : ''); }); }
+function delDesign(i){
+  const it = (S.items||[]).find(x=>x && x.id===designItemId); if(!it) return;
+  const d = itemDesigns(it)[i]; if(!d) return;
+  if(!confirm('Delete design '+d.code+' — '+(d.name||'')+'?\n\nSaved challans keep their own copy and are not affected.')) return;
+  _updItem(c=>{ c.designs.splice(i,1); });
+}
+
 function itemFormSave(){
   const name=document.getElementById('im-name').value.trim();
   const code=document.getElementById('im-code').value.trim();
   const rate=+document.getElementById('im-rate').value;
+  const seasonType=(document.getElementById('im-season')||{}).value||'ALL';
   if(!name){alert('Item name is required');return;}
   if(!rate&&rate!==0){alert('Default rate is required');return;}
   if(rate<0){alert('Rate cannot be negative');return;}
@@ -6500,10 +6840,10 @@ function itemFormSave(){
     const i=S.items.findIndex(x=>x.id===itemEditId); if(i===-1){itemEditId=null;renderItems();return;}
     // Replace with a NEW object (never mutate in place) so diffWrite's baseline diff detects it,
     // but copy the existing record first so fields owned by the Contractor Tracker (jobRate) survive.
-    S.items[i]=Object.assign({}, S.items[i], { id:itemEditId, name, code, rate });
+    S.items[i]=Object.assign({}, S.items[i], { id:itemEditId, name, code, rate, seasonType });
     itemEditId=null;
   } else {
-    S.items.push({ id:uniqId('IT'), name, code, rate });
+    S.items.push({ id:uniqId('IT'), name, code, rate, seasonType, designs:[] });
   }
   saveToCloud(); renderItems();
 }
@@ -6814,8 +7154,32 @@ function pickItem(sel, rowId, isEC){
   const inputs=document.querySelectorAll('#'+rowId+' input');
   inputs[0].value=it.name;
   inputs[2].value=+it.rate||0;
+  // Offer this article's designs. Picking one refines the name, the code and the rate.
+  const dz=document.getElementById(rowId+'-dz');
+  const ds=itemDesigns(it);
+  if(dz){
+    if(ds.length){
+      dz.dataset.itemId=it.id;
+      dz.innerHTML='<option value="">— pick design (optional) —</option>'+
+        ds.map(d=>`<option value="${esc(d.code)}">${esc(d.code)} · ${esc(d.name||'')} · ₹${designRate(it,d)}</option>`).join('');
+      dz.style.display='';
+    } else { dz.style.display='none'; dz.innerHTML=''; dz.dataset.itemId=''; }
+  }
   if(isEC) calcECItem(rowId); else { calcItem(rowId); }
   sel.value='';
+  inputs[1].focus();
+}
+/* A design chosen on a line writes the full name and its own rate. The line keeps a `design`
+   code so the choice survives on the saved challan and can be reported on later. */
+function pickDesign(sel, rowId, isEC){
+  const it=(S.items||[]).find(x=>x && x.id===sel.dataset.itemId); if(!it) return;
+  const d=findDesign(it, sel.value);
+  const inputs=document.querySelectorAll('#'+rowId+' input');
+  inputs[0].value = d ? designLabel(it,d) : it.name;
+  inputs[2].value = d ? designRate(it,d) : (+it.rate||0);
+  const row=document.getElementById(rowId);
+  if(row) row.dataset.design = d ? d.code : '';
+  if(isEC) calcECItem(rowId); else calcItem(rowId);
   inputs[1].focus();
 }
 
