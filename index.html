@@ -984,7 +984,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-02.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-02.3';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -1340,7 +1340,11 @@ function authDiagText(){
     'error      : ' + (LAST_AUTH_ERR || 'none yet'),
     'webkit     : ' + isAppleWebKit(),
     'in-app     : ' + isEmbeddedBrowser(),
-    'storage    : ' + (webStorageBlocked() ? 'BLOCKED' : 'ok'),
+    'localStore : ' + (localStorageWritable() ? 'writable' : 'BLOCKED/FULL'),
+    'lsUsedApp  : ' + (lsUsage().mine/1048576).toFixed(2) + ' MB',
+    'lsUsedAll  : ' + (lsUsage().all/1048576).toFixed(2) + ' MB (all apps on this domain)',
+    'sessionSt  : ' + (function(){ try{ sessionStorage.setItem('__t','1'); sessionStorage.removeItem('__t'); return 'ok'; }catch(e){ return 'BLOCKED'; } })(),
+    'indexedDB  : ' + (typeof indexedDB !== 'undefined' ? 'present' : 'MISSING'),
     'cookies    : ' + (navigator.cookieEnabled ? 'on' : 'OFF'),
     'popupOpen  : ' + (typeof window.open === 'function'),
     'ua         : ' + ua
@@ -1376,9 +1380,63 @@ function showPopupHelp(code){
     '<button id="diag-btn" onclick="copyAuthDiag()" style="width:100%;margin-top:6px;padding:8px;border-radius:9px;border:1px solid #FDBA74;background:#fff;color:#9A3412;font-family:inherit;font-size:11.5px;font-weight:700;cursor:pointer">📋 Copy diagnostics</button>' +
     (code ? '<div style="margin-top:6px;font-size:10.5px;opacity:.7">' + esc(code) + '</div>' : '');
 }
-function webStorageBlocked(){
-  try { sessionStorage.setItem('__t','1'); sessionStorage.removeItem('__t'); return false; }
-  catch(e){ return true; }
+/* Total bytes held in localStorage for this origin. Note that ALL apps served from
+   kavitafashionwear-afk.github.io share one quota (~5 MB on iOS, ~10 MB on desktop) —
+   Challan Manager, Business Manager and Contractor Tracker draw on the same pool. */
+function lsUsage(){
+  var mine=0, all=0;
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i), v=localStorage.getItem(k)||'';
+      var b=(k.length+v.length)*2;                       // UTF-16 in the browser
+      all+=b;
+      if(/^(challan_backup_|cm_snap_|cm_lastbackup|cm_xl_last|cm_dev)/.test(k)) mine+=b;
+    }
+  }catch(e){}
+  return { mine:mine, all:all };
+}
+/* THE test Firebase performs. v8/compat's isWebStorageSupported() writes a key to
+   localStorage — NOT sessionStorage — and if that throws (quota exceeded, or storage
+   disabled) it declares the environment unsupported and signInWithPopup fails with
+   auth/operation-not-supported-in-this-environment. A full localStorage therefore breaks
+   sign-in even though everything else about the browser is fine. */
+function localStorageWritable(){
+  try{ localStorage.setItem('__fbtest','1'); localStorage.removeItem('__fbtest'); return true; }
+  catch(e){ return false; }
+}
+function webStorageBlocked(){ return !localStorageWritable(); }
+/* Drop the oldest daily snapshots until localStorage accepts writes again. Snapshots are the
+   only expendable thing we keep there — the live cache is the offline safety net and the
+   Excel/cloud copies are unaffected. */
+function pruneLocalStorage(reason){
+  var freed=0, dropped=[];
+  try{
+    var snaps=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k && k.indexOf('cm_snap_')===0) snaps.push(k);
+    }
+    snaps.sort();                                   // oldest date first
+    while(snaps.length && !localStorageWritable()){
+      var k2=snaps.shift();
+      freed += ((localStorage.getItem(k2)||'').length)*2;
+      localStorage.removeItem(k2); dropped.push(k2);
+    }
+    // Still stuck: the live cache has to go too, rather than leaving sign-in broken.
+    if(!localStorageWritable()){
+      try{ localStorage.removeItem(LS_KEY()); dropped.push('live cache'); }catch(e){}
+    }
+  }catch(e){}
+  if(dropped.length) console.warn('localStorage pruned ('+(reason||'')+'):', dropped.join(', '), Math.round(freed/1024)+' KB freed');
+  return dropped.length;
+}
+/* Runs at start-up, long before anyone taps Continue with Google, so a full store from a
+   previous session cannot break sign-in. */
+function ensureAuthStorage(){
+  if(localStorageWritable()) return true;
+  console.warn('localStorage is full — sign-in would fail. Pruning.');
+  pruneLocalStorage('sign-in headroom');
+  return localStorageWritable();
 }
 function openInRealBrowser(){
   var url = location.href;
@@ -1506,9 +1564,15 @@ function doLogin() {
   const msg = document.getElementById('login-msg');
   // Known-hostile environment: skip straight to the instructions instead of a dead-end error.
   if (typeof isEmbeddedBrowser === 'function' && isEmbeddedBrowser()) { showOpenExternally(); return; }
+  // Firebase refuses to sign in when localStorage cannot be written. Usually that is simply
+  // a full store, which we can fix here and now instead of sending the person away.
   if (typeof webStorageBlocked === 'function' && webStorageBlocked()) {
-    showOpenExternally('Private Browsing blocks the storage sign-in needs. Open this page in a normal tab.');
-    return;
+    if (typeof pruneLocalStorage === 'function') pruneLocalStorage('login retry');
+    if (webStorageBlocked()) {
+      showOpenExternally('This browser is refusing local storage, which sign-in needs. Turn off Private Browsing, or allow cookies/site data for this site.');
+      return;
+    }
+    console.log('localStorage freed — continuing with sign-in');
   }
   if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Opening Google...'; }
   if (msg) { msg.textContent = ''; }
@@ -2195,10 +2259,16 @@ function netToastFor(state){
     return;
   }
   if(state==='stuck'){
-    const why = (typeof STUCK!=='undefined' && STUCK.reason) ? esc(STUCK.reason) : 'the server is not responding';
+    const stalls = (typeof stalledWrites==='function') ? stalledWrites(15000) : [];
+    const probe  = (typeof PROBE!=='undefined' && PROBE.at)
+      ? (PROBE.ok ? 'The server is reachable, so this should clear shortly.'
+                  : 'The server answered: <strong>'+esc(PROBE.code)+'</strong>.')
+      : 'Checking why…';
     _netToast('stuck','Not reaching the server',
-      'Your work is safe on this device but has not uploaded yet ('+why+'). Reconnecting automatically…',
-      'Open Sync Status','openSyncStatus()',null);
+      'Your work is safe on this device but has not uploaded yet.'+
+      (stalls.length ? '<br>Waiting: <strong>'+esc(stalls.slice(0,4).join(', '))+(stalls.length>4?' +'+(stalls.length-4)+' more':'')+'</strong>' : '')+
+      '<br>'+probe,
+      'Check the connection','probeServer().then(function(){ openSyncStatus(); })',null);
     return;
   }
   if(state==='err'){
@@ -2350,6 +2420,31 @@ function syncErrMark(coll, code){
   if(code==='permission-denied') DENIED[coll] = 'read';
   refreshSyncDot();
 }
+/* Writes that have been handed to Firestore but never came back. A stuck stream leaves
+   these hanging silently: the SDK keeps them queued for ever and reports nothing. */
+var PENDING_WRITES = {};
+function stalledWrites(ms){
+  const cut = Date.now() - (ms||15000);
+  return Object.keys(PENDING_WRITES).filter(k => PENDING_WRITES[k].at < cut);
+}
+/* Ask the server a direct question. A cached read cannot tell us whether the connection
+   works, so this forces source:'server' — the failure code it returns is the real reason
+   writes are not landing (permission-denied, unavailable, unauthenticated, …). */
+var PROBE = { at:0, ok:null, code:'', running:false };
+function probeServer(){
+  if(!uid || PROBE.running) return Promise.resolve(PROBE);
+  PROBE.running = true;
+  return _col('meta').doc('state').get({ source:'server' })
+    .then(function(){ PROBE = { at:Date.now(), ok:true, code:'', running:false }; refreshSyncDot(); return PROBE; })
+    .catch(function(e){
+      PROBE = { at:Date.now(), ok:false, code:(e&&e.code)||'unknown', running:false };
+      console.warn('server probe failed:', PROBE.code, e && e.message);
+      // A refusal is permanent — show it as an error, not as an endless "reconnecting".
+      if(PROBE.code==='permission-denied'){ DENIED['meta'] = DENIED['meta'] || 'read'; _writeFails++; }
+      refreshSyncDot();
+      return PROBE;
+    });
+}
 function noteWriteFail(coll, e){
   const code = (e && e.code) || 'unknown';
   console.warn('WRITE FAILED ('+coll+'):', code, e);
@@ -2375,18 +2470,30 @@ function forceReconnect(manual){
   console.warn('SYNC WATCHDOG: cycling Firestore network (attempt '+STUCK.tries+(manual?', manual':'')+')');
   return db.disableNetwork()
     .then(function(){ return db.enableNetwork(); })
-    .then(function(){ if(typeof renderSyncStatus==='function' && document.getElementById('sync-body')) renderSyncStatus(); return true; })
+    .then(function(){
+      // After a reconnect we genuinely do not know the state of any collection until a fresh
+      // snapshot arrives, so stop reporting the last success as if it still held.
+      Object.keys(SYNC).forEach(function(k){ if(SYNC[k].srv) SYNC[k].cache = true; });
+      if(typeof renderSyncStatus==='function' && document.getElementById('sync-body')) renderSyncStatus();
+      return probeServer();
+    })
+    .then(function(){ return true; })
     .catch(function(e){ console.warn('reconnect failed:', e && e.code, e); return false; });
 }
 function _watchdogTick(){
   if(!STUCK.since || !isOnline) return;
   var stuckFor = Date.now() - STUCK.since;
+  // Find out WHY before blindly cycling the network: the probe returns the actual server
+  // error, which is what turns "reconnecting…" into something you can act on.
+  if(stuckFor >= 10000 && (!PROBE.at || Date.now()-PROBE.at > 30000)) probeServer();
   if(STUCK.tries===0 ? stuckFor >= STUCK_FIRST_MS : (Date.now()-STUCK.lastTry >= _stuckBackoffMs())) forceReconnect(false);
   refreshSyncDot();
 }
 setInterval(_watchdogTick, 5000);
 // Daily local snapshot. Fires shortly after the first cloud read, then hourly (it no-ops
 // once the day's snapshot exists), so a long-running tab still rolls over at midnight.
+// Before anything else: guarantee localStorage can be written, or sign-in breaks.
+try{ ensureAuthStorage(); }catch(e){}
 setTimeout(function(){ try{ autoSnapshot(); }catch(e){} }, 15000);
 setInterval(function(){ try{ autoSnapshot(); }catch(e){} }, 3600000);
 // Excel: recover the remembered file, then write it once a day in the background.
@@ -2403,7 +2510,14 @@ function refreshSyncDot(){
   const stale = req.filter(k=>SYNC[k].cache);
   if(pend.length || stale.length){
     if(!STUCK.since) STUCK.since = Date.now();
+    const nStall = stalledWrites(15000).length;
     STUCK.reason = stale.length ? 'no server response: '+stale.join(', ') : 'writes queued: '+pend.join(', ');
+    if(nStall) STUCK.reason += ' · '+nStall+' document(s) waiting';
+    if(PROBE.at && PROBE.ok===false) STUCK.reason += ' · server says '+PROBE.code;
+    // A refusal is not a stall — it will never clear on its own, so say so plainly.
+    if(PROBE.ok===false && (PROBE.code==='permission-denied' || PROBE.code==='unauthenticated')){
+      setSyncDot('err'); return;
+    }
     setSyncDot((Date.now()-STUCK.since >= STUCK_WARN_MS) ? 'stuck' : 'busy');
     return;
   }
@@ -2695,7 +2809,13 @@ function diffWrite(coll, arr, lastIndex, keyFn){
         return;
       }
       delete OVERSIZE[coll + '/' + id];
-      _col(coll).doc(String(id)).set(payload).catch(e=>noteWriteFail(coll,e));
+      // Register the write so a promise that never settles becomes visible instead of just
+      // leaving hasPendingWrites stuck on. Firestore never times these out by itself.
+      const wkey = coll + '/' + id;
+      PENDING_WRITES[wkey] = { coll:coll, id:String(id), at:Date.now() };
+      _col(coll).doc(String(id)).set(payload)
+        .then(function(){ delete PENDING_WRITES[wkey]; refreshSyncDot(); })
+        .catch(function(e){ delete PENDING_WRITES[wkey]; noteWriteFail(coll,e); });
     }
   });
   Object.keys(lastIndex).forEach(id=>{
@@ -4497,7 +4617,12 @@ function sizeReport(){
    Restore is additive-by-id: existing records win unless you choose to overwrite, so a
    restore can never quietly wipe newer work.
 ══════════════════════════════════════════════════════════════════════ */
-const SNAP_KEEP = 5;
+/* Two snapshots, not five. Five full copies of the ledger plus the live cache was ~2.2 MB
+   for this dataset, and this domain's ~5 MB quota is shared with Business Manager and
+   Contractor Tracker. Overrunning it makes localStorage throw, which breaks Firebase sign-in.
+   The Excel file and the cloud are the real backups; these are only a same-day undo. */
+const SNAP_KEEP = 2;
+const SNAP_BUDGET = 1200 * 1024;      // never let snapshots exceed ~1.2 MB in total
 const SNAP_PREFIX = 'cm_snap_';
 function _snapKey(d){ return SNAP_PREFIX + (uid||'anon') + '_' + d; }
 function snapshotPayload(){
@@ -4532,17 +4657,30 @@ function autoSnapshot(){
   const key = _snapKey(d);
   try{
     if(localStorage.getItem(key)) return;                  // already have today's
-    localStorage.setItem(key, JSON.stringify(snapshotPayload()));
-    const all = listSnapshots();
-    all.slice(SNAP_KEEP).forEach(s=>{ try{ localStorage.removeItem(s.key); }catch(e){} });
-    console.log('local snapshot saved for', d);
-  }catch(e){
-    // Out of quota: drop the oldest snapshot and try once more.
-    const all = listSnapshots();
-    if(all.length){
-      try{ localStorage.removeItem(all[all.length-1].key); localStorage.setItem(key, JSON.stringify(snapshotPayload())); }catch(_e){}
+    const body = JSON.stringify(snapshotPayload());
+    // Make room BEFORE writing, so we never push the store over the edge.
+    let all = listSnapshots();
+    all.slice(SNAP_KEEP-1).forEach(s=>{ try{ localStorage.removeItem(s.key); }catch(e){} });
+    all = listSnapshots();
+    let used = all.reduce((t,s)=>t+s.bytes*2, 0);
+    while(all.length && used + body.length*2 > SNAP_BUDGET){
+      const oldest = all.pop();
+      try{ localStorage.removeItem(oldest.key); }catch(e){}
+      used -= oldest.bytes*2;
     }
+    if(body.length*2 > SNAP_BUDGET){
+      console.warn('snapshot skipped: the ledger is larger than the local snapshot budget. The Excel backup covers this.');
+      return;
+    }
+    localStorage.setItem(key, body);
+    console.log('local snapshot saved for', d, Math.round(body.length/1024)+' KB');
+  }catch(e){
+    // Out of quota anyway: give the space back rather than leaving the store wedged,
+    // because a full localStorage stops Firebase sign-in from working at all.
+    pruneLocalStorage('snapshot quota');
   }
+  // Whatever happened above, sign-in must still be possible next time.
+  ensureAuthStorage();
 }
 function downloadBackup(){
   const blob = new Blob([packRestore(snapshotPayload())], {type:'text/plain'});
@@ -4961,6 +5099,7 @@ function renderBackupPanel(){
 
     <div style="font-size:12px;color:#94A3B8;text-align:center;margin:14px 0 10px;line-height:1.6">
       ${snaps.length?`${snaps.length} daily copy(ies) also kept inside this browser.`:'Daily copies are kept inside this browser automatically.'}
+      <br>Browser storage in use: ${(lsUsage().all/1048576).toFixed(2)} MB${lsUsage().all>3.5*1048576?` <span style="color:#B91C1C">— close to the limit</span>`:''}
       ${risky.length?`<br><span style="color:#B91C1C">One record is close to the size limit — tell me and I will split it.</span>`:''}
     </div>
 
@@ -5019,6 +5158,18 @@ function renderSyncStatus(){
       <div style="margin-top:5px">Local backup: <strong style="color:${LOCAL.state==='ok'?'#065F46':LOCAL.state==='trimmed'?'#92400E':'#B91C1C'}">${LOCAL.state==='ok'?'OK':LOCAL.state==='trimmed'?'TRIMMED':'FAILED'}</strong>${LOCAL.bytes?` <span style="color:#999">· ${Math.round(LOCAL.bytes/1024)} KB</span>`:''}${LOCAL.code?` <span style="color:#B91C1C">· ${esc(LOCAL.code)}</span>`:''}</div>
       ${LOCAL.state==='failed'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:8px;color:#B91C1C;font-size:11.5px">This device's local backup could not be written (${esc(LOCAL.code)}). Firestore's own offline cache still works, but the extra safety copy is not being kept.</div>`:''}
       ${_writeFails?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:9px;padding:9px 11px;margin-top:9px;color:#B91C1C;font-size:11.5px"><strong>${_writeFails} write${_writeFails===1?'':'s'} rejected.</strong> Last: ${esc(_lastWriteErr)}.<br>If this says <strong>permission-denied</strong>, your Firestore security rules do not allow that collection yet — data is safe on this device but is NOT reaching the server.</div>`:''}
+      ${(()=>{
+        const stalls = (typeof stalledWrites==='function') ? stalledWrites(10000) : [];
+        const qn = (typeof PENDING_WRITES!=='undefined') ? Object.keys(PENDING_WRITES).length : 0;
+        if(!qn && !(PROBE && PROBE.at)) return '';
+        return `<div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:11.5px;color:#334155;line-height:1.6">
+          <div><strong>Upload queue:</strong> ${qn} document(s)${stalls.length?` · <span style="color:#B91C1C">${stalls.length} waiting over 10s</span>`:''}</div>
+          ${stalls.length?`<div style="font-size:10.5px;color:#64748B;margin-top:3px">${esc(stalls.slice(0,8).join(', '))}${stalls.length>8?' …':''}</div>`:''}
+          <div style="margin-top:5px"><strong>Last server check:</strong> ${PROBE.at
+            ? (PROBE.ok ? '<span style="color:#065F46">reachable ✓</span>' : '<span style="color:#B91C1C">'+esc(PROBE.code)+'</span>')
+            : 'not run yet'}</div>
+          <button class="btn sm" style="width:100%;justify-content:center;margin-top:8px" onclick="probeServer().then(renderSyncStatus)">🔎 Test the connection now</button>
+        </div>`; })()}
       ${(()=>{ const dl=(typeof _denyList==='function')?_denyList():[]; if(!dl.length) return '';
         return `<div style="background:#FEE2E2;border:1.5px solid #FCA5A5;border-radius:10px;padding:11px 12px;margin-top:10px;color:#B91C1C;font-size:11.5px;line-height:1.6">
           <strong>Firestore is refusing ${dl.length} collection${dl.length===1?'':'s'}:</strong> ${dl.map(k=>esc(k)+' ('+DENIED[k]+')').join(', ')}.
