@@ -650,6 +650,20 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   </div>
 </div></div>
 
+<!-- ══════════ CLOSE SEASON ══════════ -->
+<div class="overlay" id="mo-closeseason">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>🔒 Close Season</h3><div style="font-size:12px;color:#888">Freeze the stock and carry it forward</div></div>
+    <button class="xbtn" onclick="closeModal('closeseason')">✕</button>
+  </div>
+  <div class="mbody" id="sc-body"></div>
+  <div class="mfoot" style="display:flex;gap:8px">
+    <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('closeseason')">Cancel</button>
+    <button class="btn pri" style="flex:1;justify-content:center" onclick="confirmCloseSeason()">🔒 Close &amp; export</button>
+  </div>
+</div></div>
+
 <!-- ══════════ BACKUP & RESTORE ══════════ -->
 <div class="overlay" id="mo-backup">
 <div class="mbox"><div class="mhandle"></div>
@@ -984,11 +998,12 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-02.3';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-02.5-seasons';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
-          visits:[], vC:0, defCreditDays:30 };
+          visits:[], vC:0, defCreditDays:30,
+          seasonRecs:[], stockClose:[] };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -1363,19 +1378,50 @@ function copyAuthDiag(){
 }
 /* Popup was blocked on a WebKit browser: redirect will not save us, so explain the one
    setting that fixes it and let them retry without reloading. */
+/* Which browser is this really? Every browser on iOS is WebKit underneath, so the engine
+   tells us nothing — only the vendor token does. Getting this wrong is how a Chrome user
+   ended up being told to go and change a Safari setting. */
+function browserName(){
+  var ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) {
+    if (/CriOS/.test(ua))  return 'Chrome';
+    if (/EdgiOS/.test(ua)) return 'Edge';
+    if (/FxiOS/.test(ua))  return 'Firefox';
+    if (/OPiOS|OPT\//.test(ua)) return 'Opera';
+    return 'Safari';
+  }
+  if (/Edg\//.test(ua))            return 'Edge';
+  if (/SamsungBrowser/.test(ua))   return 'Samsung Internet';
+  if (/OPR\//.test(ua))            return 'Opera';
+  if (/Firefox\//.test(ua))        return 'Firefox';
+  if (/Chrome\//.test(ua))         return 'Chrome';
+  if (/Safari\//.test(ua))         return 'Safari';
+  return 'your browser';
+}
+/* The pop-up setting lives somewhere different in every browser, so name the real path. */
+function popupSettingPath(){
+  var ios = /iPad|iPhone|iPod/.test(navigator.userAgent||'');
+  var b = browserName();
+  if (ios) {
+    if (b==='Chrome')  return 'In Chrome tap <strong>⋯</strong> → <strong>Settings</strong> → <strong>Content Settings</strong> → <strong>Block Pop-ups</strong> and turn it OFF.';
+    if (b==='Edge')    return 'In Edge tap <strong>⋯</strong> → <strong>Settings</strong> → <strong>Privacy and security</strong> → turn <strong>Block Pop-ups</strong> OFF.';
+    if (b==='Firefox') return 'In Firefox tap <strong>☰</strong> → <strong>Settings</strong> → turn <strong>Block Pop-up Windows</strong> OFF.';
+    return 'Open <strong>Settings → Apps → Safari</strong> and turn <strong>Block Pop-ups</strong> OFF, then come back and tap the button again.';
+  }
+  if (b==='Safari')  return 'Open <strong>Safari → Settings → Websites → Pop-up Windows</strong> and set this site to <strong>Allow</strong>.';
+  if (b==='Firefox') return 'Click the blocked-pop-up bar at the top and choose <strong>Allow pop-ups for this site</strong>.';
+  return 'Click the blocked-pop-up icon at the right of the address bar and choose <strong>Always allow pop-ups from this site</strong>.';
+}
 function showPopupHelp(code){
   var msg = document.getElementById('login-msg'); if(!msg) return;
-  var ios = /iPad|iPhone|iPod/.test(navigator.userAgent||'');
+  var b = browserName();
   msg.style.background='#FFF7ED'; msg.style.color='#9A3412'; msg.style.padding='12px';
   msg.style.borderRadius='10px'; msg.style.textAlign='left'; msg.style.border='1.5px solid #FDBA74';
   msg.style.fontSize='12.5px'; msg.style.lineHeight='1.6';
   msg.innerHTML =
-    '<div style="font-weight:800;margin-bottom:5px">Safari is blocking the sign-in window</div>' +
-    'Sign-in opens in a small window. Safari blocks it by default.' +
-    '<div style="margin-top:8px">' +
-      (ios ? 'Open <strong>Settings → Apps → Safari</strong> and turn <strong>Block Pop-ups</strong> OFF, then come back and tap the button again.'
-           : 'Open <strong>Safari → Settings → Websites → Pop-up Windows</strong> and set this site to <strong>Allow</strong>.') +
-    '</div>' +
+    '<div style="font-weight:800;margin-bottom:5px">' + esc(b) + ' is blocking the sign-in window</div>' +
+    'Sign-in opens in a small window, and ' + esc(b) + ' blocks it by default.' +
+    '<div style="margin-top:8px">' + popupSettingPath() + '</div>' +
     '<button onclick="doLogin()" style="width:100%;margin-top:9px;padding:10px;border-radius:9px;border:none;background:#1A2E5A;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">Try again</button>' +
     '<button id="diag-btn" onclick="copyAuthDiag()" style="width:100%;margin-top:6px;padding:8px;border-radius:9px;border:1px solid #FDBA74;background:#fff;color:#9A3412;font-family:inherit;font-size:11.5px;font-weight:700;cursor:pointer">📋 Copy diagnostics</button>' +
     (code ? '<div style="margin-top:6px;font-size:10.5px;opacity:.7">' + esc(code) + '</div>' : '');
@@ -1464,15 +1510,20 @@ function copyAppLink(){
 function showOpenExternally(extra){
   var msg = document.getElementById('login-msg'); if(!msg) return;
   var ios = /iPad|iPhone|iPod/.test(navigator.userAgent||'');
+  var emb = (typeof isEmbeddedBrowser==='function') && isEmbeddedBrowser();
   msg.style.background='#FFF7ED'; msg.style.color='#9A3412';
   msg.style.padding='12px'; msg.style.borderRadius='10px'; msg.style.textAlign='left';
   msg.style.border='1.5px solid #FDBA74'; msg.style.fontSize='12.5px'; msg.style.lineHeight='1.6';
+  // Inside an in-app browser the vendor token is gone, so we genuinely cannot tell which
+  // browser this person prefers — offer both rather than sending a Chrome user to Safari.
+  var target = emb ? (ios ? 'Safari or Chrome' : 'Chrome') : browserName();
   msg.innerHTML =
-    '<div style="font-weight:800;margin-bottom:5px">Open this page in ' + (ios?'Safari':'Chrome') + '</div>' +
-    'Google will not allow sign-in inside the mini-browser that WhatsApp and other apps use. ' +
-    'It works normally once the page is opened properly.' +
+    '<div style="font-weight:800;margin-bottom:5px">Open this page in ' + esc(target) + '</div>' +
+    (emb ? 'Google will not allow sign-in inside the mini-browser that WhatsApp and other apps use. ' +
+           'It works normally once the page is opened properly.'
+         : 'Sign-in needs this page opened in a normal browser tab.') +
     '<div style="margin-top:8px;font-weight:700">' +
-      (ios ? 'Tap the <strong>' + '\u22EF' + '</strong> or share button at the bottom, then <strong>Open in Safari</strong>.'
+      (ios ? 'Tap the <strong>' + '\u22EF' + '</strong> or share button, then <strong>Open in Safari</strong> — or <strong>Open in Chrome</strong> if that is the one you use.'
            : 'Tap the <strong>\u22EE</strong> menu, then <strong>Open in Chrome</strong>.') +
     '</div>' +
     '<button id="cp-link" onclick="copyAppLink()" style="width:100%;margin-top:9px;padding:9px;border-radius:9px;border:1px solid #FDBA74;background:#fff;color:#9A3412;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer">\uD83D\uDCCB Copy the link</button>' +
@@ -2097,7 +2148,7 @@ function mergeIncomingBills(bills) {
       pid:party.id, pname:party.name, date:b.date||today(),
       items:items, freight:freight, total:total, status:'P',
       remarks:b.remarks||'',
-      season:S.curSeason||'',
+      season: (typeof defaultSeasonId==='function' ? (defaultSeasonId()||S.curSeason||'') : (S.curSeason||'')),
       staffGenerated:true,
       staffEmail:(b.createdBy&&b.createdBy.email)||'',
       staffName:(b.createdBy&&b.createdBy.name)||'',
@@ -2322,7 +2373,8 @@ function saveLocal(){
     pC:S.pC, cC:S.cC, pyC:S.pyC, seasons:S.seasons, curSeason:S.curSeason,
     stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns,
     expenses:S.expenses, cashOpen:S.cashOpen, cashModes:S.cashModes, exC:S.exC,
-    visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays
+    visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays,
+    seasonRecs:S.seasonRecs, stockClose:S.stockClose
   };
   // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
   var tiers = [
@@ -2358,6 +2410,7 @@ function loadLocal(){
     S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; S.expenses=d.expenses||[]; S.cashOpen=d.cashOpen||null;
     if(d.cashModes) S.cashModes=d.cashModes; S.exC=d.exC||0;
     S.visits=d.visits||[]; S.vC=d.vC||0; if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays;
+    S.seasonRecs=d.seasonRecs||[]; S.stockClose=d.stockClose||[];
     invalidateStock(); invalidateCash();
     // S.lots is not in the local backup by design — Firestore's own cache restores it.
     return true;
@@ -2380,9 +2433,9 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{}, expenses:{}, visits:{}, trash:{} };
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{}, expenses:{}, visits:{}, trash:{}, seasonRecs:{}, stockClose:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
-let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null, _subExp=null, _subCtPays=null, _subCtAdv=null, _subVisits=null, _subTrash=null;
+let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null, _subExp=null, _subCtPays=null, _subCtAdv=null, _subVisits=null, _subTrash=null, _subSeasons=null, _subStockClose=null;
 let _trashLoaded=false, _trashNeedsMigration=false;
 // Every trash record needs a stable id of its own now that each one is a document.
 function _trashId(t){ if(!t.id) t.id = 'T-'+(t.deletedAt||new Date().toISOString()).replace(/[^0-9]/g,'').slice(0,17)+'-'+Math.random().toString(36).slice(2,7); return t.id; }
@@ -2526,7 +2579,7 @@ function refreshSyncDot(){
   setSyncDot('ok');
 }
 function syncReport(){
-  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','expenses','visits','trash','ct_lots','ct_pays','ct_advances','meta'];
+  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','expenses','visits','trash','seasons','stockclose','ct_lots','ct_pays','ct_advances','meta'];
   return order.filter(k=>k in SYNC).map(k=>{
     const s=SYNC[k];
     return { coll:k, optional:!!SYNC_OPTIONAL[k], err:s.err||null, cache:!!s.cache,
@@ -2694,6 +2747,23 @@ function attachDataListeners(){
     _lastSaved.visits = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     markLoaded(snap.metadata, 'visits', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('visits',err));
+  /* seasons — one document each, so a season can carry status and closing data without
+     bloating meta/state. */
+  _subSeasons = _col('seasons').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.seasonRecs = snap.docs.map(d=>d.data());
+    _lastSaved.seasonRecs = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
+    syncSeasonNames();
+    markLoaded(snap.metadata, 'seasons', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('seasons',err));
+
+  /* stockClose — a frozen closing-stock snapshot per closed season. THIS is the source of
+     truth for next year's opening stock; the Excel export is the owner's external record. */
+  _subStockClose = _col('stockClose').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.stockClose = snap.docs.map(d=>d.data());
+    _lastSaved.stockClose = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
+    markLoaded(snap.metadata, 'stockclose', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('stockclose',err));
+
   /* trash — one document per deleted item. Same per-doc + deep-copy baseline + diffWrite
      contract as every other collection, so the recycle bin can grow without bound. */
   _subTrash = _col('trash').onSnapshot({includeMetadataChanges:true}, snap=>{
@@ -2720,7 +2790,7 @@ function attachDataListeners(){
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subExp,_subLots,_subCtPays,_subCtAdv,_subVisits,_subTrash,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subExp,_subLots,_subCtPays,_subCtAdv,_subVisits,_subTrash,_subSeasons,_subStockClose,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -2770,6 +2840,15 @@ function saveToCloud() {
     diffWrite('returns',     S.returns,     _lastSaved.returns,     x=>x.id);
     diffWrite('expenses',    S.expenses,    _lastSaved.expenses,    x=>x.id);
     diffWrite('visits',      S.visits,      _lastSaved.visits,      x=>x.id);
+    // Tag any untagged opening/movement rows with the book they were entered in, so they
+    // stop floating between seasons once seasons are in use.
+    if((S.seasonRecs||[]).length && activeStockSeason()){
+      const _sid = activeStockSeason().id;
+      (S.stock||[]).forEach(o=>{ if(o && !o.season) o.season = _sid; });
+      (S.stockMv||[]).forEach(m=>{ if(m && !m.season) m.season = _sid; });
+    }
+    diffWrite('seasons',     S.seasonRecs,  _lastSaved.seasonRecs,  x=>x.id);
+    diffWrite('stockClose',  S.stockClose,  _lastSaved.stockClose,  x=>x.id);
     (S.trash||[]).forEach(_trashId);
     diffWrite('trash',       S.trash,       _lastSaved.trash,       x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
@@ -2942,6 +3021,8 @@ function renderAll() {
   const cnt = (S.trash||[]).length;
   const badge = document.getElementById('trash-count-badge');
   if (badge) { badge.style.display = cnt>0?'inline':'none'; badge.textContent = cnt; }
+  try{ if(loadedOnce) migrateSeasons(); }catch(e){ console.warn('season migration skipped:', e); }
+  try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
   try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
@@ -2970,6 +3051,7 @@ function goTab(tab) {
 }
 
 function openParty(pid) {
+  if(curParty !== pid) partySeason = '';
   curParty = pid; navStack.push(curTab);
   document.querySelectorAll('.cscreen').forEach(s=>s.classList.remove('on'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('on'));
@@ -2989,31 +3071,119 @@ function goBack() {
 /* ══════════════════════════════
    RENDER HOME
 ══════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════════════
+   GLOBAL FY + SEASON SELECTION
+   One selection shared by Home, Parties and Reports so they can never disagree.
+   Stock deliberately keeps its OWN active season (see stockSeasonId) — a stock book is
+   a physical thing you work in, not a filter you glance through.
+══════════════════════════════════════════════════════════════════════ */
+let selFY = null;        // null = every year
+let selSeason = '';      // '' = whole FY / everything
+try{
+  const sv = JSON.parse(localStorage.getItem('cm_sel')||'{}');
+  if(sv.fy!=null) selFY = sv.fy;
+  if(sv.season) selSeason = sv.season;
+}catch(e){}
+function _saveSel(){ try{ localStorage.setItem('cm_sel', JSON.stringify({fy:selFY, season:selSeason})); }catch(e){} }
+function setSelFY(v){
+  selFY = (v===''||v==null) ? null : +v;
+  // A season from another year cannot stay selected.
+  if(selSeason){ const s=seasonById(selSeason); if(!s || (selFY!=null && s.fy!==selFY)) selSeason=''; }
+  _saveSel(); renderAll();
+}
+function setSelSeason(v){
+  selSeason = v||'';
+  const s = seasonById(selSeason);
+  if(s && s.fy!=null) selFY = s.fy;
+  _saveSel(); renderAll();
+}
+function selLabel(){
+  if(selSeason){ const s=seasonById(selSeason); if(s) return s.name; }
+  if(selFY!=null) return fyLbl(selFY);
+  return 'All time';
+}
+/* THE scope filter. Season tag is master: when a season is selected we match on the tag and
+   ignore dates entirely, so a January bill tagged Summer 2026 stays in Summer 2026. */
+function inScope(c){
+  if(!c) return false;
+  if(selSeason) return seasonIdOf(c)===selSeason;
+  if(selFY!=null) return fyOf(c.date)===selFY;
+  return true;
+}
+function scopedChallans(){ return (S.challans||[]).filter(inScope); }
+/* Outstanding for the current scope.
+   Payments are FIFO across a party's WHOLE ledger and carry no season, so a season's
+   outstanding must never be computed as (season bills − season payments). Instead we let
+   allocateParty() do its normal job and simply group the per-challan balances it produced.
+   One allocator, and the season figures always reconcile to the true party balance. */
+function scopedOutstanding(){
+  let t = 0;
+  scopedChallans().forEach(c=>{
+    const paid = challanPaid(c.id);
+    t += Math.max(0, _r2((+c.total||0) - paid));
+  });
+  return _r2(t);
+}
+function scopedReceived(){
+  let t = 0;
+  scopedChallans().forEach(c=>{ t += Math.min(+c.total||0, challanPaid(c.id)); });
+  return _r2(t);
+}
+function seasonSelectorHtml(){
+  const fys = allSeasonFYs();
+  const seasons = seasonsForFY(selFY);
+  const opt = (v,l,sel)=>`<option value="${esc(v)}" ${sel?'selected':''}>${esc(l)}</option>`;
+  return `
+    <div class="stat" style="grid-column:1/-1;padding:11px 13px">
+      <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:11px;font-weight:800;color:#94A3B8">SHOWING</span>
+        <select onchange="setSelFY(this.value)" style="flex:1;min-width:108px;padding:7px 9px;border:1.5px solid #C7D2FE;border-radius:8px;font-size:12.5px;font-family:inherit;font-weight:700;color:#1A2E5A;background:#fff">
+          ${opt('','All years', selFY==null)}
+          ${fys.map(f=>opt(f, fyLbl(f), selFY===f)).join('')}
+        </select>
+        <select onchange="setSelSeason(this.value)" style="flex:1;min-width:126px;padding:7px 9px;border:1.5px solid ${selSeason?'#A7F3D0':'#E2E8F0'};border-radius:8px;font-size:12.5px;font-family:inherit;font-weight:700;color:${selSeason?'#059669':'#64748B'};background:#fff">
+          ${opt('', selFY==null?'All seasons':'Whole '+fyLbl(selFY), !selSeason)}
+          ${seasons.map(s=>opt(s.id, s.name + (s.status==='CLOSED'?' · closed':''), selSeason===s.id)).join('')}
+        </select>
+        <button class="btn sm" style="font-size:11.5px" onclick="goTab('reports')">📊</button>
+      </div>
+      ${selSeason?`<div style="font-size:11px;color:#059669;margin-top:6px;font-weight:700">Every figure below is for ${esc(selLabel())} only — not the whole business.</div>`:''}
+    </div>`;
+}
+
 function renderHome() {
-  const totalOut = S.parties.reduce((s,p)=>s+Math.max(0,partyBal(p.id)),0);
-  const totalPd  = S.payments.reduce((s,p)=>s+p.amount,0);
-  const pending  = S.challans.filter(c=>challanStatus(c)!=='S').length;
+  const scoped  = scopedChallans();
+  const scoping = !!selSeason || selFY!=null;
   const tdy=today(), fyNow=fyOf(tdy), mNow=tdy.slice(0,7);
-  const todaySales=S.challans.filter(c=>c.date===tdy).reduce((s,c)=>s+(+c.total||0),0);
-  const monthSales=S.challans.filter(c=>(c.date||'').slice(0,7)===mNow).reduce((s,c)=>s+(+c.total||0),0);
-  const fySales=S.challans.filter(c=>fyOf(c.date)===fyNow).reduce((s,c)=>s+(+c.total||0),0);
+
+  const sales    = scoped.reduce((s,c)=>s+(+c.total||0),0);
+  const pending  = scoped.filter(c=>challanStatus(c)!=='S').length;
+  const outAll   = S.parties.reduce((s,p)=>s+Math.max(0,partyBal(p.id)),0);
+  const recdAll  = S.payments.reduce((s,p)=>s+p.amount,0);
+  const outScope = scoping ? scopedOutstanding() : outAll;
+  const recScope = scoping ? scopedReceived()    : recdAll;
+  const todaySales=scoped.filter(c=>c.date===tdy).reduce((s,c)=>s+(+c.total||0),0);
+  const monthSales=scoped.filter(c=>(c.date||'').slice(0,7)===mNow).reduce((s,c)=>s+(+c.total||0),0);
   const fyDays=Math.max(1,Math.round((Date.now()-new Date(fyNow,3,1).getTime())/864e5)+1);
-  document.getElementById('home-stats').innerHTML = `
-    <div class="stat" style="grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer" onclick="goTab('reports')">
-      <span style="background:#EEF2FF;color:#1A2E5A;font-size:11px;font-weight:800;padding:3px 10px;border-radius:12px">${fyLbl(fyNow)}</span>
-      ${S.curSeason?`<span style="background:#F0FDF4;color:#059669;font-size:11px;font-weight:800;padding:3px 10px;border-radius:12px">🗓️ ${esc(S.curSeason)}</span>`:''}
-      <span style="flex:1"></span>
-      <span style="color:#1A2E5A;font-size:12px;font-weight:800">📊 View Reports →</span>
-    </div>
-    <div class="stat"><div class="sl">📦 Challans</div><div class="sv">${S.challans.length}</div></div>
-    <div class="stat"><div class="sl">💰 Outstanding <span style="font-weight:600;color:#BBB">· all time</span></div><div class="sv r">${fmt(totalOut)}</div></div>
-    <div class="stat"><div class="sl">✅ Received <span style="font-weight:600;color:#BBB">· all time</span></div><div class="sv g">${fmt(totalPd)}</div></div>
-    <div class="stat"><div class="sl">⏳ Pending</div><div class="sv a">${pending}</div></div>
+  const tag = scoping ? `<span style="font-weight:600;color:#BBB">· ${esc(selLabel())}</span>`
+                      : `<span style="font-weight:600;color:#BBB">· all time</span>`;
+
+  document.getElementById('home-stats').innerHTML =
+    seasonSelectorHtml() + `
+    <div class="stat"><div class="sl">📦 Challans ${tag}</div><div class="sv">${scoped.length}</div></div>
+    <div class="stat"><div class="sl">💰 Outstanding ${tag}</div><div class="sv r">${fmt(outScope)}</div></div>
+    <div class="stat"><div class="sl">✅ Received ${tag}</div><div class="sv g">${fmt(recScope)}</div></div>
+    <div class="stat"><div class="sl">⏳ Pending ${tag}</div><div class="sv a">${pending}</div></div>
     <div class="stat"><div class="sl">📅 Today's Sales</div><div class="sv">${fmt(todaySales)}</div></div>
     <div class="stat"><div class="sl">🗓️ This Month</div><div class="sv">${fmt(monthSales)}</div></div>
-    <div class="stat"><div class="sl">📈 Avg Daily (${fyLbl(fyNow).replace('FY ','')})</div><div class="sv">${fmt(Math.round(fySales/fyDays))}</div></div>
-    <div class="stat"><div class="sl">💼 FY Sales</div><div class="sv">${fmt(fySales)}</div></div>`;
-  const recent = [...S.challans].sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||'')).slice(0,5);
+    <div class="stat"><div class="sl">📈 Avg Daily (${fyLbl(fyNow).replace('FY ','')})</div><div class="sv">${fmt(Math.round(sales/fyDays))}</div></div>
+    <div class="stat"><div class="sl">💼 Sales ${tag}</div><div class="sv">${fmt(sales)}</div></div>
+    ${scoping?`<div class="stat" style="grid-column:1/-1;padding:9px 13px;background:#F8FAFC">
+      <div style="font-size:11px;color:#64748B;line-height:1.55">
+        Whole business: <strong>${fmt(outAll)}</strong> outstanding · <strong>${fmt(recdAll)}</strong> received · ${S.challans.length} challans.
+      </div></div>`:''}`;
+  const recent = [...scoped].sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||'')).slice(0,5);
   document.getElementById('home-challans').innerHTML = (recent.length
     ? recent.map(c=>challanCard(c,true)).join('')
     : '<div class="empty"><div class="ei">📋</div><p>No challans yet. Tap + to start.</p></div>');
@@ -3128,12 +3298,19 @@ function renderParties() {
 /* ══════════════════════════════
    RENDER PARTY DETAIL
 ══════════════════════════════ */
+/* Season filter for one party's challan list. Kept per-party so opening a different party
+   does not silently inherit the last one's filter. */
+let partySeason = '';
+function setPartySeason(pid, sid){ partySeason = (partySeason===sid) ? '' : sid; renderPartyDetail(pid); }
 function renderPartyDetail(pid) {
   const p = S.parties.find(x=>x.id===pid); if (!p) return;
   invalidateParty(pid);
   const a    = getAlloc(pid);
   const bal  = a.partyBalance;
-  const chs  = S.challans.filter(c=>c.pid===pid).sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||''));
+  // The chosen season filters the LIST only. Balances still come from allocateParty() over the
+  // whole ledger, so a season view can never be mistaken for what the party actually owes.
+  const chs  = S.challans.filter(c=>c.pid===pid && (!partySeason || seasonIdOf(c)===partySeason))
+                 .sort((a,b)=>b.date.localeCompare(a.date)||(b.num||'').localeCompare(a.num||''));
   const pend = chs.filter(c=>a.status[c.id]!=='S');
   const settl= chs.filter(c=>a.status[c.id]==='S');
 
@@ -3211,7 +3388,29 @@ function renderPartyDetail(pid) {
       </div>`;}).join('')}
     ${vs.length>6?`<button class="btn full" style="margin-bottom:8px" onclick="goTab('visits')">Open Visits →</button>`:''}
     `:''; })()}
-    ${bal>0?`<div class="ibox red">Outstanding: <strong>${fmt(bal)}</strong></div>`:''}
+    ${(()=>{
+      const recs=(S.seasonRecs||[]).filter(x=>x && (S.challans||[]).some(c=>c && c.pid===pid && seasonIdOf(c)===x.id))
+        .sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
+      if(!recs.length) return '';
+      const chip=(v,l,on)=>`<button class="btn sm" style="font-size:11px;${on?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setPartySeason('${_js(pid)}','${_js(v)}')">${esc(l)}</button>`;
+      let box='';
+      if(partySeason){
+        const cs=(S.challans||[]).filter(c=>c && c.pid===pid && seasonIdOf(c)===partySeason);
+        const billed=cs.reduce((t,c)=>t+(+c.total||0),0);
+        const paid=cs.reduce((t,c)=>t+Math.min(+c.total||0,challanPaid(c.id)),0);
+        const sn=seasonById(partySeason);
+        box=`<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;margin-top:8px;font-size:11.5px;color:#334155;line-height:1.7">
+          <strong>${esc(sn?sn.name:'')}</strong> · ${cs.length} challan(s)<br>
+          Billed <strong>${fmt(billed)}</strong> · Received <strong style="color:#059669">${fmt(paid)}</strong> ·
+          Outstanding <strong style="color:#DC2626">${fmt(Math.max(0,_r2(billed-paid)))}</strong>
+          <div style="font-size:10.5px;color:#94A3B8;margin-top:4px">
+            This is the season's share. The party's real balance across all seasons is ${fmt(bal)}.
+          </div>
+        </div>`;
+      }
+      return `<div class="fbar" style="margin-top:12px">${chip('','All seasons',!partySeason)}${recs.map(x=>chip(x.id,x.name,partySeason===x.id)).join('')}</div>${box}`;
+    })()}
+    ${bal>0?`<div class="ibox red">Outstanding: <strong>${fmt(bal)}</strong> <span style="font-weight:600;opacity:.75">· whole ledger, all seasons</span></div>`:''}
     ${bal<=0?`<div class="ibox grn">✅ Account Clear — No outstanding balance</div>`:''}
     <div class="sh" style="margin-top:14px"><h2>Challans</h2></div>
     ${chs.length ? [...pend,...settl].map(c=>challanCard(c,false)).join('') : '<div class="empty" style="padding:1.5rem"><div class="ei" style="font-size:32px">📋</div><p>No challans</p></div>'}
@@ -3949,8 +4148,111 @@ function renderDaybook(){
    doc like the counters. `S.curSeason` is the default applied to new challans (owner + staff-merge).
    FY, by contrast, is ALWAYS derived from the challan date — never stored, never editable — so
    financial reports can never contradict the bill dates. */
+
+/* ══════════════════════════════════════════════════════════════════════
+   SEASONS
+   A season is a business period, not a date range. THE SEASON TAG ON A CHALLAN IS
+   MASTER: a bill dated January 2027 tagged "Summer 2026" belongs to Summer 2026 —
+   for reports, party analysis and stock alike. Dates are only ever used as a hint
+   when guessing a default; they never override a tag.
+
+   Seasons live in their own per-doc collection so they can carry status and closing
+   data without bloating meta/state. S.seasons (the old array of plain strings) is
+   kept in sync for backward compatibility with anything still reading it.
+══════════════════════════════════════════════════════════════════════ */
+function seasonType(name){
+  const n = String(name||'').toUpperCase();
+  if(/WINT/.test(n)) return 'WINTER';
+  if(/SUMM/.test(n)) return 'SUMMER';
+  return 'OTHER';
+}
+function seasonFYFromName(name){
+  const m = String(name||'').match(/(20\d{2})/);
+  return m ? +m[1] : null;
+}
+/* Resolve whatever a challan carries — a season id (new) or the raw name (legacy). */
+function seasonOf(c){
+  if(!c || !c.season) return null;
+  const byId = (S.seasonRecs||[]).find(s=>s && s.id===c.season);
+  if(byId) return byId;
+  const byName = (S.seasonRecs||[]).find(s=>s && s.name===c.season);
+  return byName || null;
+}
+function seasonIdOf(c){ const s=seasonOf(c); return s ? s.id : ''; }
+function seasonNameOf(c){ const s=seasonOf(c); return s ? s.name : (c && c.season ? String(c.season) : ''); }
+function seasonById(id){ return (S.seasonRecs||[]).find(s=>s && s.id===id) || null; }
+function seasonsForFY(fy){
+  return (S.seasonRecs||[]).filter(s=>s && (fy==null || s.fy===fy))
+    .sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+}
+function allSeasonFYs(){
+  const set={};
+  (S.seasonRecs||[]).forEach(s=>{ if(s && s.fy!=null) set[s.fy]=1; });
+  (S.challans||[]).forEach(c=>{ const f=fyOf(c && c.date); if(f!=null) set[f]=1; });
+  return Object.keys(set).map(Number).sort((a,b)=>b-a);
+}
+/* Challans belonging to a season, by TAG only. */
+function challansOfSeason(sid){
+  if(!sid) return (S.challans||[]).filter(Boolean);
+  return (S.challans||[]).filter(c=>c && seasonIdOf(c)===sid);
+}
+/* The season a new challan should default to: the current one, else the newest open. */
+function defaultSeasonId(){
+  const cur = (S.seasonRecs||[]).find(s=>s && (s.id===S.curSeason || s.name===S.curSeason));
+  if(cur && cur.status!=='CLOSED') return cur.id;
+  const open = (S.seasonRecs||[]).filter(s=>s && s.status!=='CLOSED')
+    .sort((a,b)=>String(b.startDate||b.name).localeCompare(String(a.startDate||a.name)));
+  return open.length ? open[0].id : (cur ? cur.id : '');
+}
+/* The previous season of the SAME TYPE — Winter 2026 carries forward from Winter 2025,
+   never from Summer 2026. This is what makes next year's opening stock meaningful. */
+function previousSameTypeSeason(sid){
+  const s = seasonById(sid); if(!s) return null;
+  return (S.seasonRecs||[])
+    .filter(x=>x && x.type===s.type && x.fy!=null && s.fy!=null && x.fy < s.fy)
+    .sort((a,b)=>b.fy-a.fy)[0] || null;
+}
+
+/* ── migration: turn legacy season name strings into records, once ── */
+function migrateSeasons(){
+  if(!Array.isArray(S.seasonRecs)) S.seasonRecs = [];
+  const names = {};
+  (S.seasons||[]).forEach(n=>{ if(n) names[n]=1; });
+  (S.challans||[]).forEach(c=>{ if(c && c.season && typeof c.season==='string') names[c.season]=1; });
+  let added = 0;
+  Object.keys(names).forEach(n=>{
+    if((S.seasonRecs||[]).some(s=>s && (s.name===n || s.id===n))) return;
+    // FY from the name if it carries a year, else from the earliest challan tagged with it.
+    let fy = seasonFYFromName(n);
+    if(fy==null){
+      const tagged=(S.challans||[]).filter(c=>c && c.season===n).map(c=>c.date).filter(Boolean).sort();
+      fy = tagged.length ? fyOf(tagged[0]) : fyOf(today());
+    }
+    S.seasonRecs.push({
+      id: uniqId('SE'), name: n, type: seasonType(n), fy: fy,
+      startDate:'', endDate:'', status:'OPEN', closedAt:'', closingStockRef:''
+    });
+    added++;
+  });
+  if(added){ console.log('migrated', added, 'season(s) to records'); syncSeasonNames(); saveToCloud(); }
+  return added;
+}
+// Keep the legacy string array aligned so older code paths keep working.
+function syncSeasonNames(){
+  S.seasons = (S.seasonRecs||[]).map(s=>s.name);
+}
+
 function seasonOptions(sel){
-  return '<option value="">— No season —</option>'+(S.seasons||[]).map(s=>`<option value="${esc(s)}" ${s===sel?'selected':''}>${esc(s)}${s===S.curSeason?' (current)':''}</option>`).join('');
+  // Values are season IDs now. A legacy name still selects correctly because seasonById()
+  // falls back to matching on name.
+  const cur = defaultSeasonId();
+  const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
+  if(!recs.length){
+    return '<option value="">— No season —</option>'+(S.seasons||[]).map(x=>`<option value="${esc(x)}" ${x===sel?'selected':''}>${esc(x)}</option>`).join('');
+  }
+  const selId = (function(){ const r=(S.seasonRecs||[]).find(x=>x && (x.id===sel || x.name===sel)); return r?r.id:''; })();
+  return '<option value="">— No season —</option>'+recs.map(x=>
+    `<option value="${esc(x.id)}" ${x.id===selId?'selected':''}>${esc(x.name)}${x.status==='CLOSED'?' (closed)':(x.id===cur?' (current)':'')}</option>`).join('');
 }
 function openSeasons(){ renderSeasonList(); document.getElementById('mo-seasons').classList.add('open'); }
 function renderSeasonList(){
@@ -4069,7 +4371,7 @@ function debRenderItems(){ clearTimeout(_itemsRenderT); _itemsRenderT=setTimeout
        as unmapped — it is NEVER auto-mapped or silently dropped.
 ══════════════════════════════════════════════════════════════════════ */
 let _stockIdx = null;
-function invalidateStock(){ _stockIdx = null; }
+function invalidateStock(){ _stockIdx = null; if(typeof invalidateSeasonStock==='function') invalidateSeasonStock(); }
 function stockCutover(){ return S.stockFrom || ''; }          // default only — each item may override
 function stockReady(){ return !!stockCutover() || (S.stock||[]).length>0; }
 function _onOrAfter(d, cut){ return !cut || String(d||'') >= cut; }
@@ -4111,6 +4413,214 @@ function stockContractorIn(row, cutOf, gcut, unmapped){
       }
     });
   });
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   SEASON STOCK BOOKS
+   Each season keeps its own book. THE SEASON TAG ON THE CHALLAN DECIDES which book a
+   sale comes out of — never the date. A challan dated January 2027 tagged Summer 2026
+   leaves Summer 2026's stock.
+
+   Opening stock records and manual movements carry a `season` field. Anything written
+   before this feature existed has no season, so it belongs to the "unassigned" book and
+   is shown under whichever season is active until it is filed — never silently split.
+
+   Closing a season freezes its quantities into a stockClose document. THAT snapshot is the
+   source of truth for the next same-type season's opening; the Excel export is the owner's
+   external record and can be regenerated at any time.
+══════════════════════════════════════════════════════════════════════ */
+let stockSeasonId = '';        // the book you are working in — independent of the Home selector
+try{ stockSeasonId = localStorage.getItem('cm_stock_season') || ''; }catch(e){}
+function setStockSeason(id){
+  stockSeasonId = id||'';
+  try{ localStorage.setItem('cm_stock_season', stockSeasonId); }catch(e){}
+  invalidateStock(); renderStock();
+}
+function activeStockSeason(){
+  if(stockSeasonId){ const s=seasonById(stockSeasonId); if(s) return s; }
+  const d = seasonById(defaultSeasonId());
+  return d || null;
+}
+function stockSeasonLabel(){ const s=activeStockSeason(); return s ? s.name : 'No season'; }
+// Records with no season belong to every book until filed, so nothing is ever lost.
+function _recInSeason(rec, sid){ return !rec.season || rec.season===sid; }
+
+/* Closing snapshot helpers */
+function closeRecordFor(sid){ return (S.stockClose||[]).find(x=>x && x.seasonId===sid) || null; }
+/* Opening quantity for an item in a season: an explicit opening record wins, otherwise the
+   previous same-type season's frozen closing quantity carries forward. */
+function seasonOpeningFor(itemId, sid){
+  const own = (S.stock||[]).find(x=>x && x.itemId===itemId && x.season===sid);
+  if(own) return +own.qty||0;
+  const prev = previousSameTypeSeason(sid);
+  if(prev){
+    const snap = closeRecordFor(prev.id);
+    if(snap){
+      const r = (snap.rows||[]).find(x=>x && x.itemId===itemId);
+      if(r) return +r.qty||0;
+    }
+  }
+  // Legacy opening rows (written before seasons existed) have no season tag.
+  const legacy = (S.stock||[]).find(x=>x && x.itemId===itemId && !x.season);
+  return legacy ? (+legacy.qty||0) : 0;
+}
+function seasonOpeningIsCarried(itemId, sid){
+  const own = (S.stock||[]).find(x=>x && x.itemId===itemId && x.season===sid);
+  if(own) return false;
+  const prev = previousSameTypeSeason(sid);
+  return !!(prev && closeRecordFor(prev.id));
+}
+
+/* The season book itself. Same shape as stockIndex() so the existing screen can render it. */
+let _seasonStockIdx = null, _seasonStockKey = '';
+function invalidateSeasonStock(){ _seasonStockIdx = null; _seasonStockKey = ''; }
+function seasonStockIndex(sid){
+  sid = sid || (activeStockSeason() ? activeStockSeason().id : '');
+  if(_seasonStockIdx && _seasonStockKey===sid) return _seasonStockIdx;
+  const rows = {};
+  const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, retIn:0, onHand:0});
+  (S.items||[]).forEach(it=>{ if(it&&it.id) row(it.id); });
+
+  // Opening: explicit for this season, else carried from the previous same-type season.
+  Object.keys(rows).forEach(id=>{ rows[id].open = seasonOpeningFor(id, sid); });
+
+  (S.stockMv||[]).forEach(m=>{
+    if(!m || !m.itemId || !_recInSeason(m, sid)) return;
+    const q = +m.qty || 0;
+    if(q >= 0) row(m.itemId).manIn += q; else row(m.itemId).manOut += -q;
+  });
+
+  const unmapped = {};
+  (S.challans||[]).forEach(c=>{
+    if(!c) return;
+    if(seasonIdOf(c) !== sid) return;                 // TAG decides, not the date
+    (c.items||[]).forEach(li=>{
+      const q = +li.qty || 0; if(!q) return;
+      const cn = itemCanon(li.name);
+      if(cn) row(cn.id).out += q;
+      else {
+        const k = normIName(li.name); if(!k) return;
+        const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
+        u.outQty += q; u.uses++; if((c.date||'') > u.last) u.last = c.date||'';
+      }
+    });
+  });
+
+  // A return follows the season of the challan it came from where we know it; otherwise its own tag.
+  (S.returns||[]).forEach(rt=>{
+    if(!rt) return;
+    const rsid = rt.season || (rt.cid ? seasonIdOf((S.challans||[]).find(c=>c&&c.id===rt.cid)||{}) : '');
+    if(rsid && rsid !== sid) return;
+    (rt.items||[]).forEach(li=>{
+      const q = +li.qty || 0; if(!q) return;
+      const cn = itemCanon(li.name);
+      if(cn) row(cn.id).retIn += q;
+      else {
+        const k = normIName(li.name); if(!k) return;
+        const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
+        u.inQty += q; u.uses++; if((rt.date||'') > u.last) u.last = rt.date||'';
+      }
+    });
+  });
+
+  Object.keys(rows).forEach(id=>{
+    const r = rows[id];
+    r.onHand = _r2(r.open + r.inCon + r.manIn + r.retIn - r.manOut - r.out);
+  });
+  _seasonStockKey = sid;
+  return _seasonStockIdx = { rows, unmapped:Object.values(unmapped), seasonId:sid };
+}
+
+/* ── closing a season ── */
+function seasonClosingRows(sid){
+  const idx = seasonStockIndex(sid);
+  return (S.items||[]).filter(it=>it&&it.id).map(it=>{
+    const r = idx.rows[it.id] || {onHand:0};
+    return { itemId:it.id, name:it.name||'', code:it.code||'', rate:+it.rate||0, qty:_r2(r.onHand) };
+  }).filter(r=>r.qty !== 0);
+}
+function openCloseSeason(){
+  const s = activeStockSeason();
+  if(!s){ alert('Create a season first.'); return; }
+  if(s.status==='CLOSED'){ alert(s.name+' is already closed.'); return; }
+  const rows = seasonClosingRows(s.id);
+  const units = rows.reduce((t,r)=>t+r.qty,0);
+  const value = rows.reduce((t,r)=>t+r.qty*r.rate,0);
+  const nxt = (S.seasonRecs||[]).filter(x=>x && x.type===s.type && x.fy>s.fy).sort((a,b)=>a.fy-b.fy)[0];
+  document.getElementById('sc-body').innerHTML = `
+    <div class="ibox" style="background:#EEF2FF;border-color:#C7D2FE;color:#1E3A8A;margin:0 0 12px">
+      Closing <strong>${esc(s.name)}</strong> freezes its stock exactly as it stands now.
+      Nothing about your challans or payments changes.
+    </div>
+    <div class="stats" style="margin-bottom:12px">
+      <div class="stat"><div class="sl">Items with stock</div><div class="sv">${rows.length}</div></div>
+      <div class="stat"><div class="sl">Total pieces</div><div class="sv">${Math.round(units)}</div></div>
+      <div class="stat"><div class="sl">Stock value</div><div class="sv">${fmt(value)}</div></div>
+    </div>
+    <div style="font-size:12px;color:#475569;line-height:1.7">
+      <div>1. The closing quantities are saved permanently.</div>
+      <div>2. An Excel sheet downloads for your records — you can re-export it any time.</div>
+      <div>3. <strong>${esc(s.name)}</strong> becomes read-only.</div>
+      <div>4. ${nxt ? `<strong>${esc(nxt.name)}</strong> will open with these quantities as its opening stock.`
+                    : `The next <strong>${esc(s.type==='SUMMER'?'Summer':s.type==='WINTER'?'Winter':s.type)}</strong> season you create will open with these quantities.`}</div>
+    </div>
+    <div style="font-size:11.5px;color:#94A3B8;margin-top:10px;line-height:1.55">
+      The saved snapshot is what carries forward. The Excel file is your own copy — the app never depends on it.
+    </div>`;
+  document.getElementById('mo-closeseason').classList.add('open');
+}
+async function confirmCloseSeason(){
+  const s = activeStockSeason(); if(!s || s.status==='CLOSED') return;
+  const rows = seasonClosingRows(s.id);
+  const snapId = uniqId('SC');
+  if(!S.stockClose) S.stockClose = [];
+  S.stockClose = S.stockClose.filter(x=>x && x.seasonId!==s.id);
+  S.stockClose.push({ id:snapId, seasonId:s.id, seasonName:s.name, closedAt:new Date().toISOString(), rows:rows });
+  S.seasonRecs = S.seasonRecs.map(x=>(x && x.id===s.id)
+    ? Object.assign({}, x, { status:'CLOSED', closedAt:new Date().toISOString(), closingStockRef:snapId })
+    : x);
+  saveToCloud();
+  closeModal('closeseason');
+  try{ await exportSeasonStockXlsx(s.id); }catch(e){ console.warn('closing export failed:', e); }
+  invalidateSeasonStock(); renderAll();
+  alert('✅ '+s.name+' is closed.\n\n'+rows.length+' item(s) frozen. The Excel sheet has been downloaded, and these quantities will open the next '+(s.type==='OTHER'?'season':s.type.toLowerCase())+' season.');
+}
+function reopenSeason(sid){
+  const s = seasonById(sid); if(!s) return;
+  if(!confirm('Re-open '+s.name+'?\n\nIts frozen closing stock is kept, but the book becomes editable again and the figures may change.')) return;
+  S.seasonRecs = S.seasonRecs.map(x=>(x && x.id===sid) ? Object.assign({}, x, { status:'OPEN' }) : x);
+  saveToCloud(); invalidateSeasonStock(); renderAll();
+}
+/* Re-exportable at any time, from the frozen snapshot when one exists. */
+async function exportSeasonStockXlsx(sid){
+  const s = seasonById(sid); if(!s){ alert('Season not found.'); return; }
+  const snap = closeRecordFor(sid);
+  const rows = snap ? snap.rows : seasonClosingRows(sid);
+  const head = [['Item','Code','Closing Qty','Rate','Value']];
+  rows.forEach(r=>head.push([r.name, r.code||'', +r.qty||0, +r.rate||0, _r2((+r.qty||0)*(+r.rate||0))]));
+  head.push(['','TOTAL', rows.reduce((t,r)=>t+(+r.qty||0),0), '', _r2(rows.reduce((t,r)=>t+(+r.qty||0)*(+r.rate||0),0))]);
+  const sheets = [
+    { name:'Summary', widths:[26,26], rows:[
+      ['Closing Stock',''],
+      ['Season', s.name],
+      ['Type', s.type],
+      ['Financial year', s.fy!=null?fyLbl(s.fy):''],
+      ['Status', s.status],
+      ['Frozen on', snap ? new Date(snap.closedAt).toLocaleString('en-IN') : 'not closed — live figures'],
+      ['Items', rows.length],
+      ['Total pieces', rows.reduce((t,r)=>t+(+r.qty||0),0)],
+      ['Stock value', _r2(rows.reduce((t,r)=>t+(+r.qty||0)*(+r.rate||0),0))]
+    ]},
+    { name:'Closing Stock', widths:[38,14,13,11,13], rows:head }
+  ];
+  const blob = await buildXlsx(sheets);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'Closing-Stock_' + String(s.name).replace(/[^\w]+/g,'-') + '.xlsx';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1500);
 }
 
 function stockIndex(){
@@ -4178,7 +4688,13 @@ function stockIndex(){
   return _stockIdx = { rows, unmapped:Object.values(unmapped) };
 }
 
-function stockRow(itemId){ return stockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0}; }
+/* Single switch point for the whole stock screen. With seasons defined, every figure comes
+   from the ACTIVE SEASON's book — so while Winter is selected, no Summer quantity can appear
+   anywhere. With no seasons defined, behaviour is exactly as before. */
+function activeStockIndex(){
+  return ((S.seasonRecs||[]).length && activeStockSeason()) ? seasonStockIndex() : stockIndex();
+}
+function stockRow(itemId){ return activeStockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0}; }
 function stockOnHand(itemId){ return stockRow(itemId).onHand; }
 
 /* Full audit trail for one item — every contribution, oldest first. */
@@ -5551,7 +6067,43 @@ function renderStock(){
   if(stockView==='moves')  { renderStockMoves(el);   _done(); return; }
   if(stockView==='item')   { renderStockItem(el);    _done(); return; }
   if(stockView==='unmapped'){ renderStockUnmapped(el); _done(); return; }
-  renderStockOnHand(el); _done();
+  renderStockOnHand(el);
+  // The stock book carries its OWN season, shown at the top. It does not follow the Home
+  // selector, because a stock book is a thing you work inside, not a view you glance through.
+  el.innerHTML = stockSeasonBarHtml() + el.innerHTML;
+  _done();
+}
+function stockSeasonBarHtml(){
+  const s = activeStockSeason();
+  const list = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
+  if(!list.length){
+    return `<div class="ibox amb" style="margin-bottom:12px">
+      No seasons yet. Add one in <strong>Menu → Seasons</strong> to keep stock season-wise.</div>`;
+  }
+  const closed = s && s.status==='CLOSED';
+  const snap = s ? closeRecordFor(s.id) : null;
+  const prev = s ? previousSameTypeSeason(s.id) : null;
+  return `
+  <div style="background:${closed?'#F8FAFC':'#1A2E5A'};border:1.5px solid ${closed?'#CBD5E1':'#1A2E5A'};border-radius:12px;padding:12px 14px;margin-bottom:12px;color:${closed?'#334155':'#fff'}">
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <div style="font-size:15px;font-weight:800">📦 Stock — ${esc(stockSeasonLabel())}</div>
+      ${closed?'<span style="font-size:9.5px;font-weight:800;background:#E2E8F0;color:#475569;padding:2px 8px;border-radius:20px">CLOSED</span>'
+              :'<span style="font-size:9.5px;font-weight:800;background:#4ADE80;color:#064E3B;padding:2px 8px;border-radius:20px">OPEN</span>'}
+    </div>
+    <div style="font-size:11px;color:${closed?'#64748B':'#A5B4D4'};margin-top:3px">
+      ${closed && snap ? 'Frozen on '+fmtD(String(snap.closedAt).slice(0,10))+' · read-only'
+        : (prev && closeRecordFor(prev.id) ? 'Opening carried forward from '+esc(prev.name) : 'Only this season\'s bills affect these figures')}
+    </div>
+    <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+      <select onchange="setStockSeason(this.value)" style="flex:1;min-width:150px;padding:8px 10px;border:none;border-radius:8px;font-size:12.5px;font-family:inherit;font-weight:700;color:#1A2E5A;background:#fff">
+        ${list.map(x=>`<option value="${esc(x.id)}" ${s&&s.id===x.id?'selected':''}>${esc(x.name)}${x.status==='CLOSED'?' · closed':''}</option>`).join('')}
+      </select>
+      ${closed
+        ? `<button class="btn sm" style="font-size:11.5px" onclick="exportSeasonStockXlsx('${_js(s.id)}')">⬇ Excel</button>
+           <button class="btn sm" style="font-size:11.5px" onclick="reopenSeason('${_js(s.id)}')">↩ Re-open</button>`
+        : `<button class="btn sm" style="font-size:11.5px;background:#fff;color:#1A2E5A;font-weight:800" onclick="openCloseSeason()">🔒 Close season</button>`}
+    </div>
+  </div>`;
 }
 
 function renderStockSetup(el){
@@ -5571,7 +6123,7 @@ function renderStockSetup(el){
 }
 
 function stockSummary(){
-  const idx = stockIndex();
+  const idx = activeStockIndex();
   let tracked=0, neg=0, zero=0, units=0;
   (S.items||[]).forEach(it=>{
     const r = idx.rows[it.id]; if(!r) return;
@@ -5586,7 +6138,7 @@ function stockSummary(){
 }
 
 function renderStockOnHand(el){
-  const idx = stockIndex(), sm = stockSummary();
+  const idx = activeStockIndex(), sm = stockSummary();
   const q = normIName(stockSearch);
   let list = (S.items||[]).slice().map(it=>({it, r:stockRow(it.id)}));
   if(q) list = list.filter(x=> normIName(x.it.name).includes(q) || normIName(x.it.code).includes(q));
@@ -7282,6 +7834,42 @@ function followUpsPending(sheetId){
   return Object.keys(byDate).sort().map(d=>({ date:d, entries:byDate[d] }));
 }
 function allVisits(){ return (S.visits||[]).filter(Boolean).map(vNorm); }
+/* AUTO-LINK PAYMENTS ENTERED OUTSIDE THE VISITS SCREEN
+   A payment recorded on the party page (or in the daybook) is still money that staff member
+   brought back. Previously only payments entered through the Visits UI closed an assignment,
+   so a party that had paid stayed on the round for ever. This pass links any unlinked payment
+   dated on or after the day the party was assigned, and closes the entry.
+   The ledger is untouched — we only attach an existing payment id to the visit record. */
+function autoLinkPayments(){
+  if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
+  const used = {}, skip = {};
+  (S.visits||[]).forEach(v=>{
+    if(!v) return;
+    if(v.payId) used[v.payId] = 1;
+    (v.noAutoLink||[]).forEach(id=>{ skip[id] = 1; });   // deliberately unlinked by the owner
+  });
+  let n = 0;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    const e = vNorm(v);
+    if(e.status !== 'PENDING') return v;
+    // Anchor on the day this party was FIRST put on the round, not on today — carry-forward
+    // moves visitDate, and a payment taken the day of the original visit still counts.
+    const anchor = e.rolledFrom || e.visitDate || e.sheetDate || '';
+    const hit = (S.payments||[])
+      .filter(p => p && p.pid===e.pid && p.date && (!anchor || p.date >= anchor) && !used[p.id] && !skip[p.id])
+      .sort((a,b)=>String(a.date).localeCompare(String(b.date)))[0];
+    if(!hit) return v;
+    used[hit.id] = 1; n++;
+    return Object.assign({}, v, {
+      status:'COLLECTED', amount:+hit.amount||0, mode:hit.mode||'',
+      payId:hit.id, doneDate:hit.date, autoLinked:true
+    });
+  });
+  if(n){ console.log('linked', n, 'payment(s) recorded elsewhere to visit entries'); saveToCloud(); }
+  return n;
+}
+
 /* AUTO CARRY-FORWARD
    A party assigned for a date that has passed with nothing recorded — no payment, no next
    date, not even a "couldn't collect" — was simply never dealt with. Rather than let it fall
@@ -7652,7 +8240,8 @@ function entryCardHtml(e){
     </div>
 
     ${e.status==='COLLECTED'?ib('#F0FDF4','#A7F3D0','#065F46',
-        `✅ <strong>${fmt(e.amount)}</strong>${e.mode?' · '+esc(e.mode):''} on ${fmtD(e.doneDate||e.visitDate)}${e.reason?`<br>“${esc(e.reason)}”`:''}`):''}
+        `✅ <strong>${fmt(e.amount)}</strong>${e.mode?' · '+esc(e.mode):''} on ${fmtD(e.doneDate||e.visitDate)}${e.reason?`<br>“${esc(e.reason)}”`:''}`+
+        (e.autoLinked?`<div style="font-size:10.5px;opacity:.8;margin-top:2px">Matched from a payment entered on the party page.</div>`:'')):''}
     ${e.status==='LATER'?ib('#FFFBEB','#FDE68A','#92400E',
         `📅 Come back <strong>${fmtD(e.nextDate)}</strong>${(()=>{const d=daysBetweenISO(e.nextDate);return d>0?` · <span style="color:#B91C1C">${d}d overdue</span>`:(d===0?' · today':` · in ${Math.abs(d)}d`);})()}${e.amount?` · promised ${fmt(e.amount)}`:''}${e.reason?`<br>“${esc(e.reason)}”`:''}`):''}
     ${(e.status==='NOTMET'||e.status==='REFUSED')?ib('#F8FAFC','#E2E8F0','#475569',
@@ -7669,7 +8258,6 @@ function entryCardHtml(e){
         </div>
         <button class="btn sm" style="font-size:11.5px;background:#059669;color:#fff;border-color:#059669;font-weight:800;flex-shrink:0" onclick="quickCollect('${e.id}')">✓</button>
         <button class="btn sm" style="font-size:13px;background:#FFFBEB;color:#92400E;border-color:#FDE68A;flex-shrink:0" title="Come another day" onclick="openLater('${e.id}')">📅</button>
-        <button class="btn sm" style="font-size:13px;flex-shrink:0" title="Other date, mode or remarks" onclick="openCollect('${e.id}')">⋯</button>
       </div>
       <div id="qc-hint-${e.id}" style="font-size:10px;color:#059669;margin-top:4px;min-height:12px"></div>
       <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap">
@@ -8209,6 +8797,19 @@ function markNoCollect(id){
    using the same cleanup delPayment() performs (settlements + pinned overrides). */
 function undoEntry(id){
   const e=findEntry(id); if(!e) return;
+  // An auto-linked payment was entered on the party page and stands on its own. Undoing the
+  // visit outcome must NOT delete it — it only detaches it, and remembers not to re-attach.
+  if(e.autoLinked && e.payId){
+    if(!confirm('Detach this payment from the visit?\n\nThe payment of '+fmt(e.amount)+' stays in the ledger — '+esc(e.pname||'this party')+' just goes back on the round.')) return;
+    S.visits=S.visits.map(v=>(v&&v.id===e.id)
+      ? Object.assign({}, v, { status:'PENDING', amount:0, mode:'', payId:'', nextDate:'', reason:'',
+                               doneDate:'', autoLinked:false,
+                               noAutoLink:(v.noAutoLink||[]).concat([e.payId]) })
+      : v);
+    saveToCloud(); renderAll();
+    if(curParty) renderPartyDetail(curParty);
+    return;
+  }
   if(e.payId && !confirm('Undo this outcome?\n\nThe payment of '+fmt(e.amount)+' recorded for '+e.pname+' will also be removed from the ledger.')) return;
   if(e.payId){
     removePaymentToTrash(e.payId, 'Visit outcome undone — '+(e.pname||''));
@@ -8222,8 +8823,11 @@ function undoEntry(id){
 }
 function delEntry(id){
   const e=findEntry(id); if(!e) return;
-  if(!confirm('Remove '+(e.pname||'this party')+' from the sheet?'+(e.payId?'\n\nThe payment of '+fmt(e.amount)+' recorded here moves to the Recycle Bin and can be restored.':''))) return;
-  if(e.payId){
+  const ownsPay = e.payId && !e.autoLinked;      // only payments CREATED here are ours to remove
+  if(!confirm('Remove '+(e.pname||'this party')+' from the sheet?'+
+      (ownsPay ? '\n\nThe payment of '+fmt(e.amount)+' recorded here moves to the Recycle Bin and can be restored.'
+               : (e.payId ? '\n\nThe payment stays in the ledger — it was entered on the party page.' : '')))) return;
+  if(ownsPay){
     removePaymentToTrash(e.payId, 'Visit entry deleted — '+(e.pname||''));
     invalidateCash();
   }
@@ -8233,7 +8837,7 @@ function delEntry(id){
 }
 function delSheet(id){
   const g=sheetById(id); if(!g) return;
-  const withPay=g.entries.filter(e=>e.payId);
+  const withPay=g.entries.filter(e=>e.payId && !e.autoLinked);   // never delete payments entered elsewhere
   if(!confirm('Delete this whole sheet ('+g.total+' assignment'+(g.total===1?'':'s')+')?'+
      (withPay.length?'\n\n'+withPay.length+' collected payment(s) recorded from this sheet will move to the Recycle Bin. You can restore them from there.':''))) return;
   withPay.forEach(e=>{ removePaymentToTrash(e.payId, 'Visit sheet deleted — '+(e.pname||'')); });
