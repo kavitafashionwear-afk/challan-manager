@@ -54,6 +54,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;ba
 
 /* ── BOTTOM NAV ── */
 .bottom-nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #E0E0E0;display:flex;z-index:50;box-shadow:0 -2px 8px rgba(0,0,0,.08)}
+/* Sync alert — sits above the bottom nav, never blocks the screen. */
+#net-toast{position:fixed;left:12px;right:12px;bottom:76px;z-index:120;display:none;
+  border-radius:13px;padding:13px 15px;box-shadow:0 8px 28px rgba(0,0,0,.22);
+  font-family:inherit;animation:ntIn .22s ease-out}
+@keyframes ntIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+#net-toast .nt-row{display:flex;align-items:flex-start;gap:11px}
+#net-toast .nt-ico{font-size:19px;line-height:1.1;flex-shrink:0}
+#net-toast .nt-ttl{font-size:13.5px;font-weight:800;line-height:1.35}
+#net-toast .nt-msg{font-size:11.5px;line-height:1.55;margin-top:3px;opacity:.9}
+#net-toast .nt-x{background:none;border:none;font-size:16px;cursor:pointer;opacity:.5;padding:0 2px;flex-shrink:0;color:inherit}
+#net-toast .nt-btn{margin-top:10px;width:100%;padding:9px;border-radius:9px;border:none;
+  font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer;background:rgba(255,255,255,.9)}
+@media(min-width:600px){#net-toast{left:auto;right:20px;bottom:20px;max-width:370px}}
 .nav-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px 10px;cursor:pointer;border:none;background:none;color:#999;font-size:10px;font-family:inherit;gap:2px;border:none;outline:none}
 .nav-tab .ni{font-size:22px;line-height:1}
 .nav-tab.on{color:#1A2E5A;font-weight:700}
@@ -272,6 +285,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="cscreen on" id="cs-home">
     <div class="pg">
       <div class="banner"><h2 id="greet">👋 Welcome</h2><p>Wholesale Readymade Garments</p><div style="font-size:11px;color:#AAC4EE;margin-top:4px" id="hdate"></div></div>
+      <div id="incoming-review" style="display:none"></div>
       <div class="stats" id="home-stats"></div>
       <div class="sh"><h2>Recent Challans</h2></div>
       <div id="home-challans"></div>
@@ -376,6 +390,9 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <!-- FAB -->
 <button class="fab" id="fab" onclick="openModal('challan')" style="display:none">+</button>
 
+<!-- Sync alert -->
+<div id="net-toast"></div>
+
 <!-- ══════════ STAFF BILLING INTERFACE ══════════ -->
 <div id="page-staff" style="display:none;position:fixed;inset:0;z-index:15;background:#F0F2F5;overflow-y:auto">
   <!-- Staff top bar -->
@@ -450,6 +467,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
   <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
+  <div class="umi" onclick="openBackup()">💾 Backup &amp; Restore</div>
   <div class="umi" onclick="goTab('visits');closeMenu()">🚶 Visits &amp; Follow-ups <span id="visits-due-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="goTab('cash');closeMenu()">💰 Cash in Hand</div>
   <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
@@ -630,6 +648,17 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('edit-party')">Cancel</button>
     <button class="btn pri" style="flex:1;justify-content:center" onclick="saveEditParty()">✓ Save Changes</button>
   </div>
+</div></div>
+
+<!-- ══════════ BACKUP & RESTORE ══════════ -->
+<div class="overlay" id="mo-backup">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>💾 Backup &amp; Restore</h3><div style="font-size:12px;color:#888">Your data, recoverable</div></div>
+    <button class="xbtn" onclick="closeModal('backup')">✕</button>
+  </div>
+  <div class="mbody" id="backup-body"></div>
+  <div class="mfoot"><button class="btn" style="width:100%;justify-content:center" onclick="closeModal('backup')">Close</button></div>
 </div></div>
 
 <!-- ══════════ VISITS: NEW SHEET ══════════ -->
@@ -955,7 +984,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-08-27.3';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-02.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -985,7 +1014,19 @@ const fmtN = n => new Intl.NumberFormat('en-IN').format(Math.round(n||0));
 const fmtR = n => { if(!n&&n!==0)return '0'; var v=parseFloat(n); return Number.isInteger(v)?String(v):v.toFixed(2).replace(/\.?0+$/,''); };
 const fmtD = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '-';
 const today = () => new Date().toISOString().split('T')[0];
-const esc  = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+/* esc() must be safe in BOTH text and attribute contexts. Quotes were previously left
+   unescaped, so a stored value like  Ram" onmouseover="…  broke out of any attribute it was
+   interpolated into (href="tel:…", value="…", <option value="…">) and executed script in the
+   owner's session — which holds full Firestore write access. Escaping " and ' closes that.
+   For values interpolated into a JS string inside an on* handler, use _js(), not esc(). */
+const esc  = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+/* _js(): for a value going into a JS string literal inside an on* attribute.
+   esc() is WRONG there — the HTML parser decodes &#39; back to a real apostrophe before the
+   JS is parsed, so the value would break straight out of the string. _js() escapes the quote
+   as \' which survives decoding, and neutralises " and < so the attribute and the surrounding
+   <script>/tag context stay intact. */
+const _js = v => String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;');
 const ini  = n => n.trim().split(/\s+/).map(w=>w[0]).join('').toUpperCase().slice(0,2);
 const AVC  = ['#1A2E5A','#065F46','#92400E','#6D28D9','#9D174D','#1E40AF','#047857'];
 const avc  = i => AVC[i%AVC.length];
@@ -1256,6 +1297,131 @@ function challanStatus(c) {
   return (a.status && a.status[c.id]) || 'P';
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   SIGN-IN ENVIRONMENT
+   Google refuses OAuth inside embedded browsers (the mini-browser WhatsApp, Instagram,
+   Facebook and Gmail open links in). Firebase surfaces that as
+   auth/operation-not-supported-in-this-environment, which is what iOS was showing.
+   A popup cannot be opened there either, so the only real cure is to reopen the page in
+   the real Safari/Chrome — these helpers detect the situation and make that one tap.
+══════════════════════════════════════════════════════════════════════ */
+function isEmbeddedBrowser(){
+  var ua = navigator.userAgent || '';
+  if (/FBAN|FBAV|FB_IAB|Instagram|Line\/|Twitter|MicroMessenger|WhatsApp|Snapchat|LinkedInApp|Pinterest/i.test(ua)) return true;
+  // iOS in-app WebViews run WebKit but omit the "Safari/" token a real Safari always sends.
+  var iOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+  if (iOS && /AppleWebKit/.test(ua) && !/Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua)) return true;
+  // Android System WebView.
+  if (/\bwv\b/.test(ua) || /Android.*Version\/[\d.]+.*Chrome/.test(ua) === false && /Android/.test(ua) && /Version\//.test(ua)) return false;
+  return false;
+}
+/* Every browser on iOS is WebKit underneath, so they all inherit Safari's cross-site
+   storage rules. That matters because this app is served from kavitafashionwear-afk.github.io
+   while Firebase's sign-in handler lives on challan-manager-85768.firebaseapp.com — a
+   different site. Safari's "Prevent Cross-Site Tracking" (on by default) denies that handler
+   its storage, which is exactly why signInWithRedirect stopped working in Safari 16.1+.
+   A POPUP is unaffected, because the popup is its own top-level window and therefore
+   first-party. So on WebKit the popup is the only path that can work, and falling back to a
+   redirect there just bounces the person silently back to the login screen. */
+function isAppleWebKit(){
+  var ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  if (/Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|Edg\//.test(ua)) return true;
+  return false;
+}
+var LAST_AUTH_ERR = '';
+function authDiagText(){
+  var ua = navigator.userAgent || '';
+  return [
+    'Challan Manager sign-in diagnostics',
+    'build      : ' + (typeof BUILD!=='undefined' ? BUILD : '?'),
+    'page       : ' + location.origin,
+    'authDomain : ' + ((typeof firebaseConfig!=='undefined' && firebaseConfig.authDomain) || '?'),
+    'error      : ' + (LAST_AUTH_ERR || 'none yet'),
+    'webkit     : ' + isAppleWebKit(),
+    'in-app     : ' + isEmbeddedBrowser(),
+    'storage    : ' + (webStorageBlocked() ? 'BLOCKED' : 'ok'),
+    'cookies    : ' + (navigator.cookieEnabled ? 'on' : 'OFF'),
+    'popupOpen  : ' + (typeof window.open === 'function'),
+    'ua         : ' + ua
+  ].join('\n');
+}
+function copyAuthDiag(){
+  var t = authDiagText();
+  try{
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(function(){
+        var b=document.getElementById('diag-btn')||document.getElementById('diag-btn2');
+        if(b) b.textContent='✓ Copied';
+      }).catch(function(){ prompt('Copy this:', t); });
+    } else prompt('Copy this:', t);
+  }catch(e){ prompt('Copy this:', t); }
+}
+/* Popup was blocked on a WebKit browser: redirect will not save us, so explain the one
+   setting that fixes it and let them retry without reloading. */
+function showPopupHelp(code){
+  var msg = document.getElementById('login-msg'); if(!msg) return;
+  var ios = /iPad|iPhone|iPod/.test(navigator.userAgent||'');
+  msg.style.background='#FFF7ED'; msg.style.color='#9A3412'; msg.style.padding='12px';
+  msg.style.borderRadius='10px'; msg.style.textAlign='left'; msg.style.border='1.5px solid #FDBA74';
+  msg.style.fontSize='12.5px'; msg.style.lineHeight='1.6';
+  msg.innerHTML =
+    '<div style="font-weight:800;margin-bottom:5px">Safari is blocking the sign-in window</div>' +
+    'Sign-in opens in a small window. Safari blocks it by default.' +
+    '<div style="margin-top:8px">' +
+      (ios ? 'Open <strong>Settings → Apps → Safari</strong> and turn <strong>Block Pop-ups</strong> OFF, then come back and tap the button again.'
+           : 'Open <strong>Safari → Settings → Websites → Pop-up Windows</strong> and set this site to <strong>Allow</strong>.') +
+    '</div>' +
+    '<button onclick="doLogin()" style="width:100%;margin-top:9px;padding:10px;border-radius:9px;border:none;background:#1A2E5A;color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">Try again</button>' +
+    '<button id="diag-btn" onclick="copyAuthDiag()" style="width:100%;margin-top:6px;padding:8px;border-radius:9px;border:1px solid #FDBA74;background:#fff;color:#9A3412;font-family:inherit;font-size:11.5px;font-weight:700;cursor:pointer">📋 Copy diagnostics</button>' +
+    (code ? '<div style="margin-top:6px;font-size:10.5px;opacity:.7">' + esc(code) + '</div>' : '');
+}
+function webStorageBlocked(){
+  try { sessionStorage.setItem('__t','1'); sessionStorage.removeItem('__t'); return false; }
+  catch(e){ return true; }
+}
+function openInRealBrowser(){
+  var url = location.href;
+  var ua  = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) {
+    // Undocumented but reliable: this scheme hands the URL to Safari from an in-app browser.
+    location.href = 'x-safari-' + url;
+    setTimeout(function(){ showOpenExternally(); }, 700);
+  } else if (/Android/.test(ua)) {
+    location.href = 'intent://' + url.replace(/^https?:\/\//,'') + '#Intent;scheme=https;package=com.android.chrome;end';
+    setTimeout(function(){ showOpenExternally(); }, 700);
+  } else {
+    showOpenExternally();
+  }
+}
+function copyAppLink(){
+  var url = location.href;
+  function done(){ var b=document.getElementById('cp-link'); if(b){ b.textContent='✓ Link copied'; setTimeout(function(){ b.textContent='📋 Copy the link'; },2200);} }
+  try{
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(url).then(done).catch(function(){ prompt('Copy this link:', url); }); }
+    else { prompt('Copy this link:', url); }
+  }catch(e){ prompt('Copy this link:', url); }
+}
+/* Replaces the error line with something the person can actually act on. */
+function showOpenExternally(extra){
+  var msg = document.getElementById('login-msg'); if(!msg) return;
+  var ios = /iPad|iPhone|iPod/.test(navigator.userAgent||'');
+  msg.style.background='#FFF7ED'; msg.style.color='#9A3412';
+  msg.style.padding='12px'; msg.style.borderRadius='10px'; msg.style.textAlign='left';
+  msg.style.border='1.5px solid #FDBA74'; msg.style.fontSize='12.5px'; msg.style.lineHeight='1.6';
+  msg.innerHTML =
+    '<div style="font-weight:800;margin-bottom:5px">Open this page in ' + (ios?'Safari':'Chrome') + '</div>' +
+    'Google will not allow sign-in inside the mini-browser that WhatsApp and other apps use. ' +
+    'It works normally once the page is opened properly.' +
+    '<div style="margin-top:8px;font-weight:700">' +
+      (ios ? 'Tap the <strong>' + '\u22EF' + '</strong> or share button at the bottom, then <strong>Open in Safari</strong>.'
+           : 'Tap the <strong>\u22EE</strong> menu, then <strong>Open in Chrome</strong>.') +
+    '</div>' +
+    '<button id="cp-link" onclick="copyAppLink()" style="width:100%;margin-top:9px;padding:9px;border-radius:9px;border:1px solid #FDBA74;background:#fff;color:#9A3412;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer">\uD83D\uDCCB Copy the link</button>' +
+    '<button id="diag-btn2" onclick="copyAuthDiag()" style="width:100%;margin-top:6px;padding:8px;border-radius:9px;border:1px solid #FDBA74;background:#fff;color:#9A3412;font-family:inherit;font-size:11.5px;font-weight:700;cursor:pointer">\uD83D\uDCCB Copy diagnostics</button>' +
+    (extra ? '<div style="margin-top:7px;font-size:11px;opacity:.75">' + esc(extra) + '</div>' : '');
+}
+
 /* ══════════════════════════════
    AUTH
 ══════════════════════════════ */
@@ -1338,6 +1504,12 @@ setTimeout(function(){
 function doLogin() {
   const btn = document.querySelector('.google-btn');
   const msg = document.getElementById('login-msg');
+  // Known-hostile environment: skip straight to the instructions instead of a dead-end error.
+  if (typeof isEmbeddedBrowser === 'function' && isEmbeddedBrowser()) { showOpenExternally(); return; }
+  if (typeof webStorageBlocked === 'function' && webStorageBlocked()) {
+    showOpenExternally('Private Browsing blocks the storage sign-in needs. Open this page in a normal tab.');
+    return;
+  }
   if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Opening Google...'; }
   if (msg) { msg.textContent = ''; }
 
@@ -1350,13 +1522,30 @@ function doLogin() {
       if (result && result.user) showApp(result.user);
     })
     .catch(popupErr => {
+      if (typeof LAST_AUTH_ERR !== 'undefined') LAST_AUTH_ERR = (popupErr.code||'') + ' | ' + (popupErr.message||'');
+      // On WebKit the redirect route is a dead end: its handler lives on a different site and
+      // Safari denies it storage, so the person is bounced silently back to this screen. That
+      // is why sign-in "works in Chrome but not Safari". Guide them to unblock the popup
+      // instead of sending them down a path that cannot succeed.
+      if (typeof isAppleWebKit === 'function' && isAppleWebKit() &&
+          !(typeof isEmbeddedBrowser === 'function' && isEmbeddedBrowser())) {
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Continue with Google'; }
+        showPopupHelp(popupErr.code);
+        return;
+      }
+      // Elsewhere (desktop Chrome, Android) a full-page redirect is a genuine fallback.
       if (popupErr.code === 'auth/popup-blocked' ||
-          popupErr.code === 'auth/popup-closed-by-user') {
-        // Popup blocked — use redirect as fallback
+          popupErr.code === 'auth/popup-closed-by-user' ||
+          popupErr.code === 'auth/cancelled-popup-request' ||
+          popupErr.code === 'auth/operation-not-supported-in-this-environment' ||
+          popupErr.code === 'auth/web-storage-unsupported' ||
+          popupErr.code === 'auth/internal-error') {
         if (msg) { msg.textContent = 'Opening full page sign-in...'; }
         auth.signInWithRedirect(provider).catch(e => {
           if (btn) { btn.disabled = false; btn.innerHTML = 'Continue with Google'; }
-          if (msg) msg.textContent = 'Error: ' + e.message;
+          // Redirect failed too: the browser itself is the problem, not the credentials.
+          if (typeof showOpenExternally === 'function') showOpenExternally(e && e.code ? e.code : '');
+          else if (msg) msg.textContent = 'Error: ' + e.message;
         });
       } else {
         if (btn) { btn.disabled = false; btn.innerHTML = 'Continue with Google'; }
@@ -1372,7 +1561,15 @@ function doLogin() {
 // Handle redirect result (fallback if popup was blocked)
 auth.getRedirectResult()
   .then(result => { if (result && result.user) showApp(result.user); })
-  .catch(() => {});
+  .catch(e => {
+    // The redirect came back rejected — tell the person why rather than silently
+    // returning them to a login button that appears to do nothing.
+    console.warn('redirect sign-in failed:', e && e.code, e && e.message);
+    if (typeof showOpenExternally === 'function' &&
+        e && /operation-not-supported|web-storage|disallowed_useragent/i.test((e.code||'') + ' ' + (e.message||''))) {
+      showOpenExternally(e.code || '');
+    }
+  });
 
 function doLogout() {
   closeMenu();
@@ -1421,20 +1618,43 @@ function routeStaff(user) {
 }
 
 // If the owner pre-authorized this email, create the approved uid doc automatically.
+/* SECURITY: this function used to write  {status:'approved'}  to the caller's own staff doc
+   after checking a pre-authorised email IN THE CALLER'S OWN BROWSER. Any signed-in Google
+   account could skip the check and write that document directly, granting itself staff access.
+   Approval is now issued only by the owner's session (claimPreauthFor, below), and the
+   Firestore rules refuse any status the requester sets on itself.
+   A pre-authorised staff member therefore files a normal PENDING request; the owner's app
+   sees the matching email and approves it automatically. */
 function checkPreauth(user) {
   var em=(user.email||'').toLowerCase();
   if(!em){ showStaffGate('none'); return; }
   ownerCol('staff').doc('email:'+em).get().then(function(snap){
     if(snap.exists && snap.data().status==='approved'){
+      // Pre-authorised: raise a pending request the owner will auto-approve. We may only ever
+      // create our own doc with status 'pending' — never 'approved'.
       ownerCol('staff').doc(user.uid).set({
-        status:'approved', uid:user.uid, name:user.displayName||'', email:em,
-        approvedAt:new Date().toISOString(), viaPreauth:true
-      }).then(function(){ /* onSnapshot above will flip to work view */ })
+        status:'pending', uid:user.uid, name:user.displayName||'', email:em,
+        requestedAt:new Date().toISOString(), preauth:true
+      }).then(function(){ showStaffGate('pending'); })
         .catch(function(){ showStaffGate('none'); });
     } else {
       showStaffGate('none');
     }
   }).catch(function(){ showStaffGate('none'); });
+}
+/* Owner-side counterpart: approve pending requests whose email the owner pre-authorised.
+   Runs only in an owner session, so the privileged write happens where it belongs. */
+function claimPreauthFor(req){
+  if(!uid || !isOwnerUid(uid) || !req || !req.uid) return;
+  var em=(req.email||'').toLowerCase(); if(!em) return;
+  ownerCol('staff').doc('email:'+em).get().then(function(snap){
+    if(snap.exists && snap.data().status==='approved'){
+      ownerCol('staff').doc(req.uid).set({
+        status:'approved', uid:req.uid, name:req.name||'', email:em,
+        approvedAt:new Date().toISOString(), viaPreauth:true
+      }, {merge:true}).catch(function(e){ console.warn('preauth approve deferred:', e&&e.code); });
+    }
+  }).catch(function(){});
 }
 
 function showStaffGate(state) {
@@ -1485,19 +1705,28 @@ function showStaffWork() {
   staffCalcTotal();
   // Read ONLY the slim public party directory (names/phone/city — no financial data).
   if (staffPartiesUnsub) { staffPartiesUnsub(); staffPartiesUnsub=null; }
-  staffPartiesUnsub = db.collection('users').doc(DATA_OWNER_UID).collection('public').doc('parties')
+  // Directories are chunked, so listen to the whole public collection and stitch the parts
+  // back together in chunk order. Works whether there is one chunk or fifty.
+  staffPartiesUnsub = db.collection('users').doc(DATA_OWNER_UID).collection('public')
     .onSnapshot(function(snap){
-      var d = snap.exists ? snap.data() : {};
-      staffParties = (d.parties||[]).map(function(p){ return {id:p.id, name:p.name, phone:p.phone||'', city:p.city||''}; });
+      var parts=[], items=[];
+      snap.forEach(function(doc){
+        var d=doc.data()||{};
+        if (Array.isArray(d.parties)) parts.push({ i:+d.chunk||0, rows:d.parties });
+        if (Array.isArray(d.items))   items.push({ i:+d.chunk||0, rows:d.items });
+      });
+      var flat = function(a){ return a.sort(function(x,y){return x.i-y.i;}).reduce(function(s,c){ return s.concat(c.rows); },[]); };
+      staffParties = flat(parts).map(function(p){ return {id:p.id, name:p.name, phone:p.phone||'', city:p.city||''}; });
+      staffItems   = flat(items).map(function(it){ return {id:it.id, name:it.name, code:it.code||'', rate:+it.rate||0}; });
       staffFillParties();
-    }, function(err){ console.warn('staff parties read:', err && err.code); });
+      if (typeof staffFillItems==='function') staffFillItems();
+    }, function(err){ console.warn('staff directory read:', err && err.code); });
   if (staffItemsUnsub) { staffItemsUnsub(); staffItemsUnsub=null; }
-  staffItemsUnsub = db.collection('users').doc(DATA_OWNER_UID).collection('public').doc('items')
-    .onSnapshot(function(snap){
-      var d = snap.exists ? snap.data() : {};
-      staffItems = (d.items||[]).slice().sort(function(a,b){ return ((+a.rate||0)-(+b.rate||0)) || String(a.name||'').localeCompare(String(b.name||'')); });
-      staffRefreshItemUI();
-    }, function(err){ console.warn('staff items read:', err && err.code); });
+}
+// Called by the chunked directory listener above once every items chunk has arrived.
+function staffFillItems(){
+  staffItems = (staffItems||[]).slice().sort(function(a,b){ return ((+a.rate||0)-(+b.rate||0)) || String(a.name||'').localeCompare(String(b.name||'')); });
+  staffRefreshItemUI();
 }
 function staffRefreshItemUI(){
   var dl=document.getElementById('st-items-dl');
@@ -1672,31 +1901,113 @@ function subscribeStaffRequests() {
     var pend=[], appr=[];
     snap.forEach(function(doc){ var d=doc.data(); if(d.status==='pending')pend.push(d); else if(d.status==='approved')appr.push(d); });
     window._staffPending=pend; window._staffApproved=appr;
+    // A pending request from a pre-authorised email is approved here, in the owner's session.
+    pend.forEach(function(r){ if(r && r.preauth) claimPreauthFor(r); });
     renderStaffBadge(pend.length);
   }, function(err){ console.warn('owner staff listen:', err && err.code); });
 }
 
-/* ── Owner side: auto-merge staff-created bills straight into the main challan list ──
-   Staff write to incomingBills (they can't touch the main doc). The owner's app picks
-   each one up, turns it into a normal challan tagged "Staff-generated" + email, creates
-   the party if it's new, saves, then deletes the queue doc so it isn't merged twice. ── */
+/* ── Owner side: staff-created bills are QUEUED FOR REVIEW ──
+   SECURITY: this used to merge every incomingBills document straight into the live ledger
+   with no owner action. Anything that could write to that collection could therefore inject
+   real parties and real challans into the books, and the owner's own session would then
+   persist them. Bills now sit in a review queue until the owner accepts them, and each one
+   is shape-validated first. Staff workflow is unchanged — the owner just taps Accept. ── */
+var _pendingBills = [];      // shape-checked bills awaiting the owner's decision
 function subscribeIncomingBills() {
   if (incomingUnsub) { incomingUnsub(); incomingUnsub=null; }
   incomingUnsub = ownerCol('incomingBills').onSnapshot(function(snap){
-    var toMerge=[];
+    var queue=[];
     snap.forEach(function(doc){
       var b=doc.data(); if(!b) return;
       var bid=b.billId||doc.id;
       if(_mergedBills[bid]) return;        // already handled this session
-      toMerge.push(b);
+      var v=validateIncomingBill(b, doc.id);
+      if(v.ok) queue.push(v.bill); else console.warn('incoming bill rejected:', bid, v.why);
     });
-    if(toMerge.length) mergeIncomingBills(toMerge);
+    _pendingBills=queue;
+    renderIncomingBadge(queue.length);
   }, function(err){ console.warn('incoming bills listen:', err && err.code); });
 }
+/* Never trust the queue document. Coerce every field to the type and range we expect and
+   drop the bill entirely if the essentials are missing or absurd. */
+function validateIncomingBill(b, docId){
+  try{
+    if(typeof b!=='object') return {ok:false, why:'not an object'};
+    var bill={};
+    bill.billId  = String(b.billId||docId||'').slice(0,64);
+    if(!bill.billId) return {ok:false, why:'no billId'};
+    bill.pid     = (b.pid==='NEW'||!b.pid) ? 'NEW' : String(b.pid).slice(0,64);
+    bill.pname   = String(b.pname||'').trim().slice(0,120);
+    bill.pphone  = String(b.pphone||'').replace(/[^\d+\-\s]/g,'').slice(0,20);
+    bill.pcity   = String(b.pcity||'').trim().slice(0,80);
+    bill.date    = /^\d{4}-\d{2}-\d{2}$/.test(String(b.date||'')) ? b.date : today();
+    bill.freight = Math.max(0, Math.min(1e7, +b.freight||0));
+    bill.createdAt = String(b.createdAt||'').slice(0,40);
+    bill.createdBy = { uid:String((b.createdBy&&b.createdBy.uid)||'').slice(0,64),
+                       email:String((b.createdBy&&b.createdBy.email)||'').slice(0,120) };
+    var raw = Array.isArray(b.items) ? b.items : [];
+    if(!raw.length) return {ok:false, why:'no items'};
+    if(raw.length>500) return {ok:false, why:'too many items'};
+    bill.items = raw.map(function(it){
+      return { name: String((it&&it.name)||'').trim().slice(0,120),
+               qty:  Math.max(0, Math.min(1e6, +(it&&it.qty)||0)),
+               rate: Math.max(0, Math.min(1e7, +(it&&it.rate)||0)) };
+    }).filter(function(it){ return it.name && it.qty>0; });
+    if(!bill.items.length) return {ok:false, why:'no valid item rows'};
+    if(!bill.pname && bill.pid==='NEW') return {ok:false, why:'no party'};
+    return {ok:true, bill:bill};
+  }catch(e){ return {ok:false, why:'threw'}; }
+}
+function renderIncomingBadge(cnt){
+  var el=document.getElementById('incoming-badge');
+  if(el){ el.style.display = cnt>0?'inline':'none'; el.textContent = cnt; }
+  var row=document.getElementById('incoming-review');
+  if(!row) return;
+  if(!cnt){ row.style.display='none'; row.innerHTML=''; return; }
+  row.style.display='block';
+  row.innerHTML =
+    '<div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px">'+
+      '<div style="font-size:13.5px;font-weight:800;color:#92400E">📥 '+cnt+' bill'+(cnt===1?'':'s')+' from staff awaiting your review</div>'+
+      '<div style="font-size:11.5px;color:#A16207;margin-top:3px;line-height:1.55">Nothing is added to your books until you accept it.</div>'+
+      _pendingBills.map(function(b,i){
+        var tot=b.items.reduce(function(s,it){return s+it.qty*it.rate;},0)+b.freight;
+        return '<div style="background:#fff;border:1px solid #FDE68A;border-radius:9px;padding:10px 11px;margin-top:8px">'+
+          '<div style="font-size:13px;font-weight:700;color:#1A1A1A">'+esc(b.pname||'(existing party)')+'</div>'+
+          '<div style="font-size:11px;color:#94A3B8;margin-top:2px">'+fmtD(b.date)+' · '+b.items.length+' item(s) · '+
+            esc(b.createdBy.email||'staff')+'</div>'+
+          '<div style="font-size:11px;color:#64748B;margin-top:4px;line-height:1.5">'+
+            b.items.slice(0,6).map(function(it){return esc(it.name)+' ×'+it.qty;}).join(' · ')+
+            (b.items.length>6?' …':'')+'</div>'+
+          '<div style="display:flex;align-items:center;gap:7px;margin-top:8px">'+
+            '<span style="font-size:14px;font-weight:800;color:#1A2E5A">'+fmt(tot)+'</span>'+
+            '<span style="flex:1"></span>'+
+            '<button class="btn sm" style="font-size:11.5px;color:#DC2626;border-color:#FCA5A5" onclick="rejectIncoming('+i+')">✕ Reject</button>'+
+            '<button class="btn sm pri" style="font-size:11.5px" onclick="acceptIncoming('+i+')">✓ Accept</button>'+
+          '</div></div>';
+      }).join('')+
+    '</div>';
+}
+function acceptIncoming(i){
+  var b=_pendingBills[i]; if(!b) return;
+  if(!confirm('Add this bill from '+(b.createdBy.email||'staff')+' to your books?')) return;
+  mergeIncomingBills([b]);
+}
+function rejectIncoming(i){
+  var b=_pendingBills[i]; if(!b) return;
+  if(!confirm('Reject and delete this bill? It will not be added to your books.')) return;
+  _mergedBills[b.billId]=true;
+  _pendingBills.splice(i,1);
+  ownerCol('incomingBills').doc(b.billId).delete().catch(function(e){ console.warn('reject cleanup deferred:', e&&e.code); });
+  renderIncomingBadge(_pendingBills.length);
+}
 
+/* Only ever called from acceptIncoming() — i.e. after the owner has looked at the bill and
+   after validateIncomingBill() has coerced every field. */
 function mergeIncomingBills(bills) {
   // Sort by creation time so challan numbers are assigned in order.
   bills.sort(function(a,b){ return String(a.createdAt||'').localeCompare(String(b.createdAt||'')); });
+  bills.forEach(function(b){ _pendingBills = _pendingBills.filter(function(x){ return x.billId!==b.billId; }); });
   bills.forEach(function(b){
     var bid=b.billId;
     _mergedBills[bid]=true;
@@ -1787,19 +2098,22 @@ function openStaffManager() {
     '<div style="font-size:12px;color:#888;margin-bottom:8px">They must still sign in once with this Gmail, then they get instant access.</div>'+
     '<input id="preauth-email" placeholder="staff@gmail.com" style="width:100%;padding:10px;border:1.5px solid #DDD;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">'+
     '<button onclick="preauthByEmail()" style="width:100%;background:#1A2E5A;color:#fff;border:none;padding:11px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">Add to allow-list</button>'+
-    '<div style="font-size:11px;color:#999;margin-top:8px;line-height:1.5">Note: pre-authorized emails appear as approved once the person signs in. For pre-auth to grant write access, your Firestore rules check the staff doc — see the rules I provided.</div></div>';
+    '<div style="font-size:11px;color:#999;margin-top:8px;line-height:1.5">Note: a pre-authorised email raises a pending request when the person first signs in, and this app approves it automatically from your (owner) session. Approval is never granted by the requester\'s own browser.</div></div>';
   showInfoModal('👥 Staff Access', html);
 }
 
 function approveStaff(suid) {
+  if(!uid || !isOwnerUid(uid)){ alert('Only the owner can approve staff.'); return; }
   ownerCol('staff').doc(suid).update({status:'approved', approvedAt:new Date().toISOString()})
     .then(function(){ openStaffManager(); });
 }
 function denyStaff(suid) {
+  if(!uid || !isOwnerUid(uid)){ alert('Only the owner can change staff access.'); return; }
   if(!confirm('Remove this staff member\'s access?')) return;
   ownerCol('staff').doc(suid).delete().then(function(){ openStaffManager(); });
 }
 function preauthByEmail() {
+  if(!uid || !isOwnerUid(uid)){ alert('Only the owner can pre-authorise staff.'); return; }
   var em=(document.getElementById('preauth-email').value||'').trim().toLowerCase();
   if(!em||em.indexOf('@')<0){alert('Enter a valid email.');return;}
   // Store a placeholder keyed by email; resolved to a uid when they first sign in.
@@ -1825,6 +2139,87 @@ function showInfoModal(title, bodyHtml) {
 /* ══════════════════════════════
    FIRESTORE SYNC
 ══════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════════════
+   SYNC ALERT
+   The coloured dot is easy to miss, so anything worse than "saving" also raises a banner.
+   Rules that keep it from becoming noise:
+     • A brief busy flicker (the normal case) never shows anything — only a stall past
+       STUCK_WARN_MS, going offline, or an outright refusal does.
+     • It appears once per state change. Dismissing it keeps it shut until the state
+       actually changes again, so it can't be tapped away and immediately reappear.
+     • Recovery shows a green confirmation for a few seconds, then clears itself, so you
+       always learn that the queued work went up.
+══════════════════════════════════════════════════════════════════════ */
+var NT = { shown:'', dismissed:'', timer:null };
+const NT_STYLE = {
+  offline:{ bg:'#F1F5F9', bd:'#CBD5E1', fg:'#334155', ico:'📴' },
+  stuck  :{ bg:'#FFF7ED', bd:'#FDBA74', fg:'#9A3412', ico:'⏳' },
+  err    :{ bg:'#FEF2F2', bd:'#FCA5A5', fg:'#B91C1C', ico:'⚠️' },
+  ok     :{ bg:'#F0FDF4', bd:'#A7F3D0', fg:'#065F46', ico:'✅' }
+};
+function hideNetToast(manual){
+  const el=document.getElementById('net-toast'); if(!el) return;
+  el.style.display='none';
+  if(manual) NT.dismissed = NT.shown;      // stays hidden until the situation changes
+  if(NT.timer){ clearTimeout(NT.timer); NT.timer=null; }
+}
+function _netToast(kind, title, msg, btnLabel, btnFn, autoHideMs){
+  const el=document.getElementById('net-toast'); if(!el) return;
+  const c=NT_STYLE[kind]||NT_STYLE.err;
+  el.style.background=c.bg; el.style.border='1.5px solid '+c.bd; el.style.color=c.fg;
+  el.innerHTML =
+    '<div class="nt-row"><div class="nt-ico">'+c.ico+'</div>'+
+    '<div style="flex:1;min-width:0"><div class="nt-ttl">'+esc(title)+'</div>'+
+    '<div class="nt-msg">'+msg+'</div></div>'+
+    '<button class="nt-x" onclick="hideNetToast(true)">✕</button></div>'+
+    (btnLabel?'<button class="nt-btn" style="color:'+c.fg+';border:1px solid '+c.bd+'" onclick="'+btnFn+'">'+esc(btnLabel)+'</button>':'');
+  el.style.display='block';
+  if(NT.timer){ clearTimeout(NT.timer); NT.timer=null; }
+  if(autoHideMs) NT.timer=setTimeout(function(){ hideNetToast(false); }, autoHideMs);
+}
+/* Called from setSyncDot on every state change. */
+function netToastFor(state){
+  // 'busy' is the normal one-second flicker while a write goes up — never announce it.
+  if(state==='busy') return;
+  if(state===NT.shown) return;                 // already showing this exact situation
+  const prev = NT.shown;
+  NT.shown = state;
+  if(NT.dismissed && NT.dismissed!==state) NT.dismissed='';
+  if(NT.dismissed===state) return;             // user closed this one; respect it
+
+  if(state==='offline'){
+    _netToast('offline','You are offline',
+      'Keep working — everything you enter is saved on this device and uploads by itself the moment the connection is back.',
+      null,null,null);
+    return;
+  }
+  if(state==='stuck'){
+    const why = (typeof STUCK!=='undefined' && STUCK.reason) ? esc(STUCK.reason) : 'the server is not responding';
+    _netToast('stuck','Not reaching the server',
+      'Your work is safe on this device but has not uploaded yet ('+why+'). Reconnecting automatically…',
+      'Open Sync Status','openSyncStatus()',null);
+    return;
+  }
+  if(state==='err'){
+    const denied = (typeof _denyList==='function') ? _denyList() : [];
+    _netToast('err', denied.length ? 'The server refused some data' : 'Sync problem',
+      denied.length
+        ? 'Blocked: <strong>'+esc(denied.join(', '))+'</strong>. Nothing is lost — it is held on this device until the permission is fixed.'
+        : 'Something could not be saved to the cloud. Your data is safe on this device and will retry.',
+      'Show me the fix','openSyncStatus()',null);
+    return;
+  }
+  if(state==='ok'){
+    if(prev==='offline' || prev==='stuck' || prev==='err'){
+      _netToast('ok','Back in sync','Everything queued on this device has been uploaded.',null,null,5000);
+    } else {
+      hideNetToast(false);
+    }
+    NT.dismissed='';
+  }
+}
+
 function setSyncDot(s) {
   const d = document.getElementById('sync-dot');
   if (!d) return;
@@ -1836,6 +2231,7 @@ function setSyncDot(s) {
           : 'Synced ✓';
   d.style.cursor = 'pointer';
   if(!d._wired){ d._wired=1; d.onclick=function(){ try{ openSyncStatus(); }catch(_e){} }; }
+  try{ netToastFor(s); }catch(e){ console.warn('sync alert skipped:', e); }
 }
 function updateSyncUI(){ refreshSyncDot(); }
 
@@ -1914,9 +2310,12 @@ function settlementId(s){ return (s.payId||'P')+'__'+(s.cid||'C')+'__'+Math.roun
 // Manual override document id — deterministic so the same pin always maps to the same doc
 // (idempotent writes, no duplicates across devices/offline).
 function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
-let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{}, expenses:{}, visits:{} };
+let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{}, expenses:{}, visits:{}, trash:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
-let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null, _subExp=null, _subCtPays=null, _subCtAdv=null, _subVisits=null;
+let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null, _subExp=null, _subCtPays=null, _subCtAdv=null, _subVisits=null, _subTrash=null;
+let _trashLoaded=false, _trashNeedsMigration=false;
+// Every trash record needs a stable id of its own now that each one is a document.
+function _trashId(t){ if(!t.id) t.id = 'T-'+(t.deletedAt||new Date().toISOString()).replace(/[^0-9]/g,'').slice(0,17)+'-'+Math.random().toString(36).slice(2,7); return t.id; }
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false,_reconcileDone=false;
 /* ── SYNC STATE (aggregate, not last-writer-wins) ──
@@ -1986,6 +2385,13 @@ function _watchdogTick(){
   refreshSyncDot();
 }
 setInterval(_watchdogTick, 5000);
+// Daily local snapshot. Fires shortly after the first cloud read, then hourly (it no-ops
+// once the day's snapshot exists), so a long-running tab still rolls over at midnight.
+setTimeout(function(){ try{ autoSnapshot(); }catch(e){} }, 15000);
+setInterval(function(){ try{ autoSnapshot(); }catch(e){} }, 3600000);
+// Excel: recover the remembered file, then write it once a day in the background.
+setTimeout(function(){ loadExcelHandle().then(function(){ setTimeout(autoExcelTick, 8000); }).catch(function(){}); }, 3000);
+setInterval(function(){ try{ autoExcelTick(); }catch(e){} }, 3600000);
 
 function refreshSyncDot(){
   if(!isOnline){ STUCK.since=0; setSyncDot('offline'); return; }
@@ -2006,7 +2412,7 @@ function refreshSyncDot(){
   setSyncDot('ok');
 }
 function syncReport(){
-  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','expenses','visits','ct_lots','ct_pays','ct_advances','meta'];
+  const order=['parties','challans','payments','settlements','overrides','items','itemmap','stock','stockmv','returns','expenses','visits','trash','ct_lots','ct_pays','ct_advances','meta'];
   return order.filter(k=>k in SYNC).map(k=>{
     const s=SYNC[k];
     return { coll:k, optional:!!SYNC_OPTIONAL[k], err:s.err||null, cache:!!s.cache,
@@ -2174,14 +2580,33 @@ function attachDataListeners(){
     _lastSaved.visits = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     markLoaded(snap.metadata, 'visits', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('visits',err));
+  /* trash — one document per deleted item. Same per-doc + deep-copy baseline + diffWrite
+     contract as every other collection, so the recycle bin can grow without bound. */
+  _subTrash = _col('trash').onSnapshot({includeMetadataChanges:true}, snap=>{
+    _trashLoaded = true;
+    const cloud = snap.docs.map(d=>d.data());
+    if(_trashNeedsMigration && !cloud.length && (S.trash||[]).length){
+      // First run after the layout change: keep what meta gave us and let saveToCloud write it out.
+      _trashNeedsMigration = false;
+      _lastSaved.trash = {};
+      setTimeout(function(){ try{ saveToCloud(); }catch(e){} }, 1200);
+    } else {
+      S.trash = cloud.sort((a,b)=>String(b.deletedAt||'').localeCompare(String(a.deletedAt||'')));
+      _lastSaved.trash = _indexById(cloud.map(x=>JSON.parse(JSON.stringify(x))), x=>x.id);
+    }
+    markLoaded(snap.metadata, 'trash', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('trash',err));
   _subMeta = _col('meta').doc('state').onSnapshot({includeMetadataChanges:true}, snap=>{
-    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0); S.trash=d.trash||[]; if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays;
+    if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0);
+      // Legacy meta docs still carry trash inline; adopt it once, then it migrates out.
+      if(!d.trashMoved && Array.isArray(d.trash) && d.trash.length && !_trashLoaded){ S.trash=d.trash; _trashNeedsMigration=true; }
+      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays;
       if(d.cashOpen!==undefined){ S.cashOpen=d.cashOpen; invalidateCash(); }
       if(d.cashModes!==undefined && d.cashModes){ S.cashModes=d.cashModes; invalidateCash(); } if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('meta',err));
 
-  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subExp,_subLots,_subCtPays,_subCtAdv,_subVisits,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
+  unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subExp,_subLots,_subCtPays,_subCtAdv,_subVisits,_subTrash,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
 function onSubErr(which, err){
@@ -2231,9 +2656,13 @@ function saveToCloud() {
     diffWrite('returns',     S.returns,     _lastSaved.returns,     x=>x.id);
     diffWrite('expenses',    S.expenses,    _lastSaved.expenses,    x=>x.id);
     diffWrite('visits',      S.visits,      _lastSaved.visits,      x=>x.id);
+    (S.trash||[]).forEach(_trashId);
+    diffWrite('trash',       S.trash,       _lastSaved.trash,       x=>x.id);
     // Only write meta when counters/trash actually changed — an unconditional write every save
     // echoes back through the meta listener and triggers an extra re-render for no reason.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, trash:S.trash||[], seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays) };
+    // trash is NOT in here any more — it lives in its own collection, one document per
+    // deleted item. meta/state is now bounded: counters and a few small settings only.
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), trashMoved:true };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -2255,7 +2684,18 @@ function diffWrite(coll, arr, lastIndex, keyFn){
     nowIndex[id] = item;
     const prev = lastIndex[id];
     if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) {
-      _col(coll).doc(String(id)).set(_clean(item)).catch(e=>noteWriteFail(coll,e));
+      const payload = _clean(item);
+      const bytes = _docBytes(payload);
+      if (bytes > DOC_LIMIT - 4096) {
+        // Uploading would fail with invalid-argument and pin the dot red with no explanation.
+        // Skip it, keep it locally, and name it in Sync Status → Backup so it can be dealt with.
+        OVERSIZE[coll + '/' + id] = bytes;
+        console.warn('OVERSIZE record skipped:', coll, id, bytes, 'bytes');
+        delete nowIndex[id];            // no baseline, so it is retried after it shrinks
+        return;
+      }
+      delete OVERSIZE[coll + '/' + id];
+      _col(coll).doc(String(id)).set(payload).catch(e=>noteWriteFail(coll,e));
     }
   });
   Object.keys(lastIndex).forEach(id=>{
@@ -2319,13 +2759,33 @@ function migrateLegacyIfNeeded(done){
 }
 
 // Staff can only ever read this slim doc — it contains zero challan/payment/balance data.
+var DIR_CHUNK = 300;                 // records per published document
+var _dirChunkCount = { parties:0, items:0 };
+function _publishChunks(kind, rows){
+  var col = db.collection('users').doc(uid).collection('public');
+  var parts = [];
+  for (var i=0; i<rows.length; i+=DIR_CHUNK) parts.push(rows.slice(i, i+DIR_CHUNK));
+  if (!parts.length) parts.push([]);
+  parts.forEach(function(part, i){
+    var payload = { updated:new Date().toISOString(), chunk:i, chunks:parts.length };
+    payload[kind] = part;
+    col.doc(kind + (i===0 ? '' : '_' + i)).set(payload)
+       .catch(function(err){ console.warn(kind+' directory publish deferred:', err && err.code); });
+  });
+  // Remove chunks left behind by a previously larger directory.
+  var prev = _dirChunkCount[kind] || 0;
+  for (var j=parts.length; j<prev; j++){
+    col.doc(kind + '_' + j).delete().catch(function(){});
+  }
+  _dirChunkCount[kind] = parts.length;
+  col.doc(kind + '_index').set({ chunks: parts.length, count: rows.length, updated: new Date().toISOString() })
+     .catch(function(){});
+}
 function publishPartyDirectory() {
   if (!uid || !isOwnerUid(uid)) return;
   try {
     var dir = (S.parties||[]).map(function(p){ return { id:p.id, name:p.name||'', phone:p.phone||'', city:p.city||'' }; });
-    db.collection('users').doc(uid).collection('public').doc('parties')
-      .set({ parties: dir, updated:new Date().toISOString() })
-      .catch(function(err){ console.warn('directory publish deferred:', err && err.code); });
+    _publishChunks('parties', dir);
   } catch(e) { console.warn('directory publish threw:', e); }
 }
 /* Item Master published read-only for staff (staff cannot read the owner's private collections;
@@ -2334,9 +2794,7 @@ function publishItemDirectory() {
   if (!uid || !isOwnerUid(uid)) return;
   try {
     var dir = (S.items||[]).map(function(it){ return { id:it.id, name:it.name||'', code:it.code||'', rate:+it.rate||0 }; });
-    db.collection('users').doc(uid).collection('public').doc('items')
-      .set({ items: dir, updated:new Date().toISOString() })
-      .catch(function(err){ console.warn('item directory publish deferred:', err && err.code); });
+    _publishChunks('items', dir);
   } catch(e) { console.warn('item directory publish threw:', e); }
 }
 
@@ -2364,8 +2822,10 @@ function renderAll() {
   const cnt = (S.trash||[]).length;
   const badge = document.getElementById('trash-count-badge');
   if (badge) { badge.style.display = cnt>0?'inline':'none'; badge.textContent = cnt; }
+  try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
+  if (typeof renderIncomingBadge==='function' && typeof _pendingBills!=='undefined') renderIncomingBadge(_pendingBills.length);
 }
 
 function goTab(tab) {
@@ -3250,15 +3710,33 @@ function delChallan(cid) {
   document.getElementById('mo-del').classList.add('open');
 }
 
+/* The ONLY place a payment leaves the ledger. Everything that used to splice S.payments
+   directly (visit undo, visit entry delete, sheet delete) now calls this, so a deleted
+   payment is always recoverable from the Recycle Bin instead of being destroyed outright —
+   deleting a visit sheet used to wipe every payment collected on it with no undo. */
+function removePaymentToTrash(payId, why){
+  const pay=S.payments.find(x=>x&&x.id===payId); if(!pay) return false;
+  const ppid=pay.pid;
+  const setl=S.settlements.filter(s=>s.payId===payId);
+  const ovr =(S.overrides||[]).filter(o=>o.payId===payId);
+  if(!S.trash) S.trash=[];
+  S.trash.unshift({
+    type:'payment', deletedAt:new Date().toISOString(), reason:why||'',
+    payment:JSON.parse(JSON.stringify(pay)),
+    settlements:JSON.parse(JSON.stringify(setl)),
+    overrides:JSON.parse(JSON.stringify(ovr)),
+    partyName:((S.parties.find(p=>p.id===ppid)||{}).name)||''
+  });
+  S.settlements=S.settlements.filter(s=>s.payId!==payId);
+  removeOverridesForPayment(payId);   // a pin backed by a deleted payment must go
+  S.payments=S.payments.filter(x=>x&&x.id!==payId);
+  recomputeParty(ppid);
+  return true;
+}
 function delPayment(pid) {
-  document.getElementById('del-msg').innerHTML='Delete this payment? Challan statuses will update.';
+  document.getElementById('del-msg').innerHTML='Delete this payment? Challan statuses will update.<br><span style="font-size:11.5px;color:#888">It moves to the Recycle Bin and can be restored.</span>';
   document.getElementById('del-ok').onclick=()=>{
-    const pay=S.payments.find(x=>x.id===pid); if(!pay){closeModal('del');return;}
-    const ppid=pay.pid;
-    S.settlements=S.settlements.filter(s=>s.payId!==pid);
-    removeOverridesForPayment(pid);   // a pin backed by a deleted payment must go
-    S.payments=S.payments.filter(x=>x.id!==pid);
-    recomputeParty(ppid);
+    if(!removePaymentToTrash(pid,'Deleted from party ledger')){ closeModal('del'); return; }
     saveToCloud(); closeModal('del'); renderAll();
     if(curParty) renderPartyDetail(curParty);
   };
@@ -3363,8 +3841,8 @@ function renderSeasonList(){
     const cur=s===S.curSeason;
     return `<div style="display:flex;align-items:center;gap:8px;background:${cur?'#F0FDF4':'#F9F9F9'};border:1px solid ${cur?'#BBF7D0':'#ECECEC'};border-radius:9px;padding:9px 11px;margin-bottom:6px">
       <div style="flex:1;font-size:13px;font-weight:700;color:#1A2E5A">${esc(s)} ${cur?'<span style="font-size:10px;color:#059669;font-weight:800">● CURRENT</span>':''}<div style="font-size:10px;color:#999;font-weight:500">${used} challan${used===1?'':'s'}</div></div>
-      ${cur?'':`<button class="btn sm" onclick="setCurSeason('${esc(s)}')" style="font-size:11px">Set current</button>`}
-      ${used?'':`<button class="btn sm red" onclick="delSeason('${esc(s)}')" style="font-size:11px">✕</button>`}
+      ${cur?'':`<button class="btn sm" onclick="setCurSeason('${_js(s)}')" style="font-size:11px">Set current</button>`}
+      ${used?'':`<button class="btn sm red" onclick="delSeason('${_js(s)}')" style="font-size:11px">✕</button>`}
     </div>`;}).join('');
 }
 function addSeason(){
@@ -3747,26 +4225,50 @@ const APP_COLLECTIONS = ['parties','challans','payments','settlements','override
                          'stock','stockmv','returns','expenses','visits','meta','public','appdata','staff','incomingBills'];
 function firestoreRulesText(){
   return [
-    'rules_version = \'2\';',
+    "rules_version = '2';",
     'service cloud.firestore {',
     '  match /databases/{database}/documents {',
     '',
-    '    // Owner: full access to every collection under their own user document.',
-    '    // The {coll=**} wildcard covers ALL current and FUTURE collections, so a new',
-    '    // feature never gets refused again.',
+    "    function isOwner() {",
+    "      return request.auth != null",
+    "          && request.auth.uid == " + JSON.stringify(DATA_OWNER_UID) + ";",
+    '    }',
+    '    function isApprovedStaff(owner) {',
+    '      return request.auth != null',
+    '          && exists(/databases/$(database)/documents/users/$(owner)/staff/$(request.auth.uid))',
+    '          && get(/databases/$(database)/documents/users/$(owner)/staff/$(request.auth.uid)).data.status == "approved";',
+    '    }',
+    '',
+    "    // The owner owns everything under their own user document.",
     '    match /users/{uid}/{coll=**} {',
     '      allow read, write: if request.auth != null && request.auth.uid == uid;',
     '    }',
     '',
-    '    // Approved staff: read the owner\'s published directories and file new bills.',
-    '    match /users/{owner}/public/{doc} {',
-    '      allow read: if request.auth != null;',
-    '    }',
+    "    // Staff roster. A staff member may CREATE only their own request, and only as",
+    "    // 'pending'. Only the owner can approve. Without this, any signed-in Google account",
+    "    // could write itself an 'approved' doc and walk into the app.",
     '    match /users/{owner}/staff/{sid} {',
-    '      allow read, write: if request.auth != null;',
+    '      allow read:   if isOwner() || (request.auth != null && request.auth.uid == sid);',
+    '      allow create: if request.auth != null',
+    '                    && request.auth.uid == sid',
+    '                    && request.resource.data.status == "pending";',
+    '      allow update, delete: if isOwner();',
     '    }',
+    '',
+    "    // Published party/item directories: approved staff only, and read-only.",
+    '    match /users/{owner}/public/{doc} {',
+    '      allow read:  if isApprovedStaff(owner);',
+    '      allow write: if isOwner();',
+    '    }',
+    '',
+    "    // Staff may file a bill and see only their own. The owner reviews before it",
+    "    // reaches the books, and nobody may edit a filed bill.",
     '    match /users/{owner}/incomingBills/{bid} {',
-    '      allow read, write: if request.auth != null;',
+    '      allow create: if isApprovedStaff(owner)',
+    '                    && request.resource.data.createdBy.uid == request.auth.uid;',
+    '      allow read, delete: if isOwner()',
+    '                    || (isApprovedStaff(owner) && resource.data.createdBy.uid == request.auth.uid);',
+    '      allow update: if false;',
     '    }',
     '  }',
     '}'
@@ -3782,6 +4284,11 @@ function showRulesHelp(){
       <div style="margin-top:5px">
         Open <strong>console.firebase.google.com</strong> → your project → <strong>Firestore Database</strong> →
         <strong>Rules</strong>, replace what is there with the block below, then press <strong>Publish</strong>.
+        <div style="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:8px;padding:8px 10px;margin-top:7px;color:#B91C1C">
+          If you previously published a rule saying <code>allow read, write: if request.auth != null</code>
+          for staff, public or incomingBills, <strong>replace it now</strong> — that grants access to every
+          signed-in Google account on the internet, not just your staff.
+        </div>
         ${dl.length?`It covers <strong>${dl.map(esc).join(', ')}</strong> and every collection added in future.`:''}
         Nothing in your data changes — rules only control access.
       </div>
@@ -3804,6 +4311,678 @@ function copyRules(){
         .catch(()=>{ t.select(); document.execCommand('copy'); alert('Rules copied.'); });
     } else { t.select(); document.execCommand('copy'); alert('Rules copied.'); }
   }catch(e){ t.select(); alert('Press Ctrl+C to copy the selected rules.'); }
+}
+
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   XLSX WRITER  (no library, no CDN — this app stays a single self-contained file)
+   An .xlsx is just a ZIP of XML parts. We build the parts, then ZIP them.
+   Compression uses the browser's built-in CompressionStream('deflate-raw') when it
+   exists, and falls back to a stored (uncompressed) ZIP, which Excel opens equally well.
+══════════════════════════════════════════════════════════════════════ */
+const _CRC_TABLE = (function(){
+  const t = new Uint32Array(256);
+  for (let i=0;i<256;i++){ let c=i; for(let k=0;k<8;k++) c = (c&1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1); t[i]=c>>>0; }
+  return t;
+})();
+function _crc32(buf){
+  let c = 0xFFFFFFFF;
+  for (let i=0;i<buf.length;i++) c = _CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c>>>8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+const _enc = new TextEncoder();
+function _xmlEsc(v){
+  return String(v==null?'':v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&apos;')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'');   // control chars are illegal in XML
+}
+function _colName(n){ let s=''; n++; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=(n-m-1)/26; } return s; }
+/* One worksheet. Numbers are written as numbers so Excel can total them; everything else
+   goes in as an inline string, which avoids a shared-string table entirely. */
+function _sheetXml(rows, widths){
+  const cols = widths && widths.length
+    ? '<cols>'+widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')+'</cols>'
+    : '';
+  let body = '';
+  for (let r=0;r<rows.length;r++){
+    const row = rows[r] || [];
+    let cells = '';
+    for (let c=0;c<row.length;c++){
+      const v = row[c];
+      if (v===null || v===undefined || v==='') continue;
+      const ref = _colName(c)+(r+1);
+      if (typeof v === 'number' && isFinite(v)) cells += `<c r="${ref}"><v>${v}</v></c>`;
+      else if (r===0)                           cells += `<c r="${ref}" t="inlineStr" s="1"><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+      else                                      cells += `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+    }
+    body += `<row r="${r+1}">${cells}</row>`;
+  }
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    + cols + '<sheetData>' + body + '</sheetData></worksheet>';
+}
+function _safeSheetName(n){ return String(n||'Sheet').replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,31); }
+
+async function _deflateRaw(bytes){
+  try{
+    if (typeof CompressionStream === 'undefined') return null;
+    const cs = new CompressionStream('deflate-raw');
+    const stream = new Blob([bytes]).stream().pipeThrough(cs);
+    const buf = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buf);
+  }catch(e){ return null; }
+}
+/* Minimal ZIP (local headers + central directory + EOCD). */
+async function _zip(files){
+  const chunks = [], central = [];
+  let offset = 0;
+  for (const f of files){
+    const nameBytes = _enc.encode(f.name);
+    const raw = f.bytes;
+    const crc = _crc32(raw);
+    let data = await _deflateRaw(raw);
+    let method = 8;
+    if (!data || data.length >= raw.length) { data = raw; method = 0; }
+
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0, true);
+    lh.setUint16(8, method, true); lh.setUint16(10, 0, true); lh.setUint16(12, 0x2821, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, raw.length, true);
+    lh.setUint16(26, nameBytes.length, true); lh.setUint16(28, 0, true);
+    chunks.push(new Uint8Array(lh.buffer), nameBytes, data);
+
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0, true); cd.setUint16(10, method, true); cd.setUint16(12, 0, true);
+    cd.setUint16(14, 0x2821, true); cd.setUint32(16, crc, true);
+    cd.setUint32(20, data.length, true); cd.setUint32(24, raw.length, true);
+    cd.setUint16(28, nameBytes.length, true); cd.setUint16(30, 0, true); cd.setUint16(32, 0, true);
+    cd.setUint16(34, 0, true); cd.setUint16(36, 0, true); cd.setUint32(38, 0, true);
+    cd.setUint32(42, offset, true);
+    central.push(new Uint8Array(cd.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const cdSize = central.reduce((s,c)=>s+c.length, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true); eocd.setUint16(4, 0, true); eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, files.length, true); eocd.setUint16(10, files.length, true);
+  eocd.setUint32(12, cdSize, true); eocd.setUint32(16, offset, true); eocd.setUint16(20, 0, true);
+  return new Blob([...chunks, ...central, new Uint8Array(eocd.buffer)],
+                  {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+/* sheets = [{name, rows:[[...]], widths:[...]}] */
+async function buildXlsx(sheets){
+  const parts = [];
+  const S_ = sheets.map((s,i)=>({ ...s, name:_safeSheetName(s.name), file:'sheet'+(i+1)+'.xml' }));
+  parts.push({ name:'[Content_Types].xml', bytes:_enc.encode(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'+
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'+
+    '<Default Extension="xml" ContentType="application/xml"/>'+
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+
+    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'+
+    S_.map(s=>`<Override PartName="/xl/worksheets/${s.file}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+
+    '</Types>')});
+  parts.push({ name:'_rels/.rels', bytes:_enc.encode(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'+
+    '</Relationships>')});
+  parts.push({ name:'xl/workbook.xml', bytes:_enc.encode(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '+
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+
+    S_.map((s,i)=>`<sheet name="${_xmlEsc(s.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')+
+    '</sheets></workbook>')});
+  parts.push({ name:'xl/_rels/workbook.xml.rels', bytes:_enc.encode(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+    S_.map((s,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/${s.file}"/>`).join('')+
+    `<Relationship Id="rId${S_.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`+
+    '</Relationships>')});
+  // Two styles: 0 = normal, 1 = bold (used for every header row).
+  parts.push({ name:'xl/styles.xml', bytes:_enc.encode(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'+
+    '<font><b/><sz val="11"/><color rgb="FF1A2E5A"/><name val="Calibri"/></font></fonts>'+
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'+
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'+
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'+
+    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'+
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>'+
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'+
+    '</styleSheet>')});
+  S_.forEach(s=>{ parts.push({ name:'xl/worksheets/'+s.file, bytes:_enc.encode(_sheetXml(s.rows, s.widths)) }); });
+  return _zip(parts);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   DOCUMENT SIZE GUARD
+   Firestore refuses any document over 1 MiB. When that happens mid-save the write fails
+   with invalid-argument, the dot goes red and the record silently never reaches the cloud.
+   Rather than let that happen we measure first, skip the oversized record, and report it by
+   name in Sync Status so it can be dealt with instead of quietly losing data.
+══════════════════════════════════════════════════════════════════════ */
+const DOC_LIMIT = 1048576;              // 1 MiB, Firestore's hard cap
+const DOC_WARN  = 700 * 1024;           // start warning well before the wall
+var OVERSIZE = {};                      // "coll/id" -> bytes
+function _docBytes(o){
+  try { return new Blob([JSON.stringify(o)]).size; }
+  catch(e){ try { return JSON.stringify(o).length; } catch(_e){ return 0; } }
+}
+function sizeReport(){
+  const rows = [
+    ['parties', S.parties], ['challans', S.challans], ['payments', S.payments],
+    ['items', S.items], ['visits', S.visits], ['trash', S.trash],
+    ['returns', S.returns], ['expenses', S.expenses], ['stockMv', S.stockMv]
+  ];
+  return rows.map(([name, arr]) => {
+    const list = arr || [];
+    let biggest = 0, total = 0;
+    list.forEach(x => { const b = _docBytes(x); total += b; if (b > biggest) biggest = b; });
+    return { name, count: list.length, total, biggest };
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   BACKUPS
+   Two independent safety nets, both automatic:
+     1. Rolling local snapshots — one per day, last 5 kept, in their own localStorage keys
+        so a corrupted live cache never takes the history with it.
+     2. A downloadable .json of everything, which can be restored into any device.
+   Restore is additive-by-id: existing records win unless you choose to overwrite, so a
+   restore can never quietly wipe newer work.
+══════════════════════════════════════════════════════════════════════ */
+const SNAP_KEEP = 5;
+const SNAP_PREFIX = 'cm_snap_';
+function _snapKey(d){ return SNAP_PREFIX + (uid||'anon') + '_' + d; }
+function snapshotPayload(){
+  return {
+    _app:'challan-manager', _build:BUILD, _uid:uid||'', _at:new Date().toISOString(),
+    parties:S.parties, challans:S.challans, payments:S.payments, settlements:S.settlements,
+    overrides:S.overrides, items:S.items, itemMap:S.itemMap, trash:S.trash,
+    stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns,
+    expenses:S.expenses, cashOpen:S.cashOpen, cashModes:S.cashModes,
+    visits:S.visits, seasons:S.seasons, curSeason:S.curSeason,
+    pC:S.pC, cC:S.cC, pyC:S.pyC, rtC:S.rtC, exC:S.exC, vC:S.vC, defCreditDays:S.defCreditDays
+  };
+}
+function listSnapshots(){
+  const out=[];
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k && k.indexOf(_snapKey('')) === 0){
+        out.push({ key:k, date:k.slice(_snapKey('').length), bytes:(localStorage.getItem(k)||'').length });
+      }
+    }
+  }catch(e){}
+  return out.sort((a,b)=>b.date.localeCompare(a.date));
+}
+/* Take at most one snapshot a day, and never before the first successful cloud read —
+   snapshotting an empty state would otherwise overwrite a good one with nothing. */
+function autoSnapshot(){
+  if(!loadedOnce || !uid) return;
+  if(!(S.challans||[]).length && !(S.parties||[]).length) return;
+  const d = today();
+  const key = _snapKey(d);
+  try{
+    if(localStorage.getItem(key)) return;                  // already have today's
+    localStorage.setItem(key, JSON.stringify(snapshotPayload()));
+    const all = listSnapshots();
+    all.slice(SNAP_KEEP).forEach(s=>{ try{ localStorage.removeItem(s.key); }catch(e){} });
+    console.log('local snapshot saved for', d);
+  }catch(e){
+    // Out of quota: drop the oldest snapshot and try once more.
+    const all = listSnapshots();
+    if(all.length){
+      try{ localStorage.removeItem(all[all.length-1].key); localStorage.setItem(key, JSON.stringify(snapshotPayload())); }catch(_e){}
+    }
+  }
+}
+function downloadBackup(){
+  const blob = new Blob([packRestore(snapshotPayload())], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'challan-backup_' + today() + '.cmb';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1500);
+  try{ localStorage.setItem('cm_lastbackup', today()); }catch(e){}
+  renderBackupPanel();
+}
+function restoreSnapshot(key){
+  let raw;
+  try{ raw = localStorage.getItem(key); }catch(e){ raw=null; }
+  if(!raw){ alert('That snapshot is no longer available.'); return; }
+  let data; try{ data = JSON.parse(raw); }catch(e){ alert('That snapshot is unreadable.'); return; }
+  applyBackup(data, 'snapshot of ' + (data._at||'').slice(0,10));
+}
+function pickBackupFile(){ const f=document.getElementById('bk-file'); if(f){ f.value=''; f.click(); } }
+function backupFileChosen(inp){
+  const file = inp.files && inp.files[0]; if(!file) return;
+  if(/\.xlsx$/i.test(file.name)){
+    restoreFromXlsx(file)
+      .then(function(data){ applyBackup(data, file.name); })
+      .catch(function(e){ alert('Could not read that Excel file.\n\n'+((e&&e.message)||e)); });
+    return;
+  }
+  const r = new FileReader();
+  r.onload = function(){
+    let data;
+    try{ data = unpackRestore(r.result); }
+    catch(e){
+      // Older plain-JSON backups still restore.
+      try{ data = JSON.parse(r.result); if(data._app!=='challan-manager') throw 0; }
+      catch(_e){ alert('Could not use that file.\n\n'+((e&&e.message)||e)); return; }
+    }
+    applyBackup(data, file.name);
+  };
+  r.onerror = function(){ alert('Could not read that file.'); };
+  r.readAsText(file);
+}
+/* Merge by id. Anything already present stays as it is unless the person explicitly chooses
+   to overwrite, so restoring an old file can never destroy newer records. */
+function applyBackup(data, label){
+  const cols = ['parties','challans','payments','settlements','overrides','items','itemMap',
+                'trash','stock','stockMv','returns','expenses','visits'];
+  let add=0, same=0;
+  cols.forEach(c=>{
+    const incoming = data[c]; if(!Array.isArray(incoming)) return;
+    const have = {}; (S[c]||[]).forEach(x=>{ if(x&&x.id) have[x.id]=1; });
+    incoming.forEach(x=>{ if(x&&x.id){ if(have[x.id]) same++; else add++; } });
+  });
+  const msg = 'Restore from ' + label + '?\n\n' +
+              add + ' record(s) will be ADDED back.\n' +
+              same + ' record(s) already exist and will be left alone.\n\n' +
+              'Nothing you have now is deleted.';
+  if(!confirm(msg)) return;
+  cols.forEach(c=>{
+    const incoming = data[c]; if(!Array.isArray(incoming)) return;
+    if(!Array.isArray(S[c])) S[c]=[];
+    const have = {}; S[c].forEach(x=>{ if(x&&x.id) have[x.id]=1; });
+    incoming.forEach(x=>{ if(x&&x.id && !have[x.id]) S[c].push(JSON.parse(JSON.stringify(x))); });
+  });
+  ['pC','cC','pyC','rtC','exC','vC'].forEach(k=>{ if(+data[k]>0) S[k]=Math.max(+S[k]||0, +data[k]); });
+  if(data.stockFrom && !S.stockFrom) S.stockFrom=data.stockFrom;
+  if(data.cashOpen && !S.cashOpen)   S.cashOpen=data.cashOpen;
+  invalidateCash(); invalidateStock();
+  recomputeAllParties();
+  saveToCloud(); saveLocal();
+  renderAll();
+  alert('✅ Restored ' + add + ' record(s) from ' + label + '.');
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   THE BACKUP WORKBOOK
+   Every sheet is a flat table so Excel can filter, sort and pivot it, and so the file
+   doubles as a human-readable record rather than only a machine restore point.
+   The hidden _RESTORE sheet carries the exact JSON, which is what makes the .xlsx
+   itself restorable — no separate .json needed.
+══════════════════════════════════════════════════════════════════════ */
+function buildBackupSheets(){
+  const pName = {}; (S.parties||[]).forEach(p=>{ if(p) pName[p.id]=p.name||''; });
+  const sheets = [];
+
+  // 1 — Summary
+  const totalBilled = (S.challans||[]).reduce((s,c)=>s+(+c.total||0),0);
+  const totalPaid   = (S.payments||[]).reduce((s,p)=>s+(+p.amount||0),0);
+  let outstanding = 0;
+  (S.parties||[]).forEach(p=>{ try{ outstanding += Math.max(0, getAlloc(p.id).partyBalance); }catch(e){} });
+  sheets.push({ name:'Summary', widths:[28,22], rows:[
+    ['Challan Manager — Backup',''],
+    ['Generated', new Date().toLocaleString('en-IN')],
+    ['Build', BUILD],
+    ['',''],
+    ['Parties', (S.parties||[]).length],
+    ['Challans', (S.challans||[]).length],
+    ['Payments', (S.payments||[]).length],
+    ['Items', (S.items||[]).length],
+    ['Visit records', (S.visits||[]).length],
+    ['Recycle bin', (S.trash||[]).length],
+    ['',''],
+    ['Total billed', Math.round(totalBilled)],
+    ['Total received', Math.round(totalPaid)],
+    ['Total outstanding', Math.round(outstanding)]
+  ]});
+
+  // 2 — Parties, with the live balance and collection clock
+  const prow = [['Party ID','Name','Phone','City','Opening Balance','Outstanding','Total Billed','Received','Challans','Last Payment','Days Since','Day Limit']];
+  (S.parties||[]).forEach(p=>{
+    if(!p) return;
+    let bal=0, billed=0, recd=0, days='', lastPay='';
+    try{
+      const a=getAlloc(p.id); bal=Math.max(0,a.partyBalance); recd=a.totalPaid||0;
+      billed=(S.challans||[]).filter(c=>c.pid===p.id).reduce((s,c)=>s+(+c.total||0),0);
+      const clk=payClock(p.id); days=(clk.days==null?'':clk.days); lastPay=(clk.anchor==='payment'?clk.date:'');
+    }catch(e){}
+    prow.push([p.id, p.name||'', p.phone||'', p.city||'', +p.ob||0, Math.round(bal), Math.round(billed),
+               Math.round(recd), (S.challans||[]).filter(c=>c.pid===p.id).length, lastPay, days, creditDaysOf(p.id)]);
+  });
+  sheets.push({ name:'Parties', widths:[16,26,14,14,14,14,14,14,10,13,11,10], rows:prow });
+
+  // 3 — Challans (one row each)
+  const crow = [['Challan ID','Number','Date','Party','Party ID','Items','Qty','Freight','Total','Paid','Balance','Status','Season','Notes']];
+  (S.challans||[]).forEach(c=>{
+    if(!c) return;
+    let paid=0, st='';
+    try{ paid=challanPaid(c.id); st=challanStatus(c); }catch(e){}
+    const items=c.items||[];
+    crow.push([c.id, c.num||'', c.date||'', pName[c.pid]||'', c.pid||'', items.length,
+               items.reduce((s,i)=>s+(+i.qty||0),0), +c.freight||0, +c.total||0,
+               Math.round(paid), Math.round((+c.total||0)-paid),
+               st==='S'?'SETTLED':st==='T'?'PARTIAL':'PENDING', c.season||'', c.notes||'']);
+  });
+  sheets.push({ name:'Challans', widths:[16,11,12,24,16,8,8,10,12,12,12,11,13,26], rows:crow });
+
+  // 4 — Every line item, flattened for pivoting
+  const irow = [['Challan','Date','Party','Item','Qty','Rate','Amount']];
+  (S.challans||[]).forEach(c=>{
+    if(!c) return;
+    (c.items||[]).forEach(it=>{
+      irow.push([c.num||'', c.date||'', pName[c.pid]||'', it.name||'', +it.qty||0, +it.rate||0, +it.amount||0]);
+    });
+  });
+  sheets.push({ name:'Challan Items', widths:[11,12,24,34,8,10,12], rows:irow });
+
+  // 5 — Payments
+  const yrow = [['Payment ID','Date','Party','Party ID','Amount','Mode','Remarks']];
+  (S.payments||[]).forEach(p=>{
+    if(!p) return;
+    yrow.push([p.id, p.date||'', pName[p.pid]||'', p.pid||'', +p.amount||0, p.mode||'', p.remarks||'']);
+  });
+  sheets.push({ name:'Payments', widths:[18,12,24,16,12,14,34], rows:yrow });
+
+  // 6 — Visits
+  const vrow = [['Visit','Sheet Date','Visit Date','Staff','Party','Status','Amount','Mode','Next Date','Reason']];
+  (typeof allVisits==='function' ? allVisits() : []).forEach(v=>{
+    vrow.push([v.num||'', v.sheetDate||'', v.visitDate||'', v.staff||'', v.pname||'', v.status||'',
+               +v.amount||0, v.mode||'', v.nextDate||'', v.reason||'']);
+  });
+  sheets.push({ name:'Visits', widths:[10,12,12,18,24,11,11,12,12,30], rows:vrow });
+
+  // 7 — Item master
+  const mrow = [['Item ID','Name','Code','Rate']];
+  (S.items||[]).forEach(it=>{ if(it) mrow.push([it.id, it.name||'', it.code||'', +it.rate||0]); });
+  sheets.push({ name:'Item Master', widths:[16,36,14,10], rows:mrow });
+
+  // 8 — the machine-readable copy, encoded and checksummed so a hand-edited workbook
+  //     cannot quietly inject records during a restore.
+  const packed = packRestore(snapshotPayload());
+  const CH = 30000;                                   // Excel caps a cell at 32,767 chars
+  const jrow = [['Encoded restore data — do not edit. Editing this sheet makes the backup unusable.']];
+  for (let i=0;i<packed.length;i+=CH) jrow.push([packed.slice(i,i+CH)]);
+  sheets.push({ name:'_RESTORE', widths:[80], rows:jrow });
+
+  return sheets;
+}
+/* The restore payload is base64 of the JSON, prefixed with a checksum of that JSON.
+   This is NOT secrecy — anyone determined can decode it — but it does two useful things:
+   the sheet is no longer casually editable, and any change at all (accidental or deliberate)
+   breaks the checksum, so a corrupted or doctored backup is refused instead of imported. */
+const RESTORE_TAG = 'CMB1';
+function _sum32(str){
+  let h = 0x811c9dc5;                                  // FNV-1a
+  for (let i=0;i<str.length;i++){ h ^= str.charCodeAt(i) & 0xFF; h = Math.imul(h, 0x01000193) >>> 0;
+                                  h ^= str.charCodeAt(i) >>> 8; h = Math.imul(h, 0x01000193) >>> 0; }
+  return ('0000000' + h.toString(16)).slice(-8);
+}
+function _b64enc(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i=0;i<bytes.length;i+=8192) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+8192));
+  return btoa(bin);
+}
+function _b64dec(b64){
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function packRestore(obj){
+  const json = JSON.stringify(obj);
+  return RESTORE_TAG + '.' + _sum32(json) + '.' + _b64enc(json);
+}
+function unpackRestore(packed){
+  const p = String(packed||'').trim();
+  const bits = p.split('.');
+  if (bits.length < 3 || bits[0] !== RESTORE_TAG) throw new Error('this file is not a Challan Manager backup');
+  const json = _b64dec(bits.slice(2).join('.'));
+  if (_sum32(json) !== bits[1]) throw new Error('this backup has been edited or damaged, so it cannot be trusted');
+  const data = JSON.parse(json);
+  if (data._app !== 'challan-manager') throw new Error('this file is not a Challan Manager backup');
+  return data;
+}
+async function buildBackupWorkbook(){ return buildXlsx(buildBackupSheets()); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   AUTOMATIC DAILY EXCEL BACKUP
+   A web page cannot silently write to your disk uninvited — so you pick the file once
+   with the browser's own save dialog, and the handle is remembered in IndexedDB. After
+   that the app rewrites that same file itself, in the background, once a day.
+   If the browser withdraws permission (it can, after a restart) the Backup panel shows a
+   single button to re-grant. Where the API is missing entirely we fall back to a download.
+══════════════════════════════════════════════════════════════════════ */
+const FS_DB='cm_fs', FS_STORE='handles';
+var xlAuto = { supported: (typeof window!=='undefined' && 'showSaveFilePicker' in window),
+               handle:null, name:'', perm:'unknown', last:'', busy:false, err:'' };
+function _idb(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open(FS_DB,1);
+    r.onupgradeneeded=()=>{ try{ r.result.createObjectStore(FS_STORE); }catch(e){} };
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+}
+function _idbPut(k,v){ return _idb().then(db=>new Promise((res,rej)=>{
+  const t=db.transaction(FS_STORE,'readwrite'); t.objectStore(FS_STORE).put(v,k);
+  t.oncomplete=()=>res(true); t.onerror=()=>rej(t.error); })); }
+function _idbGet(k){ return _idb().then(db=>new Promise((res,rej)=>{
+  const t=db.transaction(FS_STORE,'readonly'); const q=t.objectStore(FS_STORE).get(k);
+  q.onsuccess=()=>res(q.result||null); q.onerror=()=>rej(q.error); })); }
+function _idbDel(k){ return _idb().then(db=>new Promise((res)=>{
+  const t=db.transaction(FS_STORE,'readwrite'); t.objectStore(FS_STORE).delete(k);
+  t.oncomplete=()=>res(true); t.onerror=()=>res(false); })); }
+
+async function loadExcelHandle(){
+  if(!xlAuto.supported) return;
+  try{
+    const h = await _idbGet('xlsx');
+    if(!h) return;
+    xlAuto.handle = h; xlAuto.name = h.name || 'backup.xlsx';
+    xlAuto.perm = await h.queryPermission({mode:'readwrite'});
+    try{ xlAuto.last = localStorage.getItem('cm_xl_last')||''; }catch(e){}
+  }catch(e){ console.warn('excel handle load:', e); }
+}
+async function chooseExcelFile(){
+  if(!xlAuto.supported){
+    alert('This browser cannot write to a file on its own.\n\nUse "Download backup now" instead — Chrome on Windows supports the automatic version.');
+    return;
+  }
+  try{
+    const h = await window.showSaveFilePicker({
+      suggestedName: 'Challan-Backup.xlsx',
+      types:[{ description:'Excel Workbook', accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx']} }]
+    });
+    xlAuto.handle=h; xlAuto.name=h.name||'Challan-Backup.xlsx'; xlAuto.perm='granted'; xlAuto.err='';
+    await _idbPut('xlsx', h);
+    await writeExcelNow(true);
+  }catch(e){
+    if(e && e.name==='AbortError') return;
+    xlAuto.err=(e&&e.message)||'could not open the save dialog';
+    console.warn('choose excel file:', e);
+    renderBackupPanel();
+  }
+}
+async function regrantExcel(){
+  if(!xlAuto.handle) return chooseExcelFile();
+  try{
+    xlAuto.perm = await xlAuto.handle.requestPermission({mode:'readwrite'});
+    if(xlAuto.perm==='granted') await writeExcelNow(true);
+  }catch(e){ xlAuto.err=(e&&e.message)||'permission refused'; }
+  renderBackupPanel();
+}
+async function stopAutoExcel(){
+  xlAuto.handle=null; xlAuto.name=''; xlAuto.perm='unknown';
+  await _idbDel('xlsx');
+  renderBackupPanel();
+}
+async function writeExcelNow(manual){
+  if(!xlAuto.handle || xlAuto.busy) return false;
+  xlAuto.busy=true;
+  try{
+    let perm = await xlAuto.handle.queryPermission({mode:'readwrite'});
+    // Re-requesting only works inside a click, so silent runs simply defer to the panel.
+    if(perm!=='granted' && manual) perm = await xlAuto.handle.requestPermission({mode:'readwrite'});
+    xlAuto.perm = perm;
+    if(perm!=='granted'){ xlAuto.busy=false; renderBackupPanel(); return false; }
+    const blob = await buildBackupWorkbook();
+    const w = await xlAuto.handle.createWritable();
+    await w.write(blob);
+    await w.close();
+    xlAuto.last = today(); xlAuto.err='';
+    try{ localStorage.setItem('cm_xl_last', xlAuto.last); }catch(e){}
+    console.log('Excel backup written:', xlAuto.name, Math.round(blob.size/1024)+' KB');
+    xlAuto.busy=false; renderBackupPanel();
+    return true;
+  }catch(e){
+    xlAuto.err=(e&&e.message)||'write failed';
+    console.warn('excel write failed:', e);
+    xlAuto.busy=false; renderBackupPanel();
+    return false;
+  }
+}
+// Runs on load and hourly; no-ops once today's file has been written.
+async function autoExcelTick(){
+  if(!loadedOnce || !uid || !xlAuto.handle || xlAuto.busy) return;
+  if(xlAuto.last === today()) return;
+  if(!(S.challans||[]).length && !(S.parties||[]).length) return;
+  await writeExcelNow(false);
+}
+async function downloadExcelNow(){
+  try{
+    const blob = await buildBackupWorkbook();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href=url; a.download='Challan-Backup_'+today()+'.xlsx'; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 1500);
+    try{ localStorage.setItem('cm_lastbackup', today()); }catch(e){}
+    renderBackupPanel();
+  }catch(e){ alert('Could not build the Excel file: '+((e&&e.message)||e)); }
+}
+/* Restore straight from a .xlsx we wrote — reads the _RESTORE sheet back out of the ZIP.
+   Stored (uncompressed) entries are read directly; deflated ones go through
+   DecompressionStream, which is present in every browser that has CompressionStream. */
+async function restoreFromXlsx(file){
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  // Walk the central directory from the End Of Central Directory record.
+  let eocd=-1;
+  for(let i=buf.length-22;i>=0 && i>buf.length-66000;i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
+  if(eocd<0) throw new Error('not a valid .xlsx file');
+  const count=dv.getUint16(eocd+10,true); let ptr=dv.getUint32(eocd+16,true);
+  const entries={};
+  for(let i=0;i<count;i++){
+    if(dv.getUint32(ptr,true)!==0x02014b50) break;
+    const method=dv.getUint16(ptr+10,true), csize=dv.getUint32(ptr+20,true);
+    const nlen=dv.getUint16(ptr+28,true), elen=dv.getUint16(ptr+30,true), clen=dv.getUint16(ptr+32,true);
+    const lho=dv.getUint32(ptr+42,true);
+    const name=new TextDecoder().decode(buf.subarray(ptr+46, ptr+46+nlen));
+    entries[name]={method,csize,lho};
+    ptr += 46+nlen+elen+clen;
+  }
+  const read = async(name)=>{
+    const e=entries[name]; if(!e) return null;
+    const nlen=dv.getUint16(e.lho+26,true), elen=dv.getUint16(e.lho+28,true);
+    const start=e.lho+30+nlen+elen;
+    const raw=buf.subarray(start, start+e.csize);
+    if(e.method===0) return new TextDecoder().decode(raw);
+    const ds=new DecompressionStream('deflate-raw');
+    const out=await new Response(new Blob([raw]).stream().pipeThrough(ds)).arrayBuffer();
+    return new TextDecoder().decode(out);
+  };
+  // _RESTORE is the last sheet we write, so try sheets from the end.
+  const wb = await read('xl/workbook.xml');
+  if(!wb) throw new Error('not a Challan Manager backup');
+  const names = [...wb.matchAll(/name="([^"]*)"/g)].map(m=>m[1]);
+  const idx = names.indexOf('_RESTORE');
+  if(idx<0) throw new Error('this workbook has no _RESTORE sheet — it was not made by Challan Manager');
+  const xml = await read('xl/worksheets/sheet'+(idx+1)+'.xml');
+  if(!xml) throw new Error('could not read the restore sheet');
+  const cells=[...xml.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(m=>m[1]);
+  const packed=cells.slice(1).join('')
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&');
+  return unpackRestore(packed);
+}
+
+function renderBackupPanel(){
+  const el = document.getElementById('backup-body'); if(!el) return;
+  if(!document.getElementById('mo-backup').classList.contains('open')) return;
+  const on    = !!xlAuto.handle && xlAuto.perm==='granted';
+  const wrote = xlAuto.last===today();
+  const snaps = listSnapshots();
+  const risky = sizeReport().filter(r=>r.biggest > DOC_WARN);
+
+  const bg = !xlAuto.handle ? '#FEF2F2' : (on ? '#F0FDF4' : '#FFFBEB');
+  const bd = !xlAuto.handle ? '#FCA5A5' : (on ? '#A7F3D0' : '#FDE68A');
+  const fg = !xlAuto.handle ? '#B91C1C' : (on ? '#065F46' : '#92400E');
+
+  el.innerHTML = `
+    <div style="background:${bg};border:1.5px solid ${bd};border-radius:12px;padding:14px 15px">
+      <div style="font-size:15px;font-weight:800;color:${fg}">
+        ${!xlAuto.supported ? 'Needs Chrome or Edge on desktop'
+          : !xlAuto.handle  ? 'Automatic backup is OFF'
+          : on              ? (wrote ? 'Backed up today ✓' : 'Automatic backup is ON')
+                            : 'Paused — permission needed'}
+      </div>
+      <div style="font-size:12px;color:#475569;margin-top:5px;line-height:1.6">
+        ${!xlAuto.supported
+          ? 'Open the app in Chrome on your Windows PC to switch this on. Until then use the download button below.'
+          : !xlAuto.handle
+            ? 'Choose where to keep your Excel file. After that it updates itself every day — you never touch it again.'
+            : on
+              ? `Excel file: <strong>${esc(xlAuto.name)}</strong>${xlAuto.last?` · updated ${fmtD(xlAuto.last)}`:''}`
+              : 'Chrome asks again after a restart. One tap and it carries on.'}
+      </div>
+      ${xlAuto.err?`<div style="font-size:11.5px;color:#B91C1C;margin-top:6px">${esc(xlAuto.err)}</div>`:''}
+      <div style="margin-top:11px">
+        ${!xlAuto.supported
+          ? `<button class="btn" style="width:100%;justify-content:center" onclick="downloadExcelNow()">⬇ Download Excel backup</button>`
+          : !xlAuto.handle
+            ? `<button class="btn pri" style="width:100%;justify-content:center" onclick="chooseExcelFile()">📊 Switch on automatic backup</button>`
+            : on
+              ? `<button class="btn" style="width:100%;justify-content:center" onclick="writeExcelNow(true)">${xlAuto.busy?'Saving…':'💾 Update the file now'}</button>`
+              : `<button class="btn pri" style="width:100%;justify-content:center" onclick="regrantExcel()">🔓 Continue backing up</button>`}
+      </div>
+    </div>
+
+    <div style="font-size:12px;color:#94A3B8;text-align:center;margin:14px 0 10px;line-height:1.6">
+      ${snaps.length?`${snaps.length} daily copy(ies) also kept inside this browser.`:'Daily copies are kept inside this browser automatically.'}
+      ${risky.length?`<br><span style="color:#B91C1C">One record is close to the size limit — tell me and I will split it.</span>`:''}
+    </div>
+
+    <details style="border-top:1px solid #EEF2F7;padding-top:11px">
+      <summary style="font-size:12.5px;font-weight:700;color:#1A2E5A;cursor:pointer;list-style:none">Restore my data ▾</summary>
+      <div style="padding-top:11px">
+        <input type="file" id="bk-file" accept=".xlsx,.cmb,.json" style="display:none" onchange="backupFileChosen(this)">
+        <button class="btn" style="width:100%;justify-content:center" onclick="pickBackupFile()">📂 Restore from a backup file</button>
+        ${snaps.length?`<div style="font-size:11.5px;color:#64748B;margin:11px 0 6px">Or from a copy in this browser:</div>`+
+          snaps.map(sn=>`<button class="btn sm" style="width:100%;justify-content:center;margin-bottom:6px;font-size:11.5px" onclick="restoreSnapshot('${_js(sn.key)}')">↩ ${fmtD(sn.date)}</button>`).join(''):''}
+        <div style="font-size:11px;color:#94A3B8;margin-top:8px;line-height:1.55">
+          Restoring only puts back what is missing. Nothing you have now is deleted, and an edited backup file is refused.
+        </div>
+        <button class="btn sm" style="width:100%;justify-content:center;margin-top:10px;font-size:11px;color:#94A3B8" onclick="downloadBackup()">Download a spare copy (.cmb)</button>
+        ${xlAuto.handle?`<button class="btn sm" style="width:100%;justify-content:center;margin-top:6px;font-size:11px;color:#DC2626;border-color:#FCA5A5" onclick="stopAutoExcel()">Stop automatic backups</button>`:''}
+      </div>
+    </details>`;
+}
+function openBackup(){
+  closeMenu();
+  renderBackupPanel();
+  document.getElementById('mo-backup').classList.add('open');
 }
 
 function renderSyncStatus(){
@@ -4848,11 +6027,11 @@ function renderItemReview(el){
       const sug=itemSuggestions(h.raw,3);
       return `<div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:8px">
         <div style="display:flex;align-items:flex-start;gap:9px">
-          <span onclick="toggleReviewSel('${esc(h.key).replace(/'/g,"\\'")}')" style="width:21px;height:21px;min-width:21px;flex:0 0 auto;border:2px solid ${reviewSel[h.key]?'#1A2E5A':'#CBD5E1'};background:${reviewSel[h.key]?'#1A2E5A':'#fff'};border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:2px;user-select:none">${reviewSel[h.key]?'✓':''}</span>
+          <span onclick="toggleReviewSel('${_js(h.key)}')" style="width:21px;height:21px;min-width:21px;flex:0 0 auto;border:2px solid ${reviewSel[h.key]?'#1A2E5A':'#CBD5E1'};background:${reviewSel[h.key]?'#1A2E5A':'#fff'};border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:2px;user-select:none">${reviewSel[h.key]?'✓':''}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">"${esc(h.raw)}"${h.src==='lot'?' <span style="font-size:9.5px;font-weight:800;background:#EFF6FF;color:#1D4ED8;padding:1px 6px;border-radius:20px;vertical-align:middle">LOT</span>':h.src==='both'?' <span style="font-size:9.5px;font-weight:800;background:#F0FDF4;color:#059669;padding:1px 6px;border-radius:20px;vertical-align:middle">LOT + CHALLAN</span>':''}</div>
             <div style="font-size:10.5px;color:#999;margin-top:1px">${h.uses}× used · qty ${h.qty.toLocaleString('en-IN')}${h.src==='lot'?'':' · '+fmt(h.rev)}${h.rMin!=null?' · rate '+(h.rMin===h.rMax?'₹'+h.rMin:'₹'+h.rMin+'–₹'+h.rMax):''} · last ${fmtD(h.last)}</div>
-            ${sug.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">${sug.map(s=>`<button class="btn sm" style="font-size:11px;background:#F0FDF4;border-color:#BBF7D0;color:#059669" onclick="mapOne('${esc(h.key).replace(/'/g,"\\'")}','${s.it.id}')">✓ ${esc(s.it.name)} <span style="opacity:.75">₹${+s.it.rate||0}</span> <span style="opacity:.55">${Math.round(s.score*100)}%</span></button>`).join('')}</div>`
+            ${sug.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">${sug.map(s=>`<button class="btn sm" style="font-size:11px;background:#F0FDF4;border-color:#BBF7D0;color:#059669" onclick="mapOne('${_js(h.key)}','${_js(s.it.id)}')">✓ ${esc(s.it.name)} <span style="opacity:.75">₹${+s.it.rate||0}</span> <span style="opacity:.55">${Math.round(s.score*100)}%</span></button>`).join('')}</div>`
               :'<div style="font-size:11px;color:#BBB;margin-top:6px">No close match found.</div>'}
           </div>
         </div>
@@ -4885,8 +6064,8 @@ function renderItemKeywords(el){
         <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:7px">${it?esc(it.name)+' <span style="font-weight:600;color:#059669;font-size:11px">₹'+(+it.rate||0)+'</span>':'⚠️ (deleted item — remap below)'}</div>
         ${groups[id].map(m=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid #F4F4F4">
           <span style="flex:1;font-size:12.5px;color:#444">"${esc(m.raw)}"</span>
-          <select onchange="if(this.value)changeItemMapping('${esc(m.key).replace(/'/g,"\\'")}',this.value)" style="font-size:11px;padding:4px;max-width:130px"><option value="">→ change…</option>${masterSel()}</select>
-          <button class="btn sm red" style="font-size:11px" onclick="removeItemMapping('${esc(m.key).replace(/'/g,"\\'")}')" title="Remove mapping — this name becomes a separate product again">✕</button>
+          <select onchange="if(this.value)changeItemMapping('${_js(m.key)}',this.value)" style="font-size:11px;padding:4px;max-width:130px"><option value="">→ change…</option>${masterSel()}</select>
+          <button class="btn sm red" style="font-size:11px" onclick="removeItemMapping('${_js(m.key)}')" title="Remove mapping — this name becomes a separate product again">✕</button>
         </div>`).join('')}
       </div>`;}).join('')
     :'<div style="text-align:center;padding:36px 16px;color:#999">'+(kq?'No mappings match your search.':'No mappings yet. Use 🧹 Review Historical Items to create them.')+'</div>'}`;
@@ -5384,23 +6563,25 @@ function exportReportCSV(){
   setTimeout(()=>URL.revokeObjectURL(a.href),4000);
 }
 
+function trashVisible(){
+  if(!S.trash) S.trash=[];
+  return trashFilter==='ALL' ? S.trash : S.trash.filter(t=>t && t.type===trashFilter.toLowerCase());
+}
 function renderTrash() {
   if (!S.trash) S.trash = [];
-  const filters = ['ALL','CHALLAN','PARTY'];
+  const filters = ['ALL','CHALLAN','PARTY','PAYMENT'];
   document.getElementById('trash-filter-bar').innerHTML = filters.map(f=>
-    `<button class="btn sm ${trashFilter===f?'pri':''}" onclick="setTrashFilter('${f}')">${f==='ALL'?'All':f==='CHALLAN'?'Challans':'Parties'}</button>`
+    `<button class="btn sm ${trashFilter===f?'pri':''}" onclick="setTrashFilter('${f}')">${f==='ALL'?'All':f==='CHALLAN'?'Challans':f==='PARTY'?'Parties':'Payments'}</button>`
   ).join('');
 
-  const vis = trashFilter==='ALL' ? S.trash :
-              trashFilter==='CHALLAN' ? S.trash.filter(t=>t.type==='challan') :
-              S.trash.filter(t=>t.type==='party');
+  const vis = trashVisible();
 
   const wrap = document.getElementById('trash-empty-all-wrap');
   wrap.style.display = S.trash.length > 0 ? 'block' : 'none';
 
   if (!vis.length) {
     document.getElementById('trash-list').innerHTML =
-      `<div class="empty"><div class="ei">🗑️</div><p>${S.trash.length?'No items of this type in bin.':'Recycle Bin is empty.<br>Deleted challans & parties appear here.'}</p></div>`;
+      `<div class="empty"><div class="ei">🗑️</div><p>${S.trash.length?'No items of this type in bin.':'Recycle Bin is empty.<br>Deleted challans, parties &amp; payments appear here.'}</p></div>`;
     return;
   }
 
@@ -5429,6 +6610,24 @@ function renderTrash() {
         </div>
         <div style="font-size:11px;color:#AAA;margin-bottom:10px">Deleted ${age===0?'today':age+' day(s) ago'}</div>
         <div style="display:flex;gap:8px">
+          <button class="btn sm pri" onclick="restoreItem(${i})" style="flex:1;justify-content:center">↩ Restore</button>
+          <button class="btn sm red" onclick="permDelete(${i})" style="flex:1;justify-content:center;background:#FFF1F2">🗑 Delete Forever</button>
+        </div>
+      </div>`;
+    }
+
+    if (t.type==='payment') {
+      const pay = t.payment || {};
+      return `<div style="background:#fff;border:1.5px solid #E8E8E8;border-radius:12px;padding:14px 16px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:12px;font-weight:700;color:#065F46;background:#D1FAE5;padding:3px 10px;border-radius:20px">PAYMENT</span>
+          <span style="font-size:11px;color:${daysLeft<7?'#DC2626':'#888'}">${daysLeft} day(s) left</span>
+        </div>
+        <div style="font-size:17px;font-weight:800;color:#059669">${fmt(pay.amount)}</div>
+        <div style="font-size:12px;color:#666;margin-top:3px">${esc(t.partyName||'—')} · ${fmtD(pay.date)}${pay.mode?' · '+esc(pay.mode):''}</div>
+        ${pay.remarks?`<div style="font-size:11.5px;color:#888;margin-top:2px"><em>${esc(pay.remarks)}</em></div>`:''}
+        ${t.reason?`<div style="font-size:11px;color:#A16207;margin-top:4px">${esc(t.reason)}</div>`:''}
+        <div style="display:flex;gap:8px;margin-top:11px">
           <button class="btn sm pri" onclick="restoreItem(${i})" style="flex:1;justify-content:center">↩ Restore</button>
           <button class="btn sm red" onclick="permDelete(${i})" style="flex:1;justify-content:center;background:#FFF1F2">🗑 Delete Forever</button>
         </div>
@@ -5467,10 +6666,7 @@ function setTrashFilter(f) { trashFilter=f; renderTrash(); }
 
 function restoreItem(idx) {
   if (!S.trash) return;
-  // Get the actual index in S.trash based on filter
-  const vis = trashFilter==='ALL' ? S.trash :
-              trashFilter==='CHALLAN' ? S.trash.filter(t=>t.type==='challan') :
-              S.trash.filter(t=>t.type==='party');
+  const vis = trashVisible();
   const item = vis[idx];
   if (!item) return;
   const realIdx = S.trash.indexOf(item);
@@ -5482,6 +6678,16 @@ function restoreItem(idx) {
     if (item.overrides)   S.overrides.push(...item.overrides);
     recomputeParty(item.challan.pid);
     alert(`✅ Challan ${item.challan.num} restored successfully!`);
+  }
+
+  if (item.type==='payment') {
+    // Put the payment back exactly as it was; allocateParty() re-derives everything from it.
+    S.payments.push(item.payment);
+    if (item.settlements) S.settlements.push(...item.settlements);
+    if (item.overrides)   S.overrides.push(...item.overrides);
+    invalidateCash();
+    recomputeParty(item.payment.pid);
+    alert(`✅ Payment of ${fmt(item.payment.amount)} restored to ${item.partyName||'the party'}.`);
   }
 
   if (item.type==='party') {
@@ -5501,12 +6707,12 @@ function restoreItem(idx) {
 }
 
 function permDelete(idx) {
-  const vis = trashFilter==='ALL' ? S.trash :
-              trashFilter==='CHALLAN' ? S.trash.filter(t=>t.type==='challan') :
-              S.trash.filter(t=>t.type==='party');
+  const vis = trashVisible();
   const item = vis[idx];
   if (!item) return;
-  const label = item.type==='challan' ? `challan ${item.challan?.num}` : `party "${item.party?.name}"`;
+  const label = item.type==='challan' ? `challan ${item.challan?.num}`
+              : item.type==='payment' ? `payment of ${fmt(item.payment?.amount)}`
+              : `party "${item.party?.name}"`;
   if (!confirm(`Permanently delete ${label}? This CANNOT be undone.`)) return;
   const realIdx = S.trash.indexOf(item);
   S.trash.splice(realIdx, 1);
@@ -5908,6 +7114,7 @@ function vNorm(v){
   // visitDate = the day this particular assignment is to be done. The first round of a sheet
   // uses the sheet's own date; follow-up rounds created from a promised date use that date.
   if(!v.visitDate) v.visitDate = v.sheetDate;
+  if(v.rolls == null) v.rolls = 0;
   return v;
 }
 /* A promise is "covered" once somebody has been assigned to that party FOR that date
@@ -5924,6 +7131,36 @@ function followUpsPending(sheetId){
   return Object.keys(byDate).sort().map(d=>({ date:d, entries:byDate[d] }));
 }
 function allVisits(){ return (S.visits||[]).filter(Boolean).map(vNorm); }
+/* AUTO CARRY-FORWARD
+   A party assigned for a date that has passed with nothing recorded — no payment, no next
+   date, not even a "couldn't collect" — was simply never dealt with. Rather than let it fall
+   off the bottom of an old round, it moves itself into today's round on the same sheet with
+   the same staff member, keeping its history (rolledFrom = the day it was first assigned,
+   rolls = how many times it has slipped). Nothing financial is touched.
+   Idempotent: once an entry sits on today it stops moving, so this can run on every render. */
+function autoRollPending(){
+  if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
+  const t = today();
+  let moved = 0;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    const e = vNorm(v);
+    if(e.status !== 'PENDING') return v;          // collected / rescheduled / refused: leave alone
+    if(!e.visitDate || e.visitDate >= t) return v; // today or future: nothing to do
+    moved++;
+    return Object.assign({}, v, {
+      visitDate : t,
+      rolledFrom: v.rolledFrom || e.visitDate,     // the day it was originally due
+      rolls     : (+v.rolls || 0) + 1,
+      rolledAt  : t
+    });
+  });
+  if(moved){
+    console.log('carried forward', moved, 'unvisited party(ies) into', t);
+    saveToCloud();
+  }
+  return moved;
+}
 function partyVisits(pid){
   return allVisits().filter(v=>v.pid===pid)
     .sort((a,b)=>String(b.sheetDate||'').localeCompare(String(a.sheetDate||''))||String(b.id||'').localeCompare(String(a.id||'')));
@@ -6026,7 +7263,7 @@ function sheetsListHtml(){
   const cards=sheets.map(g=>{
     const pct=g.total?Math.round(g.done/g.total*100):0;
     return `
-    <div style="background:#fff;border:1px solid #E0E7FF;border-radius:12px;padding:13px 14px;margin-bottom:9px;cursor:pointer" onclick="openSheet('${esc(g.id)}')">
+    <div style="background:#fff;border:1px solid #E0E7FF;border-radius:12px;padding:13px 14px;margin-bottom:9px;cursor:pointer" onclick="openSheet('${_js(g.id)}')">
       <div style="display:flex;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
           <div style="font-size:14px;font-weight:800;color:#1A2E5A">${esc(g.title||('Round of '+fmtD(g.date)))}</div>
@@ -6061,7 +7298,6 @@ function sheetsListHtml(){
      Sheet  →  Round (by visit date)  →  Staff member  →  Party cards
    Rounds and staff blocks that are fully finished start collapsed; anything with work
    left starts open, so what you see first is what still needs doing. */
-const _js = v => String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;');
 let openRound={}, openStaff={}, openUnassigned=false;
 function _rk(sid,dt){ return sid+'|'+dt; }
 function _sk(sid,dt,st){ return sid+'|'+dt+'|'+st; }
@@ -6098,6 +7334,7 @@ function sheetDetailHtml(id){
     const dGot=dayEntries.filter(e=>e.status==='COLLECTED').reduce((s,e)=>s+(+e.amount||0),0);
     const dLeft=dayEntries.filter(e=>e.status==='PENDING').length;
     const isFollow=dt!==g.date;
+    const carried=dayEntries.filter(e=>e.rolls>0 && e.status==='PENDING').length;
     const dd=daysBetweenISO(dt);
     const rKey=_rk(g.id,dt);
     const rDef=dLeft>0;                                   // open while there is work left
@@ -6145,7 +7382,7 @@ function sheetDetailHtml(id){
         ${_chev(rOpen)}
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:800;color:${isFollow?'#92400E':'#1A2E5A'}">${isFollow?'🔁 Follow-up':'📋 Main round'} · ${fmtD(dt)}</div>
-          <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${Object.keys(byStaff).length} staff · ${dayEntries.length} part${dayEntries.length===1?'y':'ies'}</div>
+          <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${Object.keys(byStaff).length} staff · ${dayEntries.length} part${dayEntries.length===1?'y':'ies'}${carried?` · <span style="color:#B45309;font-weight:700">${carried} carried over</span>`:''}</div>
         </div>
         ${chip}
         <div style="text-align:right;flex-shrink:0">
@@ -6230,6 +7467,10 @@ function sheetDetailHtml(id){
       <button class="btn sm" style="font-size:11.5px" onclick="expandAllRounds('${_js(g.id)}',${anyOpen?'false':'true'})">${anyOpen?'⊟ Collapse all':'⊞ Expand all'}</button>
       <button class="btn sm" style="font-size:11.5px;color:#DC2626;border-color:#FCA5A5" onclick="delSheet('${_js(g.id)}')">🗑</button>
     </div>
+    ${(()=>{ const c=g.entries.filter(e=>e.rolls>0&&e.status==='PENDING').length;
+      return c?`<div style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:10px;padding:10px 12px;margin-bottom:11px;font-size:11.5px;color:#92400E;line-height:1.55">
+        <strong>${c} part${c===1?'y was':'ies were'} never visited on the assigned day</strong> and ${c===1?'has':'have'} been moved into today's round automatically, with the same staff member.
+      </div>`:''; })()}
     ${followBox}
     ${unBox}
     ${rounds}`;
@@ -6251,6 +7492,7 @@ function entryCardHtml(e){
       <div style="flex:1;min-width:0">
         <div style="font-size:13.5px;font-weight:800;color:#1A1A1A;cursor:pointer" onclick="openParty('${e.pid}')">${esc(e.pname||'—')}</div>
         <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${ageTxt}${overTxt}</div>
+        ${(e.rolls>0 && e.status==='PENDING')?`<div style="font-size:9.5px;font-weight:800;color:#B45309;background:#FEF3C7;display:inline-block;padding:2px 7px;border-radius:10px;margin-top:4px">↷ CARRIED FROM ${fmtD(e.rolledFrom||e.visitDate)}${e.rolls>1?` · ${e.rolls} times`:''}</div>`:''}
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:13.5px;font-weight:800;color:${f.bal>0?'#DC2626':'#059669'}">${fmt(f.bal)}</div>
@@ -6326,8 +7568,8 @@ function dueHtml(){
         <button class="btn sm" style="font-size:11.5px;background:#ECFDF5;color:#059669;border-color:#A7F3D0;font-weight:700" onclick="openCollect('${v.id}')">💵 Payment Collected</button>
         <button class="btn sm" style="font-size:11.5px;background:#FFFBEB;color:#92400E;border-color:#FDE68A;font-weight:700" onclick="openLater('${v.id}')">📅 New Date</button>
         ${f.party.phone?`<a class="btn sm" style="font-size:11.5px;text-decoration:none" href="tel:${esc(f.party.phone)}">📞 Call</a>`:''}
-        <button class="btn sm" style="font-size:11.5px" onclick="openFollowRound('${esc(v.sheetId)}','${v.nextDate}')">🚶 Assign staff</button>
-        <button class="btn sm" style="font-size:11.5px" onclick="openSheet('${esc(v.sheetId)}')">→ Sheet</button>
+        <button class="btn sm" style="font-size:11.5px" onclick="openFollowRound('${_js(v.sheetId)}','${_js(v.nextDate)}')">🚶 Assign staff</button>
+        <button class="btn sm" style="font-size:11.5px" onclick="openSheet('${_js(v.sheetId)}')">→ Sheet</button>
       </div>
     </div>`;};
   const totalOn=onDay.reduce((s,v)=>s+Math.max(0,getAlloc(v.pid).partyBalance),0);
@@ -6818,10 +8060,8 @@ function undoEntry(id){
   const e=findEntry(id); if(!e) return;
   if(e.payId && !confirm('Undo this outcome?\n\nThe payment of '+fmt(e.amount)+' recorded for '+e.pname+' will also be removed from the ledger.')) return;
   if(e.payId){
-    S.settlements=(S.settlements||[]).filter(s=>s.payId!==e.payId);
-    if(typeof removeOverridesForPayment==='function') removeOverridesForPayment(e.payId);
-    S.payments=S.payments.filter(x=>x&&x.id!==e.payId);
-    invalidateCash(); recomputeParty(e.pid);
+    removePaymentToTrash(e.payId, 'Visit outcome undone — '+(e.pname||''));
+    invalidateCash();
   }
   S.visits=S.visits.map(v=>(v&&v.id===e.id)
     ? Object.assign({}, v, { status:'PENDING', amount:0, mode:'', payId:'', nextDate:'', reason:'', doneDate:'' })
@@ -6831,12 +8071,10 @@ function undoEntry(id){
 }
 function delEntry(id){
   const e=findEntry(id); if(!e) return;
-  if(!confirm('Remove '+(e.pname||'this party')+' from the sheet?'+(e.payId?'\n\nThe payment of '+fmt(e.amount)+' recorded here will also be removed from the ledger.':''))) return;
+  if(!confirm('Remove '+(e.pname||'this party')+' from the sheet?'+(e.payId?'\n\nThe payment of '+fmt(e.amount)+' recorded here moves to the Recycle Bin and can be restored.':''))) return;
   if(e.payId){
-    S.settlements=(S.settlements||[]).filter(s=>s.payId!==e.payId);
-    if(typeof removeOverridesForPayment==='function') removeOverridesForPayment(e.payId);
-    S.payments=S.payments.filter(x=>x&&x.id!==e.payId);
-    invalidateCash(); recomputeParty(e.pid);
+    removePaymentToTrash(e.payId, 'Visit entry deleted — '+(e.pname||''));
+    invalidateCash();
   }
   S.visits=S.visits.filter(v=>v&&v.id!==id);
   saveToCloud(); renderAll();
@@ -6846,13 +8084,8 @@ function delSheet(id){
   const g=sheetById(id); if(!g) return;
   const withPay=g.entries.filter(e=>e.payId);
   if(!confirm('Delete this whole sheet ('+g.total+' assignment'+(g.total===1?'':'s')+')?'+
-     (withPay.length?'\n\n'+withPay.length+' collected payment(s) recorded from this sheet will ALSO be removed from the ledger.':''))) return;
-  withPay.forEach(e=>{
-    S.settlements=(S.settlements||[]).filter(s=>s.payId!==e.payId);
-    if(typeof removeOverridesForPayment==='function') removeOverridesForPayment(e.payId);
-    S.payments=S.payments.filter(x=>x&&x.id!==e.payId);
-    recomputeParty(e.pid);
-  });
+     (withPay.length?'\n\n'+withPay.length+' collected payment(s) recorded from this sheet will move to the Recycle Bin. You can restore them from there.':''))) return;
+  withPay.forEach(e=>{ removePaymentToTrash(e.payId, 'Visit sheet deleted — '+(e.pname||'')); });
   if(withPay.length) invalidateCash();
   const ids={}; g.entries.forEach(e=>{ ids[e.id]=1; });
   S.visits=S.visits.filter(v=>v&&!ids[v.id]);
