@@ -550,12 +550,11 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <div class="mbox"><div class="mhandle"></div>
   <div class="mhead"><h3>🗓️ Seasons</h3><button class="xbtn" onclick="closeModal('seasons')">✕</button></div>
   <div class="mbody">
-    <div style="font-size:12px;color:#888;margin-bottom:10px">Seasons tag your challans (e.g. Summer 2026, Festive 2026, Wedding 2027). New challans default to the <strong>current</strong> season. Reports can be filtered by season.</div>
+    <div style="font-size:12px;color:#888;margin-bottom:10px">Two seasons per financial year — <strong>Summer</strong> and <strong>Winter</strong>. New bills default to whichever you mark as current.</div>
     <div id="untagged-box" style="margin-bottom:12px"></div>
     <div id="season-list"></div>
-    <div style="display:flex;gap:8px;margin-top:10px">
-      <input id="season-new-name" placeholder="e.g. Festive 2026" style="flex:1">
-      <button class="btn sm pri" onclick="addSeason()" style="flex-shrink:0">+ Add</button>
+    <div style="font-size:11.5px;color:#94A3B8;margin-top:10px;line-height:1.55">
+      Summer and Winter of each financial year are created for you. There is nothing to add or name.
     </div>
   </div>
 </div></div>
@@ -861,7 +860,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
       </div>
     </div>
     <div class="fg"><label>Date *</label><input id="ch-date" type="date"></div>
-    <div class="fg"><label>Season</label><select id="ch-season"></select></div>
+    <div class="fg"><label>Season</label><select id="ch-season" onchange="seasonChangedOnBill()"></select></div>
     <div class="fg"><label>Remarks</label><input id="ch-rmk" placeholder="Optional"></div>
     <div class="fg"><label>Items</label><div id="item-rows"></div><button class="btn sm" onclick="addItemRow()" style="width:100%;justify-content:center;margin-top:4px">+ Add Item</button></div>
     <div class="fg"><label>Freight / Transport (Rs.)</label><input id="ch-freight" type="number" inputmode="decimal" placeholder="0" oninput="calcTotal()"></div>
@@ -903,7 +902,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
       <div><label>Party *</label><select id="ec-party"></select></div>
       <div><label>Date *</label><input id="ec-date" type="date"></div>
     </div>
-    <div class="fg"><label>Season</label><select id="ec-season"></select></div>
+    <div class="fg"><label>Season</label><select id="ec-season" onchange="seasonChangedOnBill()"></select></div>
     <div class="fg"><label>Remarks</label><input id="ec-rmk" placeholder="Optional"></div>
     <div class="fg">
       <label>Items</label>
@@ -1025,7 +1024,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-03.2';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-03.3';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -4444,7 +4443,8 @@ function setUntaggedSeason(v){
   if(document.getElementById('mo-seasons').classList.contains('open')) renderSeasonList();
 }
 function seasonIdOf(c){ const s=seasonOf(c); return s ? s.id : ''; }
-function seasonNameOf(c){ const s=seasonOf(c); return s ? s.name : (c && c.season ? String(c.season) : ''); }
+// If a tag does not resolve to a real season, show nothing — never the stored value.
+function seasonNameOf(c){ const s=seasonOf(c); return s ? s.name : ''; }
 function seasonById(id){ return (S.seasonRecs||[]).find(s=>s && s.id===id) || null; }
 function seasonsForFY(fy){
   return (S.seasonRecs||[]).filter(s=>s && (fy==null || s.fy===fy))
@@ -4484,13 +4484,85 @@ function previousSameTypeSeason(sid){
    queued, the listener then echoed back the still-empty collection, renderAll ran again, and
    the migration created a second record with a fresh random id — three passes, three copies.
    With a derived id a repeat pass rewrites the SAME document, so the race is harmless. */
+/* A season is identified BY ITS NAME — "Summer 2026" is both the label and the document id.
+   Earlier builds used a generated code like SE-summer-2026, which leaked into the screen and
+   was meaningless. There is exactly one Summer and one Winter per financial year; nothing
+   else can exist. */
+function seasonKey(type, fy){ return (type==='WINTER' ? 'Winter ' : 'Summer ') + fy; }
 function seasonSlug(name){
-  return 'SE-' + String(name||'').toLowerCase().trim()
-    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60);
+  const t = seasonType(name);
+  const fy = seasonFYFromName(name);
+  return (t!=='OTHER' && fy!=null) ? seasonKey(t, fy) : String(name||'').trim();
 }
 /* Merge any duplicates left behind by the old random-id migration. Runs silently: the newest
    record's settings win, challans pointing at a discarded copy are repointed, and closing
    snapshots follow. No button, no prompt — a duplicate season is never something you wanted. */
+/* Reduce whatever is in the collection to the canonical two-per-year set, and make sure both
+   halves of every year in use exist. Runs silently on load. */
+function normalizeSeasons(){
+  if(!_seasonsLoaded) return 0;
+  if(!Array.isArray(S.seasonRecs)) S.seasonRecs = [];
+  const want = {}, remap = {};
+
+  const canon = (type, fy, from) => {
+    const id = seasonKey(type, fy);
+    if(!want[id]) want[id] = { id:id, name:id, type:type, fy:fy,
+                               startDate:'', endDate:'', status:'OPEN', closedAt:'', closingStockRef:'' };
+    if(from){                                   // carry a closed season's state onto the survivor
+      if(from.status==='CLOSED'){ want[id].status='CLOSED'; want[id].closedAt=from.closedAt||''; want[id].closingStockRef=from.closingStockRef||''; }
+      if(from.startDate && !want[id].startDate) want[id].startDate=from.startDate;
+      if(from.endDate && !want[id].endDate)     want[id].endDate=from.endDate;
+    }
+    return id;
+  };
+
+  // Fold every existing record — including the junk named after an old id — into its canon.
+  (S.seasonRecs||[]).forEach(r=>{
+    if(!r) return;
+    const t = (r.type && r.type!=='OTHER') ? r.type : seasonType(r.name);
+    const fy = (r.fy!=null) ? r.fy : seasonFYFromName(r.name);
+    if(t==='OTHER' || fy==null) return;         // unclassifiable: dropped
+    const id = canon(t, fy, r);
+    if(r.id !== id) remap[r.id] = id;
+  });
+
+  // Both halves of every year that actually has bills, plus the year we are in.
+  const years = {};
+  (S.challans||[]).forEach(c=>{ const f=fyOf(c && c.date); if(f!=null) years[f]=1; });
+  years[fyOf(today())] = 1;
+  Object.keys(years).map(Number).forEach(fy=>{ canon('SUMMER', fy); canon('WINTER', fy); });
+
+  // Anything a challan still points at by an old id or a loose name.
+  (S.challans||[]).forEach(c=>{
+    const v = c && c.season; if(!v || typeof v!=='string') return;
+    if(want[v] || remap[v]) return;
+    const t = seasonType(v);
+    const fy = seasonFYFromName(v);
+    if(t!=='OTHER' && fy!=null) remap[v] = canon(t, fy);
+    else remap[v] = '';                         // unrecognisable tag → cleared, not invented
+  });
+
+  const next = Object.keys(want).sort().map(k=>want[k]);
+  const changedRecs = JSON.stringify(next.map(x=>x.id).sort()) !== JSON.stringify((S.seasonRecs||[]).map(x=>x&&x.id).sort());
+  const hasRemap = Object.keys(remap).some(k=>remap[k]!==k);
+  if(!changedRecs && !hasRemap) return 0;
+
+  S.seasonRecs = next;
+  if(hasRemap){
+    const R = v => (v && remap[v]!==undefined) ? remap[v] : v;
+    S.challans   = (S.challans||[]).map(c => (c && remap[c.season]!==undefined && remap[c.season]!==c.season) ? Object.assign({}, c, {season:R(c.season)}) : c);
+    S.stock      = (S.stock||[]).map(o => (o && remap[o.season]) ? Object.assign({}, o, {season:R(o.season)}) : o);
+    S.stockMv    = (S.stockMv||[]).map(m => (m && remap[m.season]) ? Object.assign({}, m, {season:R(m.season)}) : m);
+    S.stockClose = (S.stockClose||[]).map(x => (x && remap[x.seasonId]) ? Object.assign({}, x, {seasonId:R(x.seasonId)}) : x);
+    if(remap[stockSeasonId]) setStockSeason(remap[stockSeasonId]);
+    if(remap[selSeason]) selSeason = remap[selSeason];
+    if(remap[S.untaggedSeason]) S.untaggedSeason = remap[S.untaggedSeason];
+    if(remap[S.curSeason]) S.curSeason = remap[S.curSeason];
+  }
+  syncSeasonNames();
+  saveToCloud();
+  return 1;
+}
 function dedupeSeasons(){
   const byName = {};
   (S.seasonRecs||[]).forEach(r=>{
@@ -4539,10 +4611,9 @@ function dedupeSeasons(){
    out of the id it had just written — which is why the duplicates multiplied instead of
    settling. A value is only a NAME if it fails to resolve to a record and is not id-shaped. */
 function looksLikeSeasonId(v){ return /^SE-/i.test(String(v||'')); }
-function migrateSeasons(){
+function migrateSeasons(){ return normalizeSeasons(); }
+function _oldMigrateSeasons(){
   if(!Array.isArray(S.seasonRecs)) S.seasonRecs = [];
-  // Never run before the seasons listener has reported — otherwise we migrate against an
-  // empty list that the server is about to fill in, which is how duplicates appeared.
   if(!_seasonsLoaded) return 0;
   let changed = dedupeSeasons();
   const names = {};
@@ -4668,13 +4739,45 @@ function itemsByRecency(){
 function partiesSorted(){ return (S.parties||[]).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''))); }
 /* Item dropdowns: sorted by DEFAULT RATE (low → high), rate always visible. */
 function itemsByRate(){ return (S.items||[]).slice().sort((a,b)=>((+a.rate||0)-(+b.rate||0))||String(a.name||'').localeCompare(String(b.name||''))); }
+/* Articles available on a bill follow the season chosen on that bill. An article you tagged
+   Summer will not be offered on a Winter bill, and vice versa; anything left on "Both" is
+   always offered. With nothing tagged, every article is offered exactly as before. */
+function billSeasonType(){
+  const sel = document.getElementById('ch-season') || document.getElementById('ec-season');
+  const s = sel ? seasonById(sel.value) : null;
+  return s ? s.type : null;
+}
+function itemsForBill(){
+  const want = billSeasonType();
+  return itemsByRate().filter(it=>{
+    const t = (it && it.seasonType) || 'ALL';
+    return t==='ALL' || !want || want==='OTHER' || t===want;
+  });
+}
 function itemOptions(){
-  return '<option value="">— pick item —</option>'+itemsByRate().map(it=>
-    `<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('');
+  const want = billSeasonType();
+  const list = itemsForBill();
+  const hidden = itemsByRate().length - list.length;
+  return '<option value="">— pick item'+(want?' ('+(want==='WINTER'?'Winter':'Summer')+' stock)':'')+' —</option>'
+    + list.map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('')
+    + (hidden?`<option value="" disabled>— ${hidden} article(s) hidden: other season —</option>`:'');
+}
+/* Changing the season on the bill re-stocks every item dropdown already on screen. */
+function seasonChangedOnBill(){
+  const opts = itemOptions();
+  document.querySelectorAll('#item-rows select, #ec-item-rows select').forEach(sel=>{
+    if(sel.id && sel.id.endsWith('-dz')) return;      // leave design pickers alone
+    sel.innerHTML = opts;
+  });
+  refreshItemDatalist();
 }
 function findItemByName(v){ const n=normIName(v); if(!n) return null; return (S.items||[]).find(it=>normIName(it.name)===n)||null; }
 function refreshItemDatalist(){
   const dl=document.getElementById('items-dl'); if(!dl) return;
+  if(typeof itemsForBill==='function' && document.getElementById('ch-season')){
+    dl.innerHTML = itemsForBill().map(it=>`<option value="${esc(it.name)}">₹${+it.rate||0}${it.code?' · '+esc(it.code):''}</option>`).join('');
+    return;
+  }
   dl.innerHTML=itemsByRate().map(it=>`<option value="${esc(it.name)}">₹${+it.rate||0}${it.code?' · '+esc(it.code):''}</option>`).join('');
 }
 /* Typing an item name: if it matches an Item Master record (picked from suggestions or typed
