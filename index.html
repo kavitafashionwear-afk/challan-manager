@@ -364,6 +364,11 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
     <div class="pg" id="stock-content"></div>
   </div>
 
+  <!-- TAG CHALLANS -->
+  <div class="cscreen" id="cs-tagch">
+    <div class="pg" id="tagch-content"></div>
+  </div>
+
   <!-- VISITS & FOLLOW-UPS -->
   <div class="cscreen" id="cs-visits">
     <div class="pg" id="visits-content"></div>
@@ -467,7 +472,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
   <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
-  <div class="umi" onclick="openBackfillSeason();closeMenu()">🏷️ Label Bills by Season</div>
+  <div class="umi" onclick="goTab('tagch');closeMenu()">🏷️ Tag Challans <span id="tagch-badge" style="display:none;background:#F59E0B;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="openBackup()">💾 Backup &amp; Restore</div>
   <div class="umi" onclick="goTab('visits');closeMenu()">🚶 Visits &amp; Follow-ups <span id="visits-due-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="goTab('cash');closeMenu()">💰 Cash in Hand</div>
@@ -527,7 +532,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
         <option value="SUMMER">☀️ Summer item</option>
         <option value="WINTER">❄️ Winter item</option>
       </select>
-      <div style="font-size:11px;color:#888;margin-top:4px">A Summer item never shows in the Winter stock book.</div>
+      <div style="font-size:11px;color:#888;margin-top:4px">Your own label. It shows on the item and in the closing Excel — it does not hide anything.</div>
     </div>
     <button class="btn" style="width:100%;justify-content:center;margin-bottom:10px" onclick="closeItemEdit();openDesigns(ieId2)">🎨 Manage designs<span id="ie-dzn" style="margin-left:6px;opacity:.7"></span></button>
     <div id="ie-warn" style="display:none;font-size:11.5px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 11px;margin-bottom:10px;color:#92400E"></div>
@@ -546,6 +551,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="mhead"><h3>🗓️ Seasons</h3><button class="xbtn" onclick="closeModal('seasons')">✕</button></div>
   <div class="mbody">
     <div style="font-size:12px;color:#888;margin-bottom:10px">Seasons tag your challans (e.g. Summer 2026, Festive 2026, Wedding 2027). New challans default to the <strong>current</strong> season. Reports can be filtered by season.</div>
+    <div id="untagged-box" style="margin-bottom:12px"></div>
     <div id="season-list"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <input id="season-new-name" placeholder="e.g. Festive 2026" style="flex:1">
@@ -669,20 +675,6 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   </div>
   <div class="mbody" id="dz-body"></div>
   <div class="mfoot"><button class="btn pri" style="width:100%;justify-content:center" onclick="closeModal('designs');renderItems()">✓ Done</button></div>
-</div></div>
-
-<!-- ══════════ LABEL UNLABELLED BILLS ══════════ -->
-<div class="overlay" id="mo-backfill">
-<div class="mbox"><div class="mhandle"></div>
-  <div class="mhead">
-    <div><h3>🏷️ Label Bills by Season</h3><div style="font-size:12px;color:#888">For challans written before seasons were used</div></div>
-    <button class="xbtn" onclick="closeModal('backfill')">✕</button>
-  </div>
-  <div class="mbody" id="bf-body"></div>
-  <div class="mfoot" style="display:flex;gap:8px">
-    <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('backfill')">Cancel</button>
-    <button class="btn pri" style="flex:1;justify-content:center" onclick="runBackfillSeason()">✓ Label them</button>
-  </div>
 </div></div>
 
 <!-- ══════════ CLOSE SEASON ══════════ -->
@@ -1033,12 +1025,12 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-02.6';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-03.2';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
           visits:[], vC:0, defCreditDays:30,
-          seasonRecs:[], stockClose:[] };
+          seasonRecs:[], stockClose:[], untaggedSeason:'' };
 let uid = null;
 let currentUser = null;
 let unsubDB = null;
@@ -2409,7 +2401,7 @@ function saveLocal(){
     stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns,
     expenses:S.expenses, cashOpen:S.cashOpen, cashModes:S.cashModes, exC:S.exC,
     visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays,
-    seasonRecs:S.seasonRecs, stockClose:S.stockClose
+    seasonRecs:S.seasonRecs, stockClose:S.stockClose, untaggedSeason:S.untaggedSeason
   };
   // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
   var tiers = [
@@ -2445,7 +2437,7 @@ function loadLocal(){
     S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; S.expenses=d.expenses||[]; S.cashOpen=d.cashOpen||null;
     if(d.cashModes) S.cashModes=d.cashModes; S.exC=d.exC||0;
     S.visits=d.visits||[]; S.vC=d.vC||0; if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays;
-    S.seasonRecs=d.seasonRecs||[]; S.stockClose=d.stockClose||[];
+    S.seasonRecs=d.seasonRecs||[]; S.stockClose=d.stockClose||[]; S.untaggedSeason=d.untaggedSeason||'';
     invalidateStock(); invalidateCash();
     // S.lots is not in the local backup by design — Firestore's own cache restores it.
     return true;
@@ -2471,7 +2463,7 @@ function overrideId(o){ return 'OV__'+(o.payId||'P')+'__'+(o.cid||'C'); }
 let _lastSaved = { parties:{}, challans:{}, payments:{}, settlements:{}, overrides:{}, items:{}, itemMap:{}, stock:{}, stockMv:{}, returns:{}, expenses:{}, visits:{}, trash:{}, seasonRecs:{}, stockClose:{} };
 let _subParts=null,_subCh=null,_subPay=null,_subSet=null,_subMeta=null,_subOv=null; let _subItems=null; let _subMap=null;
 let _subStock=null, _subStockMv=null, _subLots=null, _subRet=null, _subExp=null, _subCtPays=null, _subCtAdv=null, _subVisits=null, _subTrash=null, _subSeasons=null, _subStockClose=null;
-let _trashLoaded=false, _trashNeedsMigration=false;
+let _trashLoaded=false, _trashNeedsMigration=false, _seasonsLoaded=false;
 // Every trash record needs a stable id of its own now that each one is a document.
 function _trashId(t){ if(!t.id) t.id = 'T-'+(t.deletedAt||new Date().toISOString()).replace(/[^0-9]/g,'').slice(0,17)+'-'+Math.random().toString(36).slice(2,7); return t.id; }
 // One-time settlement reconciliation on load (fixes challans showing a due that's actually paid).
@@ -2813,6 +2805,7 @@ function attachDataListeners(){
   /* seasons — one document each, so a season can carry status and closing data without
      bloating meta/state. */
   _subSeasons = _col('seasons').onSnapshot({includeMetadataChanges:true}, snap=>{
+    _seasonsLoaded = true;
     S.seasonRecs = snap.docs.map(d=>d.data());
     _lastSaved.seasonRecs = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     syncSeasonNames();
@@ -2847,7 +2840,7 @@ function attachDataListeners(){
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0);
       // Legacy meta docs still carry trash inline; adopt it once, then it migrates out.
       if(!d.trashMoved && Array.isArray(d.trash) && d.trash.length && !_trashLoaded){ S.trash=d.trash; _trashNeedsMigration=true; }
-      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays;
+      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; if(d.untaggedSeason!=null) S.untaggedSeason=d.untaggedSeason;
       if(d.cashOpen!==undefined){ S.cashOpen=d.cashOpen; invalidateCash(); }
       if(d.cashModes!==undefined && d.cashModes){ S.cashModes=d.cashModes; invalidateCash(); } if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
@@ -2914,7 +2907,7 @@ function saveToCloud() {
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     // trash is NOT in here any more — it lives in its own collection, one document per
     // deleted item. meta/state is now bounded: counters and a few small settings only.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), trashMoved:true };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), trashMoved:true, untaggedSeason:S.untaggedSeason||'' };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -3072,6 +3065,7 @@ function renderAll() {
   if (curTab==='stock')    renderStock();
   if (curTab==='cash')     renderCash();
   if (curTab==='visits')   renderVisits();
+  if (curTab==='tagch')    renderTagChallans();
   if (curTab==='trash')    renderTrash();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
@@ -3084,6 +3078,8 @@ function renderAll() {
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
   if (typeof renderIncomingBadge==='function' && typeof _pendingBills!=='undefined') renderIncomingBadge(_pendingBills.length);
+  const tb=document.getElementById('tagch-badge');
+  if(tb){ const u=(S.challans||[]).filter(c=>c&&!c.season).length; tb.style.display=u?'inline':'none'; tb.textContent=u; }
 }
 
 function goTab(tab) {
@@ -3093,7 +3089,7 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   const nt=document.getElementById('nt-'+tab); if(nt) nt.classList.add('on');   // reports has no bottom-nav tab
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock'||tab==='cash'||tab==='visits') ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock'||tab==='cash'||tab==='visits'||tab==='tagch') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
@@ -3103,6 +3099,7 @@ function goTab(tab) {
     tab==='stock'    ? '📦 Stock' :
     tab==='cash'     ? '💰 Cash in Hand' :
     tab==='visits'   ? '🚶 Visits & Follow-ups' :
+    tab==='tagch'    ? '🏷️ Tag Challans' :
     tab==='items'    ? '🏷️ Item Master' : '🗑️ Recycle Bin';
   renderAll();
 }
@@ -3236,11 +3233,6 @@ function renderHome() {
     <div class="stat"><div class="sl">🗓️ This Month</div><div class="sv">${fmt(monthSales)}</div></div>
     <div class="stat"><div class="sl">📈 Avg Daily (${fyLbl(fyNow).replace('FY ','')})</div><div class="sv">${fmt(Math.round(sales/fyDays))}</div></div>
     <div class="stat"><div class="sl">💼 Sales ${tag}</div><div class="sv">${fmt(sales)}</div></div>
-    ${(()=>{ const un=(typeof untaggedChallans==='function')?untaggedChallans().length:0;
-      return un?`<div class="stat" style="grid-column:1/-1;padding:11px 13px;background:#FFFBEB;border:1.5px solid #FDE68A;cursor:pointer" onclick="openBackfillSeason()">
-        <div style="font-size:12.5px;font-weight:800;color:#92400E">🏷️ ${un} challan(s) have no season</div>
-        <div style="font-size:11px;color:#A16207;margin-top:3px;line-height:1.5">They are missing from every season total. Tap to label them — your Winter bills are already tagged and stay untouched.</div>
-      </div>`:''; })()}
     ${scoping?`<div class="stat" style="grid-column:1/-1;padding:9px 13px;background:#F8FAFC">
       <div style="font-size:11px;color:#64748B;line-height:1.55">
         Whole business: <strong>${fmt(outAll)}</strong> outstanding · <strong>${fmt(recdAll)}</strong> received · ${S.challans.length} challans.
@@ -4215,6 +4207,176 @@ function renderDaybook(){
    FY, by contrast, is ALWAYS derived from the challan date — never stored, never editable — so
    financial reports can never contradict the bill dates. */
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   TAG CHALLANS
+   Manual control over which season each bill belongs to, plus a suggestion drawn from the
+   articles on the bill once those are tagged in Stock → Season Tags.
+
+   The suggestion is only ever a SUGGESTION. Nothing is written until you press a button, and
+   a bill you have already tagged is never overwritten by the automatic pass.
+══════════════════════════════════════════════════════════════════════ */
+let tagFilter = 'untagged';       // untagged | all | <seasonId>
+let tagQuery  = '';
+let tagSel    = {};
+let tagLimit  = 100;
+
+/* What do the ARTICLES on this bill say? Quantity-weighted, so one stray line cannot
+   outvote the bulk of the order. Articles left on "Both" hold no opinion. */
+function suggestSeasonType(c){
+  let su = 0, wi = 0;
+  (c && c.items || []).forEach(li=>{
+    const cn = itemCanon(li.name);
+    const t  = cn && cn.seasonType;
+    const q  = Math.max(1, +li.qty || 0);
+    if(t === 'SUMMER') su += q;
+    else if(t === 'WINTER') wi += q;
+  });
+  if(su === 0 && wi === 0) return null;      // no tagged articles — no opinion
+  if(su === wi) return null;                  // a genuine tie stays undecided
+  return su > wi ? 'SUMMER' : 'WINTER';
+}
+/* Turn that into a real season, preferring one in the bill's own financial year. */
+function suggestSeasonFor(c){
+  const t = suggestSeasonType(c); if(!t) return null;
+  const fy = fyOf(c && c.date);
+  const of = (S.seasonRecs||[]).filter(s=>s && s.type===t);
+  return of.find(s=>s.fy===fy) || of.slice().sort((a,b)=>b.fy-a.fy)[0] || null;
+}
+function tagChallanList(){
+  const q = normIName(tagQuery);
+  return (S.challans||[]).filter(c=>{
+    if(!c) return false;
+    if(tagFilter==='untagged'){ if(c.season) return false; }
+    else if(tagFilter!=='all'){ if(seasonIdOf(c)!==tagFilter) return false; }
+    if(q){
+      const pn = ((S.parties||[]).find(p=>p&&p.id===c.pid)||{}).name || '';
+      if(!normIName(c.num||'').includes(q) && !normIName(pn).includes(q)) return false;
+    }
+    return true;
+  }).sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.num||'').localeCompare(String(a.num||'')));
+}
+function setTagFilter(v){ tagFilter=v; tagSel={}; tagLimit=100; renderTagChallans(); }
+function toggleTagSel(id){ if(tagSel[id]) delete tagSel[id]; else tagSel[id]=1; renderTagChallans(); }
+function tagSelectAllVisible(){
+  const vis = tagChallanList().slice(0, tagLimit);
+  const allOn = vis.every(c=>tagSel[c.id]);
+  if(allOn) tagSel = {}; else vis.forEach(c=>{ tagSel[c.id]=1; });
+  renderTagChallans();
+}
+/* One challan at a time. */
+function setChallanSeason(cid, sid){
+  const i = (S.challans||[]).findIndex(c=>c && c.id===cid); if(i===-1) return;
+  S.challans[i] = Object.assign({}, S.challans[i], { season: sid||'' });   // replace, never mutate
+  invalidateStock(); saveToCloud(); renderTagChallans();
+}
+/* Everything currently selected, or everything the filter is showing if nothing is ticked. */
+function applyTagTo(sid){
+  const list = tagChallanList();
+  const chosen = Object.keys(tagSel).length ? list.filter(c=>tagSel[c.id]) : list;
+  if(!chosen.length){ alert('Nothing to tag.'); return; }
+  const s = seasonById(sid);
+  const what = s ? s.name : 'no season';
+  if(!confirm('Tag '+chosen.length+' challan(s) as '+what+'?\n\nOnly the season label changes — amounts, dates, items and payments stay exactly as they are.')) return;
+  const ids = {}; chosen.forEach(c=>{ ids[c.id]=1; });
+  S.challans = S.challans.map(c=>(c && ids[c.id]) ? Object.assign({}, c, {season: sid||''}) : c);
+  tagSel = {};
+  invalidateStock(); saveToCloud(); renderTagChallans();
+}
+/* Read each bill's articles and tag accordingly. Only ever touches bills that have no tag,
+   so anything you set by hand — or already tagged Winter — is left alone. */
+function autoTagFromStock(){
+  const tagged = (S.items||[]).filter(it=>it && it.seasonType && it.seasonType!=='ALL').length;
+  if(!tagged){ alert('No articles are tagged yet.\n\nOpen Stock → 🏷️ Season Tags and mark your articles as Summer or Winter first — the suggestion is read from them.'); return; }
+  const hits = (S.challans||[]).filter(c=>c && !c.season).map(c=>({c, s:suggestSeasonFor(c)})).filter(x=>x.s);
+  if(!hits.length){ alert('Nothing could be decided from the articles on the untagged bills.'); return; }
+  const byName = {};
+  hits.forEach(h=>{ byName[h.s.name] = (byName[h.s.name]||0)+1; });
+  const summary = Object.keys(byName).map(k=>byName[k]+' → '+k).join('\n');
+  if(!confirm('Tag '+hits.length+' untagged bill(s) from the articles they contain?\n\n'+summary+
+              '\n\nBills you have already tagged are not touched.')) return;
+  const map = {}; hits.forEach(h=>{ map[h.c.id] = h.s.id; });
+  S.challans = S.challans.map(c=>(c && map[c.id]) ? Object.assign({}, c, {season: map[c.id]}) : c);
+  invalidateStock(); saveToCloud(); renderTagChallans();
+}
+
+function renderTagChallans(){
+  const el = document.getElementById('tagch-content'); if(!el) return;
+  const _ae=document.activeElement;
+  const _foc=(_ae&&_ae.id&&typeof _ae.selectionStart==='number')?{id:_ae.id,pos:_ae.selectionStart}:null;
+
+  const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
+  const list = tagChallanList();
+  const shown = list.slice(0, tagLimit);
+  const nSel = Object.keys(tagSel).length;
+  const nUntagged = (S.challans||[]).filter(c=>c && !c.season).length;
+  const artTagged = (S.items||[]).filter(it=>it && it.seasonType && it.seasonType!=='ALL').length;
+
+  const fbtn=(v,l,on)=>`<button class="btn sm" style="font-size:11.5px;${tagFilter===v?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setTagFilter('${_js(v)}')">${esc(l)}</button>`;
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #E8E8E8;border-radius:12px;padding:13px 14px;margin-bottom:12px">
+      <div style="font-size:14px;font-weight:800;color:#1A2E5A">🏷️ Tag challans by season</div>
+      <div style="font-size:11.5px;color:#64748B;margin-top:4px;line-height:1.6">
+        ${nUntagged ? `<strong>${nUntagged}</strong> bill(s) have no tag.` : 'Every bill is tagged.'}
+        Only the season label changes — never an amount, date or item.
+      </div>
+      <button class="btn" style="width:100%;justify-content:center;margin-top:10px;background:#EEF2FF;border-color:#C7D2FE;color:#1A2E5A;font-weight:800"
+              onclick="autoTagFromStock()">🤖 Work it out from the articles${artTagged?` (${artTagged} tagged)`:''}</button>
+      <div style="font-size:11px;color:#94A3B8;margin-top:5px;line-height:1.5">
+        Reads the articles on each untagged bill and tags it to match. Tag your articles first in
+        <strong>Stock → 🏷️ Season Tags</strong>. Bills you already tagged are never touched.
+      </div>
+    </div>
+
+    <div class="fbar">
+      ${fbtn('untagged','Untagged ('+nUntagged+')')}${fbtn('all','All ('+(S.challans||[]).length+')')}
+      ${recs.map(r=>fbtn(r.id, r.name+' ('+(S.challans||[]).filter(c=>seasonIdOf(c)===r.id).length+')')).join('')}
+    </div>
+    <input id="tag-q" placeholder="🔍 Challan number or party…" value="${esc(tagQuery)}"
+           oninput="tagQuery=this.value;tagLimit=100;renderTagChallans()"
+           style="width:100%;padding:10px 12px;border:1.5px solid #DDD;border-radius:10px;font-size:13.5px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
+
+    <div style="position:sticky;top:0;z-index:5;background:#FAFAFA;padding:9px 0;border-bottom:1px solid #E8E8E8;margin-bottom:9px">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="btn sm" style="font-size:11.5px" onclick="tagSelectAllVisible()">${nSel?'✕ Clear':'☑ Select shown'}</button>
+        <span style="font-size:11.5px;font-weight:800;color:${nSel?'#1A2E5A':'#94A3B8'}">${nSel?nSel+' selected':'none selected'}</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
+        <span style="font-size:11px;color:#64748B;align-self:center">Set ${nSel?'selected':'all '+list.length+' shown'} to:</span>
+        ${recs.map(r=>`<button class="btn sm" style="font-size:11.5px;font-weight:700;background:${r.type==='WINTER'?'#DBEAFE':'#FEF3C7'};border-color:${r.type==='WINTER'?'#BFDBFE':'#FDE68A'};color:${r.type==='WINTER'?'#1E40AF':'#92400E'}" onclick="applyTagTo('${_js(r.id)}')">${esc(r.name)}</button>`).join('')}
+        <button class="btn sm" style="font-size:11.5px;color:#DC2626;border-color:#FCA5A5" onclick="applyTagTo('')">Clear tag</button>
+      </div>
+    </div>
+
+    ${shown.length ? shown.map(c=>{
+      const pn = ((S.parties||[]).find(p=>p&&p.id===c.pid)||{}).name || '—';
+      const cur = seasonIdOf(c);
+      const sug = !c.season ? suggestSeasonFor(c) : null;
+      const on = !!tagSel[c.id];
+      const items = (c.items||[]).slice(0,3).map(li=>esc(li.name)).join(', ');
+      return `
+      <div style="background:#fff;border:1px solid ${on?'#C7D2FE':'#ECECEC'};border-radius:11px;padding:11px 12px;margin-bottom:7px;${on?'background:#F8FAFF':''}">
+        <div style="display:flex;align-items:flex-start;gap:9px">
+          <div onclick="toggleTagSel('${_js(c.id)}')" style="width:19px;height:19px;border-radius:5px;border:2px solid ${on?'#1A2E5A':'#CCC'};background:${on?'#1A2E5A':'#fff'};color:#fff;font-size:12px;font-weight:900;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;margin-top:2px">${on?'✓':''}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:700;color:#1A2E5A">${esc(c.num||'')} <span style="color:#334155;font-weight:600">${esc(pn)}</span></div>
+            <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${fmtD(c.date)} · ${fmt(c.total)}${items?' · '+items+((c.items||[]).length>3?'…':''):''}</div>
+            ${sug?`<div style="font-size:10.5px;color:#065F46;margin-top:3px">🤖 Articles suggest <strong>${esc(sug.name)}</strong></div>`:''}
+          </div>
+          <select onchange="setChallanSeason('${_js(c.id)}', this.value)"
+                  style="width:132px;flex-shrink:0;padding:7px 8px;border:1.5px solid ${cur?'#A7F3D0':'#E2E8F0'};border-radius:8px;font-size:11.5px;font-family:inherit;font-weight:700;color:${cur?'#065F46':'#94A3B8'};background:#fff">
+            <option value="">— none —</option>
+            ${recs.map(r=>`<option value="${esc(r.id)}" ${cur===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}
+          </select>
+        </div>
+      </div>`;}).join('')
+    : '<div style="text-align:center;color:#999;padding:32px 16px;font-size:13px">No challans in this view.</div>'}
+    ${list.length > tagLimit ? `<button class="btn full" onclick="tagLimit+=200;renderTagChallans()">Show more (${list.length-tagLimit} left)</button>` : ''}`;
+
+  if(_foc){ const e2=document.getElementById(_foc.id); if(e2){ e2.focus(); try{e2.setSelectionRange(_foc.pos,_foc.pos);}catch(_e){} } }
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    SEASONS
    A season is a business period, not a date range. THE SEASON TAG ON A CHALLAN IS
@@ -4226,63 +4388,6 @@ function renderDaybook(){
    data without bloating meta/state. S.seasons (the old array of plain strings) is
    kept in sync for backward compatibility with anything still reading it.
 ══════════════════════════════════════════════════════════════════════ */
-/* ══════════════════════════════════════════════════════════════════════
-   BACKFILL — label bills that have no season
-   Winter bills were tagged as they were written; everything untagged predates that habit and
-   belongs to Summer. This is a deliberate, previewed, one-tap action rather than a guess made
-   silently at load, because it rewrites the season on real challans.
-══════════════════════════════════════════════════════════════════════ */
-function untaggedChallans(){
-  return (S.challans||[]).filter(c=>c && !seasonOf(c));
-}
-function openBackfillSeason(){
-  const un = untaggedChallans();
-  if(!un.length){ alert('Every challan already has a season.'); return; }
-  const byFY = {};
-  un.forEach(c=>{ const f=fyOf(c.date); byFY[f]=(byFY[f]||0)+1; });
-  const total = un.reduce((t,c)=>t+(+c.total||0),0);
-  const dates = un.map(c=>c.date).filter(Boolean).sort();
-  const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
-  const pref = recs.find(x=>x.type==='SUMMER' && x.fy===2026) || recs.find(x=>x.type==='SUMMER') || recs[0];
-  document.getElementById('bf-body').innerHTML = `
-    <div class="ibox amb" style="margin:0 0 12px">
-      <strong>${un.length} challan(s)</strong> have no season, worth <strong>${fmt(total)}</strong>.
-      ${dates.length?`They run from ${fmtD(dates[0])} to ${fmtD(dates[dates.length-1])}.`:''}
-    </div>
-    <div style="font-size:12px;color:#475569;line-height:1.7;margin-bottom:12px">
-      ${Object.keys(byFY).sort().map(f=>`${fyLbl(+f)}: <strong>${byFY[f]}</strong> challan(s)`).join('<br>')}
-    </div>
-    <div class="fg"><label>Label them all as</label>
-      <select id="bf-season">${recs.map(x=>`<option value="${esc(x.id)}" ${pref&&pref.id===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
-    </div>
-    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#334155;cursor:pointer">
-      <input type="checkbox" id="bf-thisfy" checked style="width:17px;height:17px">
-      Only bills in ${fyLbl(fyOf(today()))}
-    </label>
-    <div style="font-size:11.5px;color:#94A3B8;margin-top:10px;line-height:1.55">
-      Only the season label changes. Amounts, dates, items and payments are untouched, and
-      already-labelled bills (your Winter ones) are never modified.
-    </div>`;
-  document.getElementById('mo-backfill').classList.add('open');
-}
-function runBackfillSeason(){
-  const sid = document.getElementById('bf-season').value;
-  const onlyFY = document.getElementById('bf-thisfy').checked;
-  const s = seasonById(sid); if(!s){ alert('Pick a season.'); return; }
-  const fy = fyOf(today());
-  const targets = untaggedChallans().filter(c=>!onlyFY || fyOf(c.date)===fy);
-  if(!targets.length){ alert('Nothing matches that filter.'); return; }
-  if(!confirm('Label '+targets.length+' challan(s) as '+s.name+'?\n\nOnly the season changes. This can be undone by editing a challan.')) return;
-  const ids = {}; targets.forEach(c=>{ ids[c.id]=1; });
-  // Replace the objects rather than mutating in place, so diffWrite always sees the change.
-  S.challans = S.challans.map(c=>(c && ids[c.id]) ? Object.assign({}, c, { season:sid }) : c);
-  invalidateStock();
-  saveToCloud();
-  closeModal('backfill');
-  renderAll();
-  alert('✅ '+targets.length+' challan(s) labelled '+s.name+'.');
-}
-
 function seasonType(name){
   const n = String(name||'').toUpperCase();
   if(/WINT/.test(n)) return 'WINTER';
@@ -4293,13 +4398,50 @@ function seasonFYFromName(name){
   const m = String(name||'').match(/(20\d{2})/);
   return m ? +m[1] : null;
 }
-/* Resolve whatever a challan carries — a season id (new) or the raw name (legacy). */
+/* The one setting that decides where untagged bills land. Shown with a live count so you
+   can see exactly how many challans it moves before choosing. */
+function renderUntaggedBox(){
+  const box = document.getElementById('untagged-box'); if(!box) return;
+  const raw = (S.challans||[]).filter(c=>c && !c.season);
+  const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
+  if(!raw.length){ box.innerHTML=''; return; }
+  const total = raw.reduce((t,c)=>t+(+c.total||0),0);
+  box.innerHTML = `
+    <div style="background:#F8FAFC;border:1.5px solid #CBD5E1;border-radius:11px;padding:11px 13px">
+      <div style="font-size:12.5px;font-weight:800;color:#334155">${raw.length} bill(s) have no season tag</div>
+      <div style="font-size:11.5px;color:#64748B;margin-top:3px;line-height:1.55">
+        Worth ${fmt(total)}. Count them as:
+      </div>
+      <select onchange="setUntaggedSeason(this.value)" style="width:100%;margin-top:8px;padding:8px 10px;border:1.5px solid #C7D2FE;border-radius:8px;font-size:12.5px;font-family:inherit;font-weight:700;color:#1A2E5A;background:#fff">
+        <option value="">— leave them untagged —</option>
+        ${recs.map(x=>`<option value="${esc(x.id)}" ${S.untaggedSeason===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}
+      </select>
+      <div style="font-size:11px;color:#94A3B8;margin-top:6px;line-height:1.5">
+        Nothing is written to your challans — this only decides how they are read. Your tagged
+        Winter bills keep their own tag, and you can change or clear this at any time.
+      </div>
+    </div>`;
+}
+
+/* Resolve whatever a challan carries — a season id (new) or the raw name (legacy).
+   A bill with NO tag falls back to the season you nominate in Menu → Seasons. That fallback
+   is applied when reading, so not one challan is modified: your Winter bills keep their own
+   tag, everything untagged simply counts as Summer, and changing the setting (or clearing it)
+   takes effect instantly and reverses just as cleanly. */
 function seasonOf(c){
-  if(!c || !c.season) return null;
+  if(!c) return null;
+  if(!c.season){
+    return S.untaggedSeason ? ((S.seasonRecs||[]).find(s=>s && s.id===S.untaggedSeason) || null) : null;
+  }
   const byId = (S.seasonRecs||[]).find(s=>s && s.id===c.season);
   if(byId) return byId;
   const byName = (S.seasonRecs||[]).find(s=>s && s.name===c.season);
   return byName || null;
+}
+function setUntaggedSeason(v){
+  S.untaggedSeason = v || '';
+  invalidateStock(); saveToCloud(); renderAll();
+  if(document.getElementById('mo-seasons').classList.contains('open')) renderSeasonList();
 }
 function seasonIdOf(c){ const s=seasonOf(c); return s ? s.id : ''; }
 function seasonNameOf(c){ const s=seasonOf(c); return s ? s.name : (c && c.season ? String(c.season) : ''); }
@@ -4337,28 +4479,97 @@ function previousSameTypeSeason(sid){
 }
 
 /* ── migration: turn legacy season name strings into records, once ── */
+/* A season's document id is DERIVED FROM ITS NAME, never random.
+   The previous version used uniqId(), and the migration runs from renderAll(). A write was
+   queued, the listener then echoed back the still-empty collection, renderAll ran again, and
+   the migration created a second record with a fresh random id — three passes, three copies.
+   With a derived id a repeat pass rewrites the SAME document, so the race is harmless. */
+function seasonSlug(name){
+  return 'SE-' + String(name||'').toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60);
+}
+/* Merge any duplicates left behind by the old random-id migration. Runs silently: the newest
+   record's settings win, challans pointing at a discarded copy are repointed, and closing
+   snapshots follow. No button, no prompt — a duplicate season is never something you wanted. */
+function dedupeSeasons(){
+  const byName = {};
+  (S.seasonRecs||[]).forEach(r=>{
+    if(!r || !r.name) return;
+    const k = normIName(r.name);
+    (byName[k] = byName[k] || []).push(r);
+  });
+  const remap = {};
+  let keep = [], removed = 0;
+  // Records whose NAME is really an id ("SE-summer-2026") were manufactured by the old bug.
+  // Fold them into the genuine season they point at, so they disappear on their own.
+  (S.seasonRecs||[]).forEach(r=>{
+    if(!r || !/^SE-/i.test(String(r.name||''))) return;
+    const target = (S.seasonRecs||[]).find(x=>x && x.id===r.name && x.id!==r.id);
+    if(target){ remap[r.id] = target.id; delete byName[normIName(r.name)]; }
+  });
+  Object.keys(byName).forEach(k=>{
+    const group = byName[k].filter(r=>!remap[r.id]);
+    if(!group.length) return;
+    // Prefer the derived id; failing that, whichever copy is closed or carries a snapshot.
+    const want = seasonSlug(group[0].name);
+    let canon = group.find(r=>r.id===want)
+             || group.find(r=>r.status==='CLOSED' || r.closingStockRef)
+             || group[0];
+    canon = Object.assign({}, canon, { id:want });
+    group.forEach(r=>{ if(r.id !== want){ remap[r.id] = want; removed++; } });
+    keep.push(canon);
+  });
+  removed += Object.keys(remap).length - removed >= 0 ? 0 : 0;
+  if(!Object.keys(remap).length && keep.length === (S.seasonRecs||[]).length) return 0;
+  removed = Object.keys(remap).length;
+  S.seasonRecs = keep;
+  if(Object.keys(remap).length){
+    S.challans   = (S.challans||[]).map(c => (c && remap[c.season]) ? Object.assign({}, c, {season:remap[c.season]}) : c);
+    S.stock      = (S.stock||[]).map(o => (o && remap[o.season]) ? Object.assign({}, o, {season:remap[o.season]}) : o);
+    S.stockMv    = (S.stockMv||[]).map(m => (m && remap[m.season]) ? Object.assign({}, m, {season:remap[m.season]}) : m);
+    S.stockClose = (S.stockClose||[]).map(x => (x && remap[x.seasonId]) ? Object.assign({}, x, {seasonId:remap[x.seasonId]}) : x);
+    if(remap[stockSeasonId]) setStockSeason(remap[stockSeasonId]);
+    if(remap[selSeason]) selSeason = remap[selSeason];
+    console.log('merged', removed, 'duplicate season record(s)');
+  }
+  return removed;
+}
+/* Once a challan has been migrated, c.season holds an ID, not a name. The previous version
+   still treated every value as a name, so it manufactured a season called "SE-summer-2026"
+   out of the id it had just written — which is why the duplicates multiplied instead of
+   settling. A value is only a NAME if it fails to resolve to a record and is not id-shaped. */
+function looksLikeSeasonId(v){ return /^SE-/i.test(String(v||'')); }
 function migrateSeasons(){
   if(!Array.isArray(S.seasonRecs)) S.seasonRecs = [];
+  // Never run before the seasons listener has reported — otherwise we migrate against an
+  // empty list that the server is about to fill in, which is how duplicates appeared.
+  if(!_seasonsLoaded) return 0;
+  let changed = dedupeSeasons();
   const names = {};
-  (S.seasons||[]).forEach(n=>{ if(n) names[n]=1; });
-  (S.challans||[]).forEach(c=>{ if(c && c.season && typeof c.season==='string') names[c.season]=1; });
-  let added = 0;
+  const known = v => (S.seasonRecs||[]).some(r=>r && (r.id===v || normIName(r.name)===normIName(v)));
+  (S.seasons||[]).forEach(v=>{ if(v && !looksLikeSeasonId(v) && !known(v)) names[v]=1; });
+  (S.challans||[]).forEach(c=>{
+    const v = c && c.season;                 // the RAW tag only — never the read-time fallback
+    if(!v || typeof v !== 'string') return;
+    if(looksLikeSeasonId(v) || known(v)) return;      // already a record — nothing to create
+    names[v] = 1;
+  });
   Object.keys(names).forEach(n=>{
-    if((S.seasonRecs||[]).some(s=>s && (s.name===n || s.id===n))) return;
-    // FY from the name if it carries a year, else from the earliest challan tagged with it.
+    const id = seasonSlug(n);
+    if((S.seasonRecs||[]).some(s=>s && (s.id===id || normIName(s.name)===normIName(n)))) return;
     let fy = seasonFYFromName(n);
     if(fy==null){
       const tagged=(S.challans||[]).filter(c=>c && c.season===n).map(c=>c.date).filter(Boolean).sort();
       fy = tagged.length ? fyOf(tagged[0]) : fyOf(today());
     }
     S.seasonRecs.push({
-      id: uniqId('SE'), name: n, type: seasonType(n), fy: fy,
+      id: id, name: n, type: seasonType(n), fy: fy,
       startDate:'', endDate:'', status:'OPEN', closedAt:'', closingStockRef:''
     });
-    added++;
+    changed++;
   });
-  if(added){ console.log('migrated', added, 'season(s) to records'); syncSeasonNames(); saveToCloud(); }
-  return added;
+  if(changed){ syncSeasonNames(); saveToCloud(); }
+  return changed;
 }
 // Keep the legacy string array aligned so older code paths keep working.
 function syncSeasonNames(){
@@ -4379,6 +4590,7 @@ function seasonOptions(sel){
 }
 function openSeasons(){ renderSeasonList(); document.getElementById('mo-seasons').classList.add('open'); }
 function renderSeasonList(){
+  renderUntaggedBox();
   const el=document.getElementById('season-list');
   if(!(S.seasons||[]).length){ el.innerHTML='<div style="color:#999;font-size:12px;text-align:center;padding:10px">No seasons yet. Add your first one below.</div>'; return; }
   el.innerHTML=S.seasons.map(s=>{
@@ -4603,15 +4815,15 @@ function seasonStockIndex(sid){
   if(_seasonStockIdx && _seasonStockKey===sid) return _seasonStockIdx;
   const rows = {};
   const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, retIn:0, onHand:0});
-  // An article marked Summer never appears in the Winter book, and vice versa. Anything left
-  // as "Both seasons" shows in every book.
-  const sn = seasonById(sid);
-  const wantType = sn ? sn.type : null;
-  const showsHere = it => {
+  // An article is hidden only if YOU tagged it for the other season. Anything left on
+  // "Both" — which is everything until you say otherwise — appears in every book.
+  const _sn = seasonById(sid);
+  const _want = _sn ? _sn.type : null;
+  const _shows = it => {
     const t = (it && it.seasonType) || 'ALL';
-    return t==='ALL' || !wantType || wantType==='OTHER' || t===wantType;
+    return t === 'ALL' || !_want || _want === 'OTHER' || t === _want;
   };
-  (S.items||[]).forEach(it=>{ if(it&&it.id&&showsHere(it)) row(it.id); });
+  (S.items||[]).forEach(it=>{ if(it && it.id && _shows(it)) row(it.id); });
 
   // Opening: explicit for this season, else carried from the previous same-type season.
   Object.keys(rows).forEach(id=>{ rows[id].open = seasonOpeningFor(id, sid); });
@@ -5017,6 +5229,62 @@ let stockSearch = '';
 let stockFilter = 'all';       // 'all' | 'neg' | 'low' | 'zero'
 let stockItemId = null;
 let osSearch    = '';
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   ARTICLE SEASON TAGS
+   You decide which articles are Summer and which are Winter. Nothing is guessed here.
+   An article left as "Both" shows in every stock book — so until you tag something,
+   this screen changes nothing at all.
+══════════════════════════════════════════════════════════════════════ */
+let tagSearch = '';
+function setItemSeason(id, v){
+  const i = (S.items||[]).findIndex(x=>x && x.id===id); if(i===-1) return;
+  S.items[i] = Object.assign({}, S.items[i], { seasonType: v || 'ALL' });   // replace, never mutate
+  _itemCanonIdx = null; invalidateStock();
+  saveToCloud(); renderStock();
+}
+function renderStockTags(el){
+  const q = normIName(tagSearch);
+  const all = (S.items||[]).filter(it=>it && it.id);
+  const list = all.filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code||'').includes(q))
+                  .sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  const cnt = t => all.filter(it=>((it.seasonType)||'ALL')===t).length;
+  const pill = (it, v, lbl, on) => {
+    const cur = (it.seasonType||'ALL')===v;
+    return `<button onclick="setItemSeason('${_js(it.id)}','${v}')"
+      style="flex:1;padding:7px 4px;border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;
+             border:1.5px solid ${cur?on.bd:'#E2E8F0'};background:${cur?on.bg:'#fff'};color:${cur?on.fg:'#94A3B8'}">${lbl}</button>`;
+  };
+  el.innerHTML = `
+    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
+    <div style="background:#fff;border:1px solid #E8E8E8;border-radius:12px;padding:13px 14px;margin-bottom:12px">
+      <div style="font-size:14px;font-weight:800;color:#1A2E5A">🏷️ Which season is each article?</div>
+      <div style="font-size:11.5px;color:#64748B;margin-top:4px;line-height:1.6">
+        A <strong>Summer</strong> article is hidden from the Winter stock book, and the other way round.
+        Anything left on <strong>Both</strong> stays visible everywhere — so tagging nothing changes nothing.
+      </div>
+      <div style="display:flex;gap:7px;margin-top:10px;font-size:11px;color:#64748B">
+        <span>☀️ Summer <strong>${cnt('SUMMER')}</strong></span>
+        <span>❄️ Winter <strong>${cnt('WINTER')}</strong></span>
+        <span>Both <strong>${cnt('ALL')}</strong></span>
+      </div>
+    </div>
+    <input id="tag-search" placeholder="🔍 Search article or code…" value="${esc(tagSearch)}"
+           oninput="tagSearch=this.value;renderStock()"
+           style="width:100%;padding:10px 12px;border:1.5px solid #DDD;border-radius:10px;font-size:13.5px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
+    ${list.length ? list.map(it=>`
+      <div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 12px;margin-bottom:7px">
+        <div style="font-size:13px;font-weight:700;color:#1A2E5A">${esc(it.name)}
+          ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}</div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          ${pill(it,'ALL','Both',{bg:'#EEF2FF',fg:'#1A2E5A',bd:'#C7D2FE'})}
+          ${pill(it,'SUMMER','☀️ Summer',{bg:'#FEF3C7',fg:'#92400E',bd:'#FDE68A'})}
+          ${pill(it,'WINTER','❄️ Winter',{bg:'#DBEAFE',fg:'#1E40AF',bd:'#BFDBFE'})}
+        </div>
+      </div>`).join('')
+    : `<div style="text-align:center;color:#999;padding:30px 16px;font-size:13px">${q?'No article matches “'+esc(tagSearch)+'”.':'No articles in the Item Master yet.'}</div>`}`;
+}
 
 function setStockView(v){
   if(v==='opening' && stockView!=='opening') osSeed();      // start from saved values
@@ -6245,6 +6513,7 @@ function renderStock(){
   if(stockView==='moves')  { renderStockMoves(el);   _done(); return; }
   if(stockView==='item')   { renderStockItem(el);    _done(); return; }
   if(stockView==='unmapped'){ renderStockUnmapped(el); _done(); return; }
+  if(stockView==='tags')   { renderStockTags(el);    _done(); return; }
   renderStockOnHand(el);
   // The stock book carries its OWN season, shown at the top. It does not follow the Home
   // selector, because a stock book is a thing you work inside, not a view you glance through.
@@ -6335,7 +6604,7 @@ function renderStockOnHand(el){
   const idx = activeStockIndex(), sm = stockSummary();
   const q = normIName(stockSearch);
   const _bk = activeStockIndex();
-  let list = (S.items||[]).filter(it=>it && (!(S.seasonRecs||[]).length || (_bk.rows && (it.id in _bk.rows))))
+  let list = (S.items||[]).filter(it=>it && (!_bk.rows || (it.id in _bk.rows)))
                           .map(it=>({it, r:stockRow(it.id)}));
   if(q) list = list.filter(x=> normIName(x.it.name).includes(q) || normIName(x.it.code).includes(q));
   if(stockFilter==='neg')  list = list.filter(x=>x.r.onHand < 0);
@@ -6356,6 +6625,7 @@ function renderStockOnHand(el){
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
       <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('tags')">🏷️ Season Tags${(()=>{const t=(S.items||[]).filter(i=>i&&i.seasonType&&i.seasonType!=='ALL').length;return t?` <span style="color:#999;font-size:10px;margin-left:4px">${t}</span>`:'';})()}</button>
     </div>
     ${warn}
     <div style="display:flex;gap:8px;margin-bottom:12px">
@@ -6576,7 +6846,7 @@ function renderItems(){
           <option value="SUMMER" ${(ed&&ed.seasonType==='SUMMER')?'selected':''}>☀️ Summer item</option>
           <option value="WINTER" ${(ed&&ed.seasonType==='WINTER')?'selected':''}>❄️ Winter item</option>
         </select>
-        <div style="font-size:11px;color:#888;margin-top:4px">Summer items are hidden from the Winter stock book, and the other way round.</div>
+        <div style="font-size:11px;color:#888;margin-top:4px">Your own label. It shows on the item and in the closing Excel — it does not hide anything from any stock book.</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:6px">
         ${ed?'<button class="btn" style="flex:1;justify-content:center" onclick="itemEditId=null;renderItems()">Cancel</button>':''}
