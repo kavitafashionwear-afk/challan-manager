@@ -1024,7 +1024,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-03.3';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-03.4';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2895,9 +2895,6 @@ function saveToCloud() {
     diffWrite('returns',     S.returns,     _lastSaved.returns,     x=>x.id);
     diffWrite('expenses',    S.expenses,    _lastSaved.expenses,    x=>x.id);
     diffWrite('visits',      S.visits,      _lastSaved.visits,      x=>x.id);
-    // Deliberately NOT auto-tagging untagged opening rows: that would stamp all legacy stock
-    // with whichever book happened to be open at the time. They stay untagged and are read
-    // through the legacy fallback in seasonOpeningFor() until filed explicitly.
     diffWrite('seasons',     S.seasonRecs,  _lastSaved.seasonRecs,  x=>x.id);
     diffWrite('stockClose',  S.stockClose,  _lastSaved.stockClose,  x=>x.id);
     (S.trash||[]).forEach(_trashId);
@@ -3128,8 +3125,8 @@ function goBack() {
 /* ══════════════════════════════════════════════════════════════════════
    GLOBAL FY + SEASON SELECTION
    One selection shared by Home, Parties and Reports so they can never disagree.
-   Stock deliberately keeps its OWN active season (see stockSeasonId) — a stock book is
-   a physical thing you work in, not a filter you glance through.
+   Stock is deliberately NOT part of this. It is split only into Summer and Winter by how
+   each article is tagged — no years — because a stock book is a physical thing you work in.
 ══════════════════════════════════════════════════════════════════════ */
 let selFY = null;        // null = every year
 let selSeason = '';      // '' = whole FY / everything
@@ -4554,7 +4551,6 @@ function normalizeSeasons(){
     S.stock      = (S.stock||[]).map(o => (o && remap[o.season]) ? Object.assign({}, o, {season:R(o.season)}) : o);
     S.stockMv    = (S.stockMv||[]).map(m => (m && remap[m.season]) ? Object.assign({}, m, {season:R(m.season)}) : m);
     S.stockClose = (S.stockClose||[]).map(x => (x && remap[x.seasonId]) ? Object.assign({}, x, {seasonId:R(x.seasonId)}) : x);
-    if(remap[stockSeasonId]) setStockSeason(remap[stockSeasonId]);
     if(remap[selSeason]) selSeason = remap[selSeason];
     if(remap[S.untaggedSeason]) S.untaggedSeason = remap[S.untaggedSeason];
     if(remap[S.curSeason]) S.curSeason = remap[S.curSeason];
@@ -4600,7 +4596,6 @@ function dedupeSeasons(){
     S.stock      = (S.stock||[]).map(o => (o && remap[o.season]) ? Object.assign({}, o, {season:remap[o.season]}) : o);
     S.stockMv    = (S.stockMv||[]).map(m => (m && remap[m.season]) ? Object.assign({}, m, {season:remap[m.season]}) : m);
     S.stockClose = (S.stockClose||[]).map(x => (x && remap[x.seasonId]) ? Object.assign({}, x, {seasonId:remap[x.seasonId]}) : x);
-    if(remap[stockSeasonId]) setStockSeason(remap[stockSeasonId]);
     if(remap[selSeason]) selSeason = remap[selSeason];
     console.log('merged', removed, 'duplicate season record(s)');
   }
@@ -4868,254 +4863,178 @@ function stockContractorIn(row, cutOf, gcut, unmapped){
    source of truth for the next same-type season's opening; the Excel export is the owner's
    external record and can be regenerated at any time.
 ══════════════════════════════════════════════════════════════════════ */
-let stockSeasonId = '';        // the book you are working in — independent of the Home selector
-try{ stockSeasonId = localStorage.getItem('cm_stock_season') || ''; }catch(e){}
-function setStockSeason(id){
-  stockSeasonId = id||'';
-  try{ localStorage.setItem('cm_stock_season', stockSeasonId); }catch(e){}
+/* ══════════════════════════════════════════════════════════════════════
+   STOCK BOOKS — SUMMER / WINTER
+   Two books, split purely by how you tagged each article in Season Tags. No years, no
+   financial-year handling here: Summer shows every Summer article with its stock, Winter
+   shows every Winter article. Articles left on "Both" appear in each.
+
+   Every bill counts towards stock regardless of the season tag on the bill — an article's
+   own tag is the only thing that decides which book it lives in.
+══════════════════════════════════════════════════════════════════════ */
+let stockMode = 'ALL';                 // 'SUMMER' | 'WINTER' | 'ALL'
+try{ stockMode = localStorage.getItem('cm_stock_mode') || 'ALL'; }catch(e){}
+function setStockMode(m){
+  stockMode = m || 'ALL';
+  try{ localStorage.setItem('cm_stock_mode', stockMode); }catch(e){}
   invalidateStock(); renderStock();
 }
-function activeStockSeason(){
-  if(stockSeasonId){ const s=seasonById(stockSeasonId); if(s) return s; }
-  const d = seasonById(defaultSeasonId());
-  return d || null;
+function stockModeLabel(){ return stockMode==='SUMMER' ? 'Summer' : stockMode==='WINTER' ? 'Winter' : 'All articles'; }
+function itemInMode(it, mode){
+  const t = (it && it.seasonType) || 'ALL';
+  const m = mode || stockMode;
+  return m === 'ALL' || t === 'ALL' || t === m;
 }
-function stockSeasonLabel(){ const s=activeStockSeason(); return s ? s.name : 'No season'; }
-// Records with no season belong to every book until filed, so nothing is ever lost.
-function _recInSeason(rec, sid){ return !rec.season || rec.season===sid; }
+function itemsInMode(mode){ return (S.items||[]).filter(it=>it && it.id && itemInMode(it, mode)); }
 
-/* Closing snapshot helpers */
-function closeRecordFor(sid){ return (S.stockClose||[]).find(x=>x && x.seasonId===sid) || null; }
-/* Opening quantity for an item in a season: an explicit opening record wins, otherwise the
-   previous same-type season's frozen closing quantity carries forward. */
-function seasonOpeningFor(itemId, sid){
-  const own = (S.stock||[]).find(x=>x && x.itemId===itemId && x.season===sid);
-  if(own) return +own.qty||0;
-  const prev = previousSameTypeSeason(sid);
-  if(prev){
-    const snap = closeRecordFor(prev.id);
-    if(snap){
-      const r = (snap.rows||[]).find(x=>x && x.itemId===itemId);
-      if(r) return +r.qty||0;
-    }
-  }
-  // Legacy opening rows (written before seasons existed) have no season tag.
-  const legacy = (S.stock||[]).find(x=>x && x.itemId===itemId && !x.season);
-  return legacy ? (+legacy.qty||0) : 0;
-}
-function seasonOpeningIsCarried(itemId, sid){
-  const own = (S.stock||[]).find(x=>x && x.itemId===itemId && x.season===sid);
-  if(own) return false;
-  const prev = previousSameTypeSeason(sid);
-  return !!(prev && closeRecordFor(prev.id));
-}
-
-/* The season book itself. Same shape as stockIndex() so the existing screen can render it. */
-let _seasonStockIdx = null, _seasonStockKey = '';
-function invalidateSeasonStock(){ _seasonStockIdx = null; _seasonStockKey = ''; }
-function seasonStockIndex(sid){
-  sid = sid || (activeStockSeason() ? activeStockSeason().id : '');
-  if(_seasonStockIdx && _seasonStockKey===sid) return _seasonStockIdx;
+/* The book itself: the ordinary stock figures, narrowed to this book's articles. */
+let _modeIdx = null, _modeKey = '';
+function invalidateSeasonStock(){ _modeIdx = null; _modeKey = ''; }
+function stockIndexForMode(mode){
+  mode = mode || stockMode;
+  if(_modeIdx && _modeKey === mode) return _modeIdx;
+  const base = stockIndex();
   const rows = {};
-  const row = id => rows[id] || (rows[id] = {open:0, inCon:0, manIn:0, manOut:0, out:0, retIn:0, onHand:0});
-  // An article is hidden only if YOU tagged it for the other season. Anything left on
-  // "Both" — which is everything until you say otherwise — appears in every book.
-  const _sn = seasonById(sid);
-  const _want = _sn ? _sn.type : null;
-  const _shows = it => {
-    const t = (it && it.seasonType) || 'ALL';
-    return t === 'ALL' || !_want || _want === 'OTHER' || t === _want;
+  itemsInMode(mode).forEach(it=>{
+    rows[it.id] = base.rows[it.id] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0};
+  });
+  _modeKey = mode;
+  return _modeIdx = { rows, unmapped: base.unmapped, mode: mode };
+}
+function stockModeCounts(){
+  const c = { SUMMER:0, WINTER:0, ALL:(S.items||[]).length };
+  (S.items||[]).forEach(it=>{ const t=(it&&it.seasonType)||'ALL'; if(t==='SUMMER') c.SUMMER++; else if(t==='WINTER') c.WINTER++; });
+  c.SUMMER += (S.items||[]).filter(it=>((it&&it.seasonType)||'ALL')==='ALL').length;
+  c.WINTER += (S.items||[]).filter(it=>((it&&it.seasonType)||'ALL')==='ALL').length;
+  return c;
+}
+function stockModeBarHtml(){
+  const c = stockModeCounts();
+  const untagged = (S.items||[]).filter(it=>((it&&it.seasonType)||'ALL')==='ALL').length;
+  const btn = (m, lbl, n, on) => {
+    const cur = stockMode === m;
+    return `<button onclick="setStockMode('${m}')" style="flex:1;padding:10px 6px;border-radius:9px;font-size:12.5px;font-weight:800;cursor:pointer;font-family:inherit;
+      border:1.5px solid ${cur?on.bd:'#E2E8F0'};background:${cur?on.bg:'#fff'};color:${cur?on.fg:'#94A3B8'}">${lbl}<div style="font-size:10px;font-weight:700;opacity:.75;margin-top:2px">${n} article(s)</div></button>`;
   };
-  (S.items||[]).forEach(it=>{ if(it && it.id && _shows(it)) row(it.id); });
-
-  // Opening: explicit for this season, else carried from the previous same-type season.
-  Object.keys(rows).forEach(id=>{ rows[id].open = seasonOpeningFor(id, sid); });
-
-  (S.stockMv||[]).forEach(m=>{
-    if(!m || !m.itemId || !_recInSeason(m, sid)) return;
-    const q = +m.qty || 0;
-    if(q >= 0) row(m.itemId).manIn += q; else row(m.itemId).manOut += -q;
-  });
-
-  const unmapped = {};
-  (S.challans||[]).forEach(c=>{
-    if(!c) return;
-    if(seasonIdOf(c) !== sid) return;                 // TAG decides, not the date
-    (c.items||[]).forEach(li=>{
-      const q = +li.qty || 0; if(!q) return;
-      const cn = itemCanon(li.name);
-      if(cn) row(cn.id).out += q;
-      else {
-        const k = normIName(li.name); if(!k) return;
-        const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
-        u.outQty += q; u.uses++; if((c.date||'') > u.last) u.last = c.date||'';
-      }
-    });
-  });
-
-  // A return follows the season of the challan it came from where we know it; otherwise its own tag.
-  (S.returns||[]).forEach(rt=>{
-    if(!rt) return;
-    const rsid = rt.season || (rt.cid ? seasonIdOf((S.challans||[]).find(c=>c&&c.id===rt.cid)||{}) : '');
-    if(rsid && rsid !== sid) return;
-    (rt.items||[]).forEach(li=>{
-      const q = +li.qty || 0; if(!q) return;
-      const cn = itemCanon(li.name);
-      if(cn) row(cn.id).retIn += q;
-      else {
-        const k = normIName(li.name); if(!k) return;
-        const u = unmapped[k] || (unmapped[k] = {key:k, raw:li.name, inQty:0, outQty:0, uses:0, last:''});
-        u.inQty += q; u.uses++; if((rt.date||'') > u.last) u.last = rt.date||'';
-      }
-    });
-  });
-
-  Object.keys(rows).forEach(id=>{
-    const r = rows[id];
-    r.onHand = _r2(r.open + r.inCon + r.manIn + r.retIn - r.manOut - r.out);
-  });
-  _seasonStockKey = sid;
-  return _seasonStockIdx = { rows, unmapped:Object.values(unmapped), seasonId:sid };
+  return `
+  <div style="margin-bottom:12px">
+    <div style="display:flex;gap:7px">
+      ${btn('SUMMER','☀️ Summer', c.SUMMER, {bg:'#FEF3C7',fg:'#92400E',bd:'#FDE68A'})}
+      ${btn('WINTER','❄️ Winter', c.WINTER, {bg:'#DBEAFE',fg:'#1E40AF',bd:'#BFDBFE'})}
+      ${btn('ALL','📦 All', c.ALL, {bg:'#EEF2FF',fg:'#1A2E5A',bd:'#C7D2FE'})}
+    </div>
+    ${stockMode!=='ALL' && untagged ? `<div style="font-size:11px;color:#94A3B8;margin-top:7px;line-height:1.5">
+      Includes ${untagged} article(s) still marked “Both”. Set them in <strong onclick="setStockView('tags')" style="color:#1A2E5A;cursor:pointer;text-decoration:underline">Season Tags</strong>.
+    </div>` : ''}
+  </div>`;
 }
 
-/* ── closing a season ── */
-function seasonClosingRows(sid){
-  const idx = seasonStockIndex(sid);
-  return (S.items||[]).filter(it=>it && it.id && (it.id in idx.rows)).map(it=>{
+/* ── closing a book: freeze the figures and download the sheet ── */
+function stockCloseRows(mode){
+  const idx = stockIndexForMode(mode);
+  return itemsInMode(mode).map(it=>{
     const r = idx.rows[it.id] || {open:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0};
     return {
       itemId:it.id, name:it.name||'', code:it.code||'', rate:+it.rate||0,
-      seasonType:it.seasonType||'ALL',
+      seasonType:(it.seasonType)||'ALL',
       designs:itemDesigns(it).map(d=>({ code:d.code, fullCode:designFullCode(it,d), name:d.name||'', rate:designRate(it,d) })),
       open:_r2(r.open||0), sold:_r2(r.out||0), added:_r2(r.manIn||0),
-      removed:_r2(r.manOut||0), returned:_r2(r.retIn||0),
-      qty:_r2(r.onHand)
+      removed:_r2(r.manOut||0), returned:_r2(r.retIn||0), qty:_r2(r.onHand)
     };
-  }).filter(r=>r.qty !== 0 || r.open !== 0 || r.sold !== 0);
+  }).filter(r=>r.qty!==0 || r.open!==0 || r.sold!==0);
 }
-function openCloseSeason(){
-  const s = activeStockSeason();
-  if(!s){ alert('Create a season first.'); return; }
-  if(s.status==='CLOSED'){ alert(s.name+' is already closed.'); return; }
-  const rows = seasonClosingRows(s.id);
+function openCloseStock(){
+  if(stockMode==='ALL'){ alert('Pick ☀️ Summer or ❄️ Winter first — a closing sheet is for one book.'); return; }
+  const rows = stockCloseRows(stockMode);
   const units = rows.reduce((t,r)=>t+r.qty,0);
   const value = rows.reduce((t,r)=>t+r.qty*r.rate,0);
-  const nxt = (S.seasonRecs||[]).filter(x=>x && x.type===s.type && x.fy>s.fy).sort((a,b)=>a.fy-b.fy)[0];
   document.getElementById('sc-body').innerHTML = `
     <div class="ibox" style="background:#EEF2FF;border-color:#C7D2FE;color:#1E3A8A;margin:0 0 12px">
-      Closing <strong>${esc(s.name)}</strong> freezes its stock exactly as it stands now.
-      Nothing about your challans or payments changes.
+      This records the <strong>${esc(stockModeLabel())}</strong> stock exactly as it stands now and
+      downloads it as an Excel sheet. Your challans and payments are not touched.
     </div>
     <div class="stats" style="margin-bottom:12px">
-      <div class="stat"><div class="sl">Items with stock</div><div class="sv">${rows.length}</div></div>
-      <div class="stat"><div class="sl">Total pieces</div><div class="sv">${Math.round(units)}</div></div>
-      <div class="stat"><div class="sl">Stock value</div><div class="sv">${fmt(value)}</div></div>
+      <div class="stat"><div class="sl">Articles</div><div class="sv">${rows.length}</div></div>
+      <div class="stat"><div class="sl">Pieces</div><div class="sv">${Math.round(units)}</div></div>
+      <div class="stat"><div class="sl">Value</div><div class="sv">${fmt(value)}</div></div>
     </div>
     <div style="font-size:12px;color:#475569;line-height:1.7">
-      <div>1. The closing quantities are saved permanently.</div>
-      <div>2. An Excel sheet downloads for your records — you can re-export it any time.</div>
-      <div>3. <strong>${esc(s.name)}</strong> becomes read-only.</div>
-      <div>4. ${nxt ? `<strong>${esc(nxt.name)}</strong> will open with these quantities as its opening stock.`
-                    : `The next <strong>${esc(s.type==='SUMMER'?'Summer':s.type==='WINTER'?'Winter':s.type)}</strong> season you create will open with these quantities.`}</div>
-    </div>
-    <div style="font-size:11.5px;color:#94A3B8;margin-top:10px;line-height:1.55">
-      The saved snapshot is what carries forward. The Excel file is your own copy — the app never depends on it.
+      The sheet lists every article with its code, designs, opening, sold and closing quantity —
+      ready to use as next year's opening stock.
     </div>
     <div class="fg" style="margin-top:14px">
-      <label>Type <strong>${esc(s.name)}</strong> to confirm</label>
-      <input id="sc-confirm" placeholder="${esc(s.name)}" autocomplete="off" oninput="scCheck()">
+      <label>Type <strong>${esc(stockModeLabel())}</strong> to confirm</label>
+      <input id="sc-confirm" placeholder="${esc(stockModeLabel())}" autocomplete="off" oninput="scCheck()">
     </div>`;
   const btn=document.getElementById('sc-go');
   if(btn){ btn.disabled=true; btn.style.opacity='.45'; }
   document.getElementById('mo-closeseason').classList.add('open');
 }
-// The button only wakes up once the season name has been typed out in full.
 function scCheck(){
-  const s = activeStockSeason(); const btn = document.getElementById('sc-go');
-  const inp = document.getElementById('sc-confirm');
-  if(!s || !btn || !inp) return;
-  const ok = normIName(inp.value) === normIName(s.name);
-  btn.disabled = !ok; btn.style.opacity = ok ? '1' : '.45';
+  const btn=document.getElementById('sc-go'), inp=document.getElementById('sc-confirm');
+  if(!btn||!inp) return;
+  const ok = normIName(inp.value) === normIName(stockModeLabel());
+  btn.disabled=!ok; btn.style.opacity = ok?'1':'.45';
 }
 async function confirmCloseSeason(){
-  const s = activeStockSeason(); if(!s || s.status==='CLOSED') return;
-  const inp = document.getElementById('sc-confirm');
-  if(!inp || normIName(inp.value) !== normIName(s.name)){ alert('Type the season name exactly to confirm.'); return; }
-  const rows = seasonClosingRows(s.id);
-  const snapId = uniqId('SC');
+  const inp=document.getElementById('sc-confirm');
+  if(!inp || normIName(inp.value)!==normIName(stockModeLabel())){ alert('Type the book name exactly to confirm.'); return; }
+  const rows = stockCloseRows(stockMode);
   if(!S.stockClose) S.stockClose = [];
-  S.stockClose = S.stockClose.filter(x=>x && x.seasonId!==s.id);
-  S.stockClose.push({ id:snapId, seasonId:s.id, seasonName:s.name, closedAt:new Date().toISOString(), rows:rows });
-  S.seasonRecs = S.seasonRecs.map(x=>(x && x.id===s.id)
-    ? Object.assign({}, x, { status:'CLOSED', closedAt:new Date().toISOString(), closingStockRef:snapId })
-    : x);
+  S.stockClose.unshift({ id:uniqId('SC'), seasonId:stockMode, seasonName:stockModeLabel(),
+                         closedAt:new Date().toISOString(), rows:rows });
+  S.stockClose = S.stockClose.slice(0, 20);          // keep the last 20 sheets, no more
   saveToCloud();
   closeModal('closeseason');
-  try{ await exportSeasonStockXlsx(s.id); }catch(e){ console.warn('closing export failed:', e); }
-  invalidateSeasonStock(); renderAll();
-  alert('✅ '+s.name+' is closed.\n\n'+rows.length+' item(s) frozen. The Excel sheet has been downloaded, and these quantities will open the next '+(s.type==='OTHER'?'season':s.type.toLowerCase())+' season.');
+  try{ await exportStockXlsx(stockMode); }catch(e){ console.warn('closing export failed:', e); }
+  renderAll();
+  alert('✅ '+stockModeLabel()+' stock recorded and the Excel sheet downloaded ('+rows.length+' article(s)).');
 }
-function reopenSeason(sid){
-  const s = seasonById(sid); if(!s) return;
-  if(!confirm('Re-open '+s.name+'?\n\nIts frozen closing stock is kept, but the book becomes editable again and the figures may change.')) return;
-  S.seasonRecs = S.seasonRecs.map(x=>(x && x.id===sid) ? Object.assign({}, x, { status:'OPEN' }) : x);
-  saveToCloud(); invalidateSeasonStock(); renderAll();
+function closeSeasonFooterHtml(){
+  if(stockMode==='ALL') return '';
+  return `
+  <div style="margin-top:34px;padding-top:18px;border-top:2px dashed #E2E8F0">
+    <div style="font-size:12px;color:#94A3B8;line-height:1.6;margin-bottom:10px">
+      Finished with the <strong>${esc(stockModeLabel())}</strong> season? This saves the closing
+      figures and downloads the Excel sheet you can use as next year's opening stock.
+      Nothing is locked and nothing is deleted.
+    </div>
+    <button class="btn" style="width:100%;justify-content:center;background:#FEF2F2;border-color:#FCA5A5;color:#B91C1C;font-weight:800"
+            onclick="openCloseStock()">📤 Close &amp; export ${esc(stockModeLabel())} stock</button>
+  </div>`;
 }
-/* Re-exportable at any time, from the frozen snapshot when one exists. */
-async function exportSeasonStockXlsx(sid){
-  const s = seasonById(sid); if(!s){ alert('Season not found.'); return; }
-  const snap = closeRecordFor(sid);
-  const rows = snap ? snap.rows : seasonClosingRows(sid);
-  const T = k => rows.reduce((t,r)=>t+(+r[k]||0), 0);
+async function exportStockXlsx(mode){
+  mode = mode || stockMode;
+  const rows = stockCloseRows(mode);
+  const label = mode==='SUMMER' ? 'Summer' : mode==='WINTER' ? 'Winter' : 'All';
+  const T = k => rows.reduce((t,r)=>t+(+r[k]||0),0);
   const val = r => _r2((+r.qty||0)*(+r.rate||0));
-
-  // Sheet 1 — the closing count, with the full movement story behind each number.
   const main = [['Article','Code','Season','Designs','Opening','Added','Returned','Sold','Removed','Closing Qty','Rate','Value']];
   rows.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name))).forEach(r=>{
     main.push([r.name, r.code||'', r.seasonType||'ALL', (r.designs||[]).length,
-               +r.open||0, +r.added||0, +r.returned||0, +r.sold||0, +r.removed||0,
-               +r.qty||0, +r.rate||0, val(r)]);
+               +r.open||0, +r.added||0, +r.returned||0, +r.sold||0, +r.removed||0, +r.qty||0, +r.rate||0, val(r)]);
   });
-  main.push(['TOTAL','','', '', T('open'), T('added'), T('returned'), T('sold'), T('removed'), T('qty'), '',
+  main.push(['TOTAL','','','', T('open'), T('added'), T('returned'), T('sold'), T('removed'), T('qty'), '',
              _r2(rows.reduce((t,r)=>t+val(r),0))]);
-
-  // Sheet 2 — every design of every article, with its own full code and rate.
   const dz = [['Article','Article Code','Design','Design Name','Full Code','Rate','Article Closing Qty']];
-  rows.forEach(r=>{
-    (r.designs||[]).forEach(d=>{
-      dz.push([r.name, r.code||'', d.code, d.name||'', d.fullCode||'', +d.rate||0, +r.qty||0]);
-    });
-  });
-
+  rows.forEach(r=>(r.designs||[]).forEach(d=>dz.push([r.name, r.code||'', d.code, d.name||'', d.fullCode||'', +d.rate||0, +r.qty||0])));
   const sheets = [
     { name:'Summary', widths:[28,30], rows:[
-      ['Closing Stock',''],
-      ['Season', s.name],
-      ['Type', s.type],
-      ['Financial year', s.fy!=null?fyLbl(s.fy):''],
-      ['Status', s.status],
-      ['Frozen on', snap ? new Date(snap.closedAt).toLocaleString('en-IN') : 'not closed — live figures'],
-      ['Exported on', new Date().toLocaleString('en-IN')],
-      ['',''],
+      ['Closing Stock',''], ['Book', label], ['Exported on', new Date().toLocaleString('en-IN')], ['',''],
       ['Articles', rows.length],
-      ['Designs', rows.reduce((t,r)=>t+((r.designs||[]).length), 0)],
-      ['Opening pieces', T('open')],
-      ['Sold pieces', T('sold')],
-      ['Closing pieces', T('qty')],
+      ['Designs', rows.reduce((t,r)=>t+((r.designs||[]).length),0)],
+      ['Opening pieces', T('open')], ['Sold pieces', T('sold')], ['Closing pieces', T('qty')],
       ['Closing value', _r2(rows.reduce((t,r)=>t+val(r),0))]
     ]},
     { name:'Closing Stock', widths:[34,15,10,9,10,9,10,9,10,12,10,13], rows:main }
   ];
-  if(dz.length > 1) sheets.push({ name:'Designs', widths:[30,15,9,26,18,10,15], rows:dz });
+  if(dz.length>1) sheets.push({ name:'Designs', widths:[30,15,9,26,18,10,15], rows:dz });
   const blob = await buildXlsx(sheets);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = 'Closing-Stock_' + String(s.name).replace(/[^\w]+/g,'-') + '.xlsx';
-  a.click();
+  a.href = url; a.download = 'Closing-Stock_' + label + '_' + today() + '.xlsx'; a.click();
   setTimeout(()=>URL.revokeObjectURL(url), 1500);
 }
-
 function stockIndex(){
   if(_stockIdx) return _stockIdx;
   const gcut = stockCutover();
@@ -5185,7 +5104,7 @@ function stockIndex(){
    from the ACTIVE SEASON's book — so while Winter is selected, no Summer quantity can appear
    anywhere. With no seasons defined, behaviour is exactly as before. */
 function activeStockIndex(){
-  return ((S.seasonRecs||[]).length && activeStockSeason()) ? seasonStockIndex() : stockIndex();
+  return stockMode==='ALL' ? stockIndex() : stockIndexForMode(stockMode);
 }
 function stockRow(itemId){ return activeStockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0}; }
 function stockOnHand(itemId){ return stockRow(itemId).onHand; }
@@ -6622,385 +6541,10 @@ function renderStock(){
   // selector, because a stock book is a thing you work inside, not a view you glance through.
   // Closing lives at the very BOTTOM, far from everything used day to day, because it is
   // irreversible-ish and must never be hit by accident.
-  el.innerHTML = stockSeasonBarHtml() + el.innerHTML + closeSeasonFooterHtml();
+  el.innerHTML = stockModeBarHtml() + el.innerHTML + closeSeasonFooterHtml();
   _done();
 }
-function closeSeasonFooterHtml(){
-  const s = activeStockSeason();
-  if(!s || s.status==='CLOSED') return '';
-  return `
-  <div style="margin-top:34px;padding-top:18px;border-top:2px dashed #E2E8F0">
-    <div style="font-size:12px;color:#94A3B8;line-height:1.6;margin-bottom:10px">
-      Finished with <strong>${esc(s.name)}</strong>? Closing freezes its stock, downloads the Excel
-      sheet, and carries the quantities into the next ${esc(s.type==='OTHER'?'season':s.type.toLowerCase())} season.
-      Do this only at the end of the season.
-    </div>
-    <button class="btn" style="width:100%;justify-content:center;background:#FEF2F2;border-color:#FCA5A5;color:#B91C1C;font-weight:800"
-            onclick="openCloseSeason()">🔒 Close ${esc(s.name)}</button>
-  </div>`;
-}
-function stockSeasonBarHtml(){
-  const s = activeStockSeason();
-  const list = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
-  if(!list.length){
-    return `<div class="ibox amb" style="margin-bottom:12px">
-      No seasons yet. Add one in <strong>Menu → Seasons</strong> to keep stock season-wise.</div>`;
-  }
-  const closed = s && s.status==='CLOSED';
-  const snap = s ? closeRecordFor(s.id) : null;
-  const prev = s ? previousSameTypeSeason(s.id) : null;
-  return `
-  <div style="background:${closed?'#F8FAFC':'#1A2E5A'};border:1.5px solid ${closed?'#CBD5E1':'#1A2E5A'};border-radius:12px;padding:12px 14px;margin-bottom:12px;color:${closed?'#334155':'#fff'}">
-    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
-      <div style="font-size:15px;font-weight:800">📦 Stock — ${esc(stockSeasonLabel())}</div>
-      ${closed?'<span style="font-size:9.5px;font-weight:800;background:#E2E8F0;color:#475569;padding:2px 8px;border-radius:20px">CLOSED</span>'
-              :'<span style="font-size:9.5px;font-weight:800;background:#4ADE80;color:#064E3B;padding:2px 8px;border-radius:20px">OPEN</span>'}
-    </div>
-    <div style="font-size:11px;color:${closed?'#64748B':'#A5B4D4'};margin-top:3px">
-      ${closed && snap ? 'Frozen on '+fmtD(String(snap.closedAt).slice(0,10))+' · read-only'
-        : (prev && closeRecordFor(prev.id) ? 'Opening carried forward from '+esc(prev.name) : 'Only this season\'s bills affect these figures')}
-    </div>
-    <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
-      <select onchange="setStockSeason(this.value)" style="flex:1;min-width:150px;padding:8px 10px;border:none;border-radius:8px;font-size:12.5px;font-family:inherit;font-weight:700;color:#1A2E5A;background:#fff">
-        ${list.map(x=>`<option value="${esc(x.id)}" ${s&&s.id===x.id?'selected':''}>${esc(x.name)}${x.status==='CLOSED'?' · closed':''}</option>`).join('')}
-      </select>
-      ${closed
-        ? `<button class="btn sm" style="font-size:11.5px" onclick="exportSeasonStockXlsx('${_js(s.id)}')">⬇ Excel</button>
-           <button class="btn sm" style="font-size:11.5px" onclick="reopenSeason('${_js(s.id)}')">↩ Re-open</button>`
-        : `<button class="btn sm" style="font-size:11.5px" onclick="exportSeasonStockXlsx('${_js(s.id)}')">⬇ Excel</button>`}
-    </div>
-  </div>`;
-}
 
-function renderStockSetup(el){
-  el.innerHTML = `
-    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:18px">
-      <div style="font-size:15px;font-weight:800;color:#1A2E5A;margin-bottom:8px">📦 Set up Stock</div>
-      <div style="font-size:13px;color:#555;line-height:1.6;margin-bottom:14px">
-        Pick a default start date. You will enter the physical count for each article, and from then
-        on challans reduce stock automatically.
-        <br><br>
-        Each article can be given its own start date on the next screen — useful when you count
-        different articles on different days. This date is just the default for new entries.
-      </div>
-      <div class="fg"><label>Stock start date *</label><input id="sf-date" type="date" value="${today()}"></div>
-      <button class="btn pri" style="width:100%;justify-content:center" onclick="setStockCutover(document.getElementById('sf-date').value)">Start tracking stock</button>
-    </div>`;
-}
-
-function stockSummary(){
-  const idx = activeStockIndex();
-  let tracked=0, neg=0, zero=0, units=0;
-  (S.items||[]).forEach(it=>{
-    const r = idx.rows[it.id]; if(!r) return;
-    const touched = r.open||r.inCon||r.manIn||r.manOut||r.out;
-    if(touched) tracked++;
-    if(r.onHand < 0) neg++;
-    else if(r.onHand === 0 && touched) zero++;
-    if(r.onHand > 0) units += r.onHand;
-  });
-  const custom=(S.items||[]).filter(it=>hasOwnCutover(it.id)).length;
-  return {tracked, neg, zero, units, custom, unmapped:idx.unmapped.length};
-}
-
-function renderStockOnHand(el){
-  const idx = activeStockIndex(), sm = stockSummary();
-  const q = normIName(stockSearch);
-  const _bk = activeStockIndex();
-  let list = (S.items||[]).filter(it=>it && (!_bk.rows || (it.id in _bk.rows)))
-                          .map(it=>({it, r:stockRow(it.id)}));
-  if(q) list = list.filter(x=> normIName(x.it.name).includes(q) || normIName(x.it.code).includes(q));
-  if(stockFilter==='neg')  list = list.filter(x=>x.r.onHand < 0);
-  if(stockFilter==='zero') list = list.filter(x=>x.r.onHand === 0);
-  if(stockFilter==='low')  list = list.filter(x=>x.r.onHand > 0 && x.r.onHand <= 10);
-  list.sort((a,b)=> a.it.name.localeCompare(b.it.name));
-
-  const chip = (k,lab,n) => `<button class="btn sm" style="flex:1;justify-content:center;font-size:12px;${stockFilter===k?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="stockFilter='${k}';renderStock()">${lab}${n?` <span style="opacity:.75;font-size:10px">${n}</span>`:''}</button>`;
-
-  const warn = sm.unmapped ? `
-    <div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E">
-      <strong>⚠️ ${sm.unmapped} item name${sm.unmapped>1?'s are':' is'} not linked to the Item Master.</strong>
-      <div style="margin-top:4px">Movements under ${sm.unmapped>1?'those names':'that name'} are not counted in stock. Map ${sm.unmapped>1?'them':'it'} to fix the numbers — nothing is changed automatically.</div>
-      <button class="btn sm" style="margin-top:8px" onclick="setStockView('unmapped')">Review unmapped names</button>
-    </div>` : '';
-
-  el.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('tags')">🏷️ Season Tags${(()=>{const t=(S.items||[]).filter(i=>i&&i.seasonType&&i.seasonType!=='ALL').length;return t?` <span style="color:#999;font-size:10px;margin-left:4px">${t}</span>`:'';})()}</button>
-    </div>
-    ${warn}
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px">
-        <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">TOTAL UNITS</div>
-        <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.units)}</div>
-      </div>
-      <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px">
-        <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">ITEMS TRACKED</div>
-        <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.tracked)}</div>
-      </div>
-    </div>
-    <div style="font-size:11px;color:#888;margin-bottom:10px">Default start <strong>${stockCutover()?fmtD(stockCutover()):'not set'}</strong>${sm.custom?` · <strong>${sm.custom}</strong> article${sm.custom===1?'':'s'} on their own date`:''} · <button class="btn sm" style="padding:3px 9px;font-size:11px" onclick="setStockView('opening')">edit dates</button></div>
-    <input id="stk-search" placeholder="🔍 Search item..." value="${esc(stockSearch)}" oninput="stockSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
-    <div style="display:flex;gap:6px;margin-bottom:12px">
-      ${chip('all','All','')}${chip('low','Low','')}${chip('zero','Zero',sm.zero||'')}${chip('neg','Negative',sm.neg||'')}
-    </div>
-    ${ list.length ? list.map(x=>{
-      const r=x.r, c = r.onHand<0?'#DC2626' : r.onHand===0?'#888' : '#065F46';
-      return `<div class="prow" onclick="openStockItem('${x.it.id}')">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:14px;font-weight:700;color:#1A1A1A">${esc(x.it.name)}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Open ${fmtN(r.open)} · In ${fmtN(r.inCon+r.manIn+r.retIn)} · Out ${fmtN(r.out+r.manOut)}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0">
-          <div style="font-size:17px;font-weight:800;color:${c}">${fmtN(r.onHand)}</div>
-          <div style="font-size:10px;color:#AAA">on hand</div>
-        </div>
-      </div>`;
-    }).join('') : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items match.</div>` }`;
-}
-
-function renderStockOpening(el){
-  const q = normIName(osSearch);
-  let list = (S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
-  if(q) list = list.filter(it=> normIName(it.name).includes(q) || normIName(it.code).includes(q));
-  const entered = (S.stock||[]).length;
-  const fallback = stockCutover() || today();
-  const custom = (S.items||[]).filter(it=>hasOwnCutover(it.id)).length;
-  el.innerHTML = `
-    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
-    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
-      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:8px">📥 Opening Stock</div>
-      <div style="font-size:12px;color:#666;line-height:1.55;margin-bottom:12px">
-        Enter the physical count for each article and <strong>the date you counted it</strong>. Each
-        article can start on its own date — challans and lots before that date are ignored for that
-        article only. Leave the quantity blank if you hold none of it.
-      </div>
-      <div class="fg"><label>Default start date <span style="font-weight:400;color:#999">— used for new rows</span></label>
-        <input id="sf-date2" type="date" value="${esc(stockCutover())}" onchange="setStockCutover(this.value)"></div>
-      <div style="font-size:11px;color:#888">${entered} article${entered===1?'':'s'} counted${custom?` · ${custom} on a custom date`:''}</div>
-    </div>
-    <input id="os-search" placeholder="🔍 Filter items..." value="${esc(osSearch)}" oninput="osSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
-    ${ (S.items||[]).length ? `
-      <div id="os-grid" style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:6px 10px;margin-bottom:12px">
-        ${ list.map(it=>{
-          const r = osRow(it.id);
-          const dirty = r.q !== osRowFor(it.id).q || r.d !== osRowFor(it.id).d;
-          return `
-          <div style="padding:10px 2px;border-bottom:1px solid #F4F4F4${dirty?';background:#FFFDF5':''}">
-            <div style="font-size:13px;font-weight:700;color:#1A1A1A;word-break:break-word">${esc(it.name)}${it.code?` <span style="font-size:10px;color:#AAA;font-weight:600">${esc(it.code)}</span>`:''}${dirty?' <span style="font-size:9px;font-weight:800;color:#B45309">• unsaved</span>':''}</div>
-            <div style="display:flex;gap:8px;margin-top:7px">
-              <div style="width:96px;min-width:0;flex-shrink:0">
-                <div style="font-size:9px;font-weight:800;color:#AAA;letter-spacing:.3px;margin-bottom:3px">QTY</div>
-                <input id="osq-${it.id}" type="number" inputmode="numeric" placeholder="0"
-                       value="${esc(r.q)}" oninput="osSet('${it.id}','q',this.value)"
-                       style="width:100%;min-width:0;text-align:right;padding:8px 9px;font-size:14px">
-              </div>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:9px;font-weight:800;color:#AAA;letter-spacing:.3px;margin-bottom:3px">COUNTED ON</div>
-                <input id="osd-${it.id}" type="date" value="${esc(r.d)}" onchange="osSet('${it.id}','d',this.value)"
-                       style="width:100%;min-width:0;padding:8px 9px;font-size:13px">
-              </div>
-            </div>
-          </div>`; }).join('') }
-      </div>
-      <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
-      <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Fill in as many articles as you like, then save once. Filtering does not lose what you have typed.</div>
-    ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="goTab('items')">Add items first</button></div>` }`;
-}
-
-function renderStockMoves(el){
-  const items = (S.items||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
-  const moves = (S.stockMv||[]).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
-  el.innerHTML = `
-    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
-    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
-      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:4px">🔁 Add Movement</div>
-      <div style="font-size:11.5px;color:#888;line-height:1.5;margin-bottom:10px">
-        For stock that does not come from a challan or a contractor lot — goods bought in, sales
-        returns, damage, or a correction after a physical recount.
-      </div>
-      <div class="fg"><label>Item *</label>
-        <select id="sm-item"><option value="">Select item...</option>${items.map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join('')}</select>
-      </div>
-      <div class="fr">
-        <div><label>Direction *</label><select id="sm-dir"><option value="in">IN  (+)</option><option value="out">OUT (−)</option></select></div>
-        <div><label>Quantity *</label><input id="sm-qty" type="number" inputmode="numeric" placeholder="0"></div>
-      </div>
-      <div class="fr">
-        <div><label>Date *</label><input id="sm-date" type="date" value="${today()}"></div>
-        <div><label>Reason</label>
-          <select id="sm-reason">
-            <option>Purchase</option><option>Sales return</option><option>Production</option>
-            <option>Damage / loss</option><option>Recount correction</option><option>Other</option>
-          </select>
-        </div>
-      </div>
-      <div class="fg"><label>Remarks</label><input id="sm-rmk" placeholder="optional"></div>
-      <button class="btn pri" style="width:100%;justify-content:center" onclick="addStockMove()">Add Movement</button>
-    </div>
-    ${ moves.length ? moves.map(m=>{
-      const pos = (+m.qty||0) >= 0;
-      return `<div class="payrow">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:700">${esc(m.itemName||'')}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">${fmtD(m.date)}${m.reason?' · '+esc(m.reason):''}${m.remarks?' · '+esc(m.remarks):''}</div>
-        </div>
-        <div style="font-size:15px;font-weight:800;color:${pos?'#065F46':'#DC2626'};flex-shrink:0">${pos?'+':''}${fmtN(m.qty)}</div>
-        <button class="btn sm red" style="flex-shrink:0" onclick="delStockMove('${m.id}')">🗑</button>
-      </div>`;
-    }).join('') : `<div style="text-align:center;color:#999;padding:30px 20px;font-size:13px">No manual movements yet.</div>` }`;
-}
-
-function renderStockItem(el){
-  const it = (S.items||[]).find(x=>x&&x.id===stockItemId);
-  if(!it){ stockView='onhand'; renderStock(); return; }
-  const r = stockRow(it.id), moves = stockItemMoves(it.id);
-  let run = 0;
-  const rows = moves.map(m=>{
-    run = _r2(run + (+m.qty||0));
-    const pos = (+m.qty||0) >= 0;
-    return `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid #F4F4F4">
-      <div style="flex:1;min-width:0">
-        <div style="font-size:12.5px;font-weight:700;color:#1A1A1A">${esc(m.label)}</div>
-        <div style="font-size:10.5px;color:#999;margin-top:1px">${fmtD(m.date)}${m.ref?' · '+esc(m.ref):''}</div>
-      </div>
-      <div style="font-size:13px;font-weight:800;color:${pos?'#065F46':'#DC2626'};width:60px;text-align:right">${pos?'+':''}${fmtN(m.qty)}</div>
-      <div style="font-size:12px;font-weight:700;color:#888;width:60px;text-align:right">${fmtN(run)}</div>
-    </div>`;
-  }).join('');
-  const c = r.onHand<0?'#DC2626' : r.onHand===0?'#888' : '#065F46';
-  el.innerHTML = `
-    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
-    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:16px;margin-bottom:12px">
-      <div style="font-size:16px;font-weight:800;color:#1A1A1A">${esc(it.name)}</div>
-      ${it.code?`<div style="font-size:11px;color:#AAA;margin-top:2px">${esc(it.code)}</div>`:''}
-      <div style="font-size:30px;font-weight:800;color:${c};margin-top:10px">${fmtN(r.onHand)}</div>
-      <div style="font-size:11px;color:#888">on hand · counted from <strong>${itemCutover(it.id)?fmtD(itemCutover(it.id)):'—'}</strong></div>
-      <div style="display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid #F0F0F0;font-size:11.5px;color:#555;flex-wrap:wrap">
-        <span>Opening <strong>${fmtN(r.open)}</strong></span>
-        <span>Lots <strong style="color:#065F46">+${fmtN(r.inCon)}</strong></span>
-        <span>Returns <strong style="color:#065F46">+${fmtN(r.retIn)}</strong></span>
-        <span>Manual in <strong style="color:#065F46">+${fmtN(r.manIn)}</strong></span>
-        <span>Challans <strong style="color:#DC2626">−${fmtN(r.out)}</strong></span>
-        <span>Manual out <strong style="color:#DC2626">−${fmtN(r.manOut)}</strong></span>
-      </div>
-    </div>
-    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:10px 12px">
-      <div style="display:flex;gap:10px;padding:0 4px 8px;border-bottom:1.5px solid #EEE;font-size:10px;font-weight:800;color:#999;letter-spacing:.3px">
-        <div style="flex:1">MOVEMENT</div><div style="width:60px;text-align:right">QTY</div><div style="width:60px;text-align:right">BALANCE</div>
-      </div>
-      ${ rows || `<div style="text-align:center;color:#999;padding:24px;font-size:12.5px">No movements since ${fmtD(itemCutover(it.id))}.</div>` }
-    </div>`;
-}
-
-function renderStockUnmapped(el){
-  const un = stockIndex().unmapped.slice().sort((a,b)=>(b.outQty+b.inQty)-(a.outQty+a.inQty));
-  el.innerHTML = `
-    <button class="btn sm" style="margin-bottom:12px" onclick="setStockView('onhand')">← Back to stock</button>
-    <div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E">
-      These names appear on challans or lots dated on/after the default start date
-      (${stockCutover()?fmtD(stockCutover()):'—'}) but do not match any Item Master record, so their
-      quantities are not counted in stock. Once mapped, the article's own start date applies. Nothing is changed automatically —
-      map them in the Item Master and the numbers correct themselves.
-      <button class="btn sm" style="margin-top:8px" onclick="goTab('items');itemView='review';renderItems()">Open Item Master review</button>
-    </div>
-    ${ un.length ? un.map(u=>`
-      <div class="payrow">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:700">${esc(u.raw)}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">${u.uses} entr${u.uses===1?'y':'ies'} · last ${fmtD(u.last)}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0;font-size:12px">
-          ${u.inQty?`<div style="color:#065F46;font-weight:700">+${fmtN(u.inQty)}</div>`:''}
-          ${u.outQty?`<div style="color:#DC2626;font-weight:700">−${fmtN(u.outQty)}</div>`:''}
-        </div>
-      </div>`).join('') : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">Everything is mapped ✓</div>` }`;
-}
-
-function renderItems(){
-  const el=document.getElementById('items-content'); if(!el) return;
-  // Preserve focus + caret across the innerHTML rebuild (typing in a search box must not lose focus)
-  const _ae=document.activeElement;
-  const _foc=(_ae&&_ae.id&&typeof _ae.selectionStart==='number')?{id:_ae.id,pos:_ae.selectionStart}:null;
-  const _done=()=>{ if(_foc){ const e2=document.getElementById(_foc.id); if(e2){ e2.focus(); try{e2.setSelectionRange(_foc.pos,_foc.pos);}catch(_e){} } } };
-  if(itemView==='review'){ renderItemReview(el); _done(); return; }
-  if(itemView==='keywords'){ renderItemKeywords(el); _done(); return; }
-  const unmCount=unmappedHistorical().length;
-  const q=normIName(itemSearch);
-  const list=itemSortList((S.items||[]).filter(it=>!q || normIName(it.name).includes(q) || normIName(it.code).includes(q)));
-  const ed=null;   // editing happens in the mo-itemedit modal, not this inline form
-  el.innerHTML=`
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='review';reviewSel={};reviewLimit=60;reviewSearch='';renderItems()">🧹 Review Historical Items${unmCount?` <span style="background:#DC2626;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800;margin-left:4px">${unmCount}</span>`:''}</button>
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="itemView='keywords';renderItems()">🔗 Mapped Keywords${(S.itemMap||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.itemMap.length}</span>`:''}</button>
-    </div>
-    <div style="background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:14px;margin-bottom:12px">
-      <div style="font-size:13px;font-weight:800;color:#1A2E5A;margin-bottom:10px">${ed?'✏️ Edit Item':'➕ Add Item'}</div>
-      <div class="fg"><label>Item Name *</label><input id="im-name" placeholder="e.g. Cotton Kurti" value="${ed?esc(ed.name):''}"></div>
-      <div class="fr">
-        <div><label>Item Code</label><input id="im-code" placeholder="e.g. FAD-P91" value="${ed?esc(ed.code||''):''}"></div>
-        <div><label>Default Rate (Rs.) *</label><input id="im-rate" type="number" inputmode="decimal" placeholder="0" value="${ed?(+ed.rate||''):''}"></div>
-      </div>
-      <div class="fg"><label>Season</label>
-        <select id="im-season">
-          <option value="ALL" ${(!ed||!ed.seasonType||ed.seasonType==='ALL')?'selected':''}>Both seasons</option>
-          <option value="SUMMER" ${(ed&&ed.seasonType==='SUMMER')?'selected':''}>☀️ Summer item</option>
-          <option value="WINTER" ${(ed&&ed.seasonType==='WINTER')?'selected':''}>❄️ Winter item</option>
-        </select>
-        <div style="font-size:11px;color:#888;margin-top:4px">Your own label. It shows on the item and in the closing Excel — it does not hide anything from any stock book.</div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:6px">
-        ${ed?'<button class="btn" style="flex:1;justify-content:center" onclick="itemEditId=null;renderItems()">Cancel</button>':''}
-        <button class="btn pri" style="flex:1;justify-content:center" onclick="itemFormSave()">✓ ${ed?'Save Changes':'Add Item'}</button>
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-      <input id="im-search" placeholder="🔍 Search by name or code…" value="${esc(itemSearch)}" oninput="itemSearch=this.value;debRenderItems()" style="flex:1">
-      <span style="font-size:11px;color:#999;flex-shrink:0">${list.length} item${list.length===1?'':'s'}</span>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-      <label style="font-size:11px;color:#888;flex-shrink:0">Sort</label>
-      <select id="im-sort" onchange="setItemSort(this.value)" style="flex:1;font-size:12px;padding:7px">
-        <option value="name"${itemSort==='name'?' selected':''}>Name A → Z</option>
-        <option value="namez"${itemSort==='namez'?' selected':''}>Name Z → A</option>
-        <option value="rate"${itemSort==='rate'?' selected':''}>Rate — low to high</option>
-        <option value="rated"${itemSort==='rated'?' selected':''}>Rate — high to low</option>
-        <option value="used"${itemSort==='used'?' selected':''}>Most billed</option>
-        ${stockReady()?`<option value="stock"${itemSort==='stock'?' selected':''}>Stock on hand — high to low</option>`:''}
-      </select>
-    </div>
-    ${list.length?list.map(it=>`
-      <div style="background:#fff;border:1px solid #ECECEC;border-radius:11px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">${esc(it.name)} ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}
-            ${(it.seasonType==='SUMMER')?'<span style="font-size:9.5px;background:#FEF3C7;color:#92400E;padding:1px 7px;border-radius:8px;font-weight:800">☀️ SUMMER</span>':''}
-            ${(it.seasonType==='WINTER')?'<span style="font-size:9.5px;background:#DBEAFE;color:#1E40AF;padding:1px 7px;border-radius:8px;font-weight:800">❄️ WINTER</span>':''}</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Default rate: <strong style="color:#059669">${fmt(+it.rate||0)}</strong>${itemDesigns(it).length?` · <strong style="color:#1A2E5A">${itemDesigns(it).length} design(s)</strong> ${esc(itemDesigns(it).slice(0,6).map(d=>d.code).join(' '))}${itemDesigns(it).length>6?'…':''}`:''}</div>
-        </div>
-        <button class="btn sm" onclick="openDesigns('${it.id}')" style="font-size:11px">🎨 ${itemDesigns(it).length||''}</button>
-        <button class="btn sm" onclick="openItemEdit('${it.id}')" style="font-size:11px">✏️</button>
-        <button class="btn sm red" onclick="delItem('${it.id}')" style="font-size:11px">🗑</button>
-      </div>`).join('')
-    :'<div style="text-align:center;padding:36px 16px;color:#999">'+(q?'No items match "'+esc(itemSearch)+'"':'No items yet. Add your first item above.<br><span style="font-size:11px">Saved items appear as a dropdown in every challan row.</span>')+'</div>'}`;
-  _done();
-}
-/* ── Item edit modal ──
-   Editing from a popup so the list position is never lost. A RENAME is the dangerous case:
-   itemCanon() resolves challan/lot text by exact name first, so renaming an item silently
-   orphans every historical line that still carries the old spelling. We therefore offer to
-   keep a mapping from the old name → this item, which preserves reports AND stock. */
-let ieId = null;
-function itemUsageStats(id){
-  const it=(S.items||[]).find(x=>x&&x.id===id);
-  let ch=0, lots=0;
-  const nm = it ? normIName(it.name) : '';
-  (S.challans||[]).forEach(c=>(c.items||[]).forEach(li=>{ const cn=itemCanon(li.name); if(cn&&cn.id===id) ch++; }));
-  (S.lots||[]).forEach(l=>{ if(!l||l.kind==='fabric')return; const cn=itemCanon(l.item); if(cn&&cn.id===id) lots++; });
-  const maps=(S.itemMap||[]).filter(m=>m&&m.itemId===id).length;
-  return {ch, lots, maps, nm};
-}
 function openItemEdit(id){
   const it=(S.items||[]).find(x=>x&&x.id===id); if(!it) return;
   ieId=id;
