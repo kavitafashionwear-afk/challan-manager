@@ -350,23 +350,9 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   </div>
 
   <!-- ITEM MASTER -->
-  <div class="cscreen" id="cs-items">
-    <div class="pg" id="items-content"></div>
-  </div>
-
-  <!-- CASH IN HAND -->
-  <div class="cscreen" id="cs-cash">
-    <div class="pg" id="cash-content"></div>
-  </div>
-
   <!-- STOCK -->
   <div class="cscreen" id="cs-stock">
     <div class="pg" id="stock-content"></div>
-  </div>
-
-  <!-- TAG CHALLANS -->
-  <div class="cscreen" id="cs-tagch">
-    <div class="pg" id="tagch-content"></div>
   </div>
 
   <!-- VISITS & FOLLOW-UPS -->
@@ -471,13 +457,9 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
-  <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
-  <div class="umi" onclick="goTab('tagch');closeMenu()">🏷️ Tag Challans <span id="tagch-badge" style="display:none;background:#F59E0B;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="openBackup()">💾 Backup &amp; Restore</div>
   <div class="umi" onclick="goTab('visits');closeMenu()">🚶 Visits &amp; Follow-ups <span id="visits-due-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
-  <div class="umi" onclick="goTab('cash');closeMenu()">💰 Cash in Hand</div>
   <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
-  <div class="umi" onclick="goTab('items');closeMenu()">🏷️ Item Master</div>
   <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
@@ -860,7 +842,8 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
       </div>
     </div>
     <div class="fg"><label>Date *</label><input id="ch-date" type="date"></div>
-    <div class="fg"><label>Season</label><select id="ch-season" onchange="seasonChangedOnBill()"></select></div>
+    <div class="fg"><label>Season *</label><select id="ch-season" onchange="markSeasonManual('ch-season');seasonChangedOnBill()"></select>
+      <div id="ch-season-hint" style="font-size:11px;color:#888;margin-top:4px">Set automatically from the articles on this bill.</div></div>
     <div class="fg"><label>Remarks</label><input id="ch-rmk" placeholder="Optional"></div>
     <div class="fg"><label>Items</label><div id="item-rows"></div><button class="btn sm" onclick="addItemRow()" style="width:100%;justify-content:center;margin-top:4px">+ Add Item</button></div>
     <div class="fg"><label>Freight / Transport (Rs.)</label><input id="ch-freight" type="number" inputmode="decimal" placeholder="0" oninput="calcTotal()"></div>
@@ -902,7 +885,8 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
       <div><label>Party *</label><select id="ec-party"></select></div>
       <div><label>Date *</label><input id="ec-date" type="date"></div>
     </div>
-    <div class="fg"><label>Season</label><select id="ec-season" onchange="seasonChangedOnBill()"></select></div>
+    <div class="fg"><label>Season *</label><select id="ec-season" onchange="markSeasonManual('ec-season');seasonChangedOnBill()"></select>
+      <div id="ec-season-hint" style="font-size:11px;color:#888;margin-top:4px">Set automatically from the articles on this bill.</div></div>
     <div class="fg"><label>Remarks</label><input id="ec-rmk" placeholder="Optional"></div>
     <div class="fg">
       <label>Items</label>
@@ -1024,7 +1008,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-03.5';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-04.9';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2345,7 +2329,7 @@ function netToastFor(state){
       'Your work is safe on this device but has not uploaded yet.'+
       (stalls.length ? '<br>Waiting: <strong>'+esc(stalls.slice(0,4).join(', '))+(stalls.length>4?' +'+(stalls.length-4)+' more':'')+'</strong>' : '')+
       '<br>'+probe,
-      'Check the connection','probeServer().then(function(){ openSyncStatus(); })',null);
+      'Check the connection again','probeServer()',null);
     return;
   }
   if(state==='err'){
@@ -2354,7 +2338,8 @@ function netToastFor(state){
       denied.length
         ? 'Blocked: <strong>'+esc(denied.join(', '))+'</strong>. Nothing is lost — it is held on this device until the permission is fixed.'
         : 'Something could not be saved to the cloud. Your data is safe on this device and will retry.',
-      'Show me the fix','openSyncStatus()',null);
+      denied.length ? 'Show me the fix' : 'Try again now',
+      denied.length ? 'showRulesHelp()' : 'forceReconnect(true)', null);
     return;
   }
   if(state==='ok'){
@@ -2367,7 +2352,9 @@ function netToastFor(state){
   }
 }
 
+var _syncState = 'ok';
 function setSyncDot(s) {
+  _syncState = s;
   const d = document.getElementById('sync-dot');
   if (!d) return;
   d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'') + (s==='stuck'?' stuck':'');
@@ -2377,7 +2364,14 @@ function setSyncDot(s) {
           : s==='stuck' ? 'Not reaching the server — data is queued on this device. Tap for details.'
           : 'Synced ✓';
   d.style.cursor = 'pointer';
-  if(!d._wired){ d._wired=1; d.onclick=function(){ try{ openSyncStatus(); }catch(_e){} }; }
+  // Tapping the dot re-tests the connection and reports the result, rather than opening a
+  // screen full of internals nobody needs day to day.
+  if(!d._wired){ d._wired=1; d.onclick=function(){
+    try{
+      if(s==='ok'){ _netToast('ok','Everything is synced','Your data is up to date on the server.',null,null,3000); return; }
+      probeServer().then(function(){ refreshSyncDot(); NT.shown=''; NT.dismissed=''; netToastFor(_syncState||s); });
+    }catch(_e){}
+  }; }
   try{ netToastFor(s); }catch(e){ console.warn('sync alert skipped:', e); }
 }
 function updateSyncUI(){ refreshSyncDot(); }
@@ -3057,11 +3051,8 @@ function renderAll() {
   if (curTab==='challans') renderChallans();
   if (curTab==='daybook')  renderDaybook();
   if (curTab==='reports')  renderReports();
-  if (curTab==='items')    renderItems();
   if (curTab==='stock')    renderStock();
-  if (curTab==='cash')     renderCash();
   if (curTab==='visits')   renderVisits();
-  if (curTab==='tagch')    renderTagChallans();
   if (curTab==='trash')    renderTrash();
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
@@ -3071,11 +3062,10 @@ function renderAll() {
   try{ if(loadedOnce) migrateSeasons(); }catch(e){ console.warn('season migration skipped:', e); }
   try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
   try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
+  try{ autoRollPromises(); }catch(e){ console.warn('promise carry-forward skipped:', e); }
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
   if (typeof renderIncomingBadge==='function' && typeof _pendingBills!=='undefined') renderIncomingBadge(_pendingBills.length);
-  const tb=document.getElementById('tagch-badge');
-  if(tb){ const u=(S.challans||[]).filter(c=>c&&!c.season).length; tb.style.display=u?'inline':'none'; tb.textContent=u; }
 }
 
 function goTab(tab) {
@@ -3085,18 +3075,17 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   const nt=document.getElementById('nt-'+tab); if(nt) nt.classList.add('on');   // reports has no bottom-nav tab
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock'||tab==='cash'||tab==='visits'||tab==='tagch') ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='stock'||tab==='visits') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
     tab==='challans' ? '📋 Challans' :
     tab==='daybook'  ? '📅 Daybook' :
     tab==='reports'  ? '📊 Reports' :
-    tab==='stock'    ? '📦 Stock' :
-    tab==='cash'     ? '💰 Cash in Hand' :
+    tab==='stock'    ? (stockView==='master' ? '📦 Stock · Articles'
+                       : stockView==='tags'   ? '📦 Stock · Season Tags' : '📦 Stock') :
     tab==='visits'   ? '🚶 Visits & Follow-ups' :
-    tab==='tagch'    ? '🏷️ Tag Challans' :
-    tab==='items'    ? '🏷️ Item Master' : '🗑️ Recycle Bin';
+    '🗑️ Recycle Bin';
   renderAll();
 }
 
@@ -3575,6 +3564,8 @@ function openModal(type) {
     document.getElementById('ch-party').innerHTML='<option value="">Select party...</option>'+partiesSorted().map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
     document.getElementById('ch-date').value=today();
     document.getElementById('ch-season').innerHTML=seasonOptions(S.curSeason);
+    document.getElementById('ch-season').dataset.manual='';
+    showSeasonHint('ch-season');
     refreshItemDatalist();
     document.getElementById('ch-rmk').value='';
     document.getElementById('item-rows').innerHTML='';
@@ -3818,6 +3809,7 @@ function calcItem(id) {
   el.textContent=a?fmt(a):'-'; el.dataset.v=a||'';
   calcTotal();
   try{ checkStockRows('item-rows'); }catch(e){}
+  try{ autoSeasonOnBill('item-rows','ch-season'); }catch(e){}
 }
 function calcTotal() {
   let t=0; document.querySelectorAll('#item-rows .icard').forEach(c=>{t+=+c.querySelector('.iamt').dataset.v||0;});
@@ -3825,6 +3817,7 @@ function calcTotal() {
   const grand=t+fr;
   const box=document.getElementById('ch-total');
   if(grand>0){box.style.display='block';box.textContent='Items: '+fmt(t)+(fr>0?' + Freight: '+fmt(fr):'')+' = Total: '+fmt(grand);}else box.style.display='none';
+  try{ autoSeasonOnBill('item-rows','ch-season'); }catch(e){}
 }
 
 /* ══════════════════════════════
@@ -3955,13 +3948,16 @@ function saveChallan() {
     if(name&&qty&&rate) items.push(dz ? {name,qty,rate,amount,design:dz} : {name,qty,rate,amount});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
+  let chSeason = document.getElementById('ch-season').value || '';
+  if(!chSeason){ const a = seasonForItems(items); chSeason = a ? a.id : ''; }
+  if(!chSeason){ alert('This bill needs a season.\n\nNo season exists yet — open Menu → Seasons.'); return; }
   if (!confirmStockShortfall('item-rows')) return;
   S.cC++;
   const party=S.parties.find(p=>p.id===pid);
   const freight=+document.getElementById('ch-freight').value||0;
   const challanTotal = items.reduce((s,i)=>s+(+i.amount||0),0)+freight;
   const newChId=uniqId('C');
-  S.challans.push({id:newChId,num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim(),season:document.getElementById('ch-season').value||''});
+  S.challans.push({id:newChId,num:'CH-'+pad(S.cC),pid,pname:party.name,date:dt,items,freight:freight,total:challanTotal,status:'P',remarks:document.getElementById('ch-rmk').value.trim(),season:chSeason});
   recomputeParty(pid);
   saveToCloud(); closeModal('challan'); renderAll();
   if (curParty===pid) renderPartyDetail(pid); else openParty(pid);
@@ -4212,13 +4208,68 @@ function renderDaybook(){
    The suggestion is only ever a SUGGESTION. Nothing is written until you press a button, and
    a bill you have already tagged is never overwritten by the automatic pass.
 ══════════════════════════════════════════════════════════════════════ */
-let tagFilter = 'untagged';       // untagged | all | <seasonId>
-let tagQuery  = '';
-let tagSel    = {};
-let tagLimit  = 100;
-
-/* What do the ARTICLES on this bill say? Quantity-weighted, so one stray line cannot
-   outvote the bulk of the order. Articles left on "Both" hold no opinion. */
+/* ══════════════════════════════════════════════════════════════════════
+   EVERY BILL CARRIES A SEASON — read from the articles on it
+   Nothing to remember while writing a bill. Where the articles cannot decide (all of them
+   tagged "Both", or an even split) the current season is used, and the box on the form can
+   always be set by hand.
+══════════════════════════════════════════════════════════════════════ */
+function seasonForItems(items){
+  return suggestSeasonFor({ items: items||[] }) || seasonById(defaultSeasonId()) || null;
+}
+function seasonFromRows(rowsId){
+  const items=[];
+  document.querySelectorAll('#'+rowsId+' .icard').forEach(card=>{
+    const inp=card.querySelectorAll('input');
+    const name=(inp[0]&&inp[0].value||'').trim();
+    if(name) items.push({ name:name, qty:+(inp[1]&&inp[1].value)||0 });
+  });
+  return items.length ? seasonForItems(items) : null;
+}
+function autoSeasonOnBill(rowsId, selId){
+  const sel=document.getElementById(selId); if(!sel) return;
+  if(sel.dataset.manual==='1') return;             // set by hand — leave it alone
+  const s=seasonFromRows(rowsId);
+  if(s && sel.value!==s.id) sel.value=s.id;
+  showSeasonHint(selId);
+}
+function markSeasonManual(selId){
+  const sel=document.getElementById(selId); if(sel) sel.dataset.manual='1';
+  showSeasonHint(selId);
+}
+function showSeasonHint(selId){
+  const box=document.getElementById(selId+'-hint'); if(!box) return;
+  const sel=document.getElementById(selId);
+  if(sel && sel.dataset.manual==='1'){
+    box.innerHTML='Chosen by you. <span style="color:#1A2E5A;cursor:pointer;text-decoration:underline" onclick="clearSeasonManual(\''+selId+'\')">use the articles instead</span>';
+    return;
+  }
+  // Say WHICH articles decided it, or say plainly that none of them are tagged — otherwise a
+  // bill that falls back to the current season looks like nothing happened.
+  const rowsId = selId==='ec-season' ? 'ec-item-rows' : 'item-rows';
+  const items=[];
+  document.querySelectorAll('#'+rowsId+' .icard').forEach(card=>{
+    const inp=card.querySelectorAll('input');
+    const nm=(inp[0]&&inp[0].value||'').trim();
+    if(nm) items.push({name:nm, qty:+(inp[1]&&inp[1].value)||0});
+  });
+  const t = items.length ? suggestSeasonType({items:items}) : null;
+  const cur = seasonById(sel && sel.value);
+  if(!items.length){ box.innerHTML='Set automatically once you add the articles.'; return; }
+  if(t){
+    box.innerHTML='☑ <strong>'+esc(cur?cur.name:'')+'</strong> — from the '+(t==='SUMMER'?'Summer':'Winter')+' articles on this bill.';
+  } else {
+    const untagged=items.filter(li=>{ const c=itemCanon(li.name); return !c || !c.seasonType || c.seasonType==='ALL'; }).length;
+    box.innerHTML='<strong>'+esc(cur?cur.name:'not set')+'</strong> — '
+      + (untagged ? untagged+' of these articles are not tagged Summer or Winter, so the current season is used. '
+                   +'<span style="color:#1A2E5A;cursor:pointer;text-decoration:underline" onclick="closeModal(\'challan\');goTab(\'stock\');setStockView(\'tags\')">tag them</span>'
+                  : 'the articles are evenly split, so the current season is used.');
+  }
+}
+function clearSeasonManual(selId){
+  const sel=document.getElementById(selId); if(sel) sel.dataset.manual='';
+  autoSeasonOnBill(selId==='ec-season'?'ec-item-rows':'item-rows', selId);
+}
 function suggestSeasonType(c){
   let su = 0, wi = 0;
   (c && c.items || []).forEach(li=>{
@@ -4239,151 +4290,6 @@ function suggestSeasonFor(c){
   const of = (S.seasonRecs||[]).filter(s=>s && s.type===t);
   return of.find(s=>s.fy===fy) || of.slice().sort((a,b)=>b.fy-a.fy)[0] || null;
 }
-function tagChallanList(){
-  const q = normIName(tagQuery);
-  return (S.challans||[]).filter(c=>{
-    if(!c) return false;
-    if(tagFilter==='untagged'){ if(c.season) return false; }
-    else if(tagFilter!=='all'){ if(seasonIdOf(c)!==tagFilter) return false; }
-    if(q){
-      const pn = ((S.parties||[]).find(p=>p&&p.id===c.pid)||{}).name || '';
-      if(!normIName(c.num||'').includes(q) && !normIName(pn).includes(q)) return false;
-    }
-    return true;
-  }).sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.num||'').localeCompare(String(a.num||'')));
-}
-function setTagFilter(v){ tagFilter=v; tagSel={}; tagLimit=100; renderTagChallans(); }
-function toggleTagSel(id){ if(tagSel[id]) delete tagSel[id]; else tagSel[id]=1; renderTagChallans(); }
-function tagSelectAllVisible(){
-  const vis = tagChallanList().slice(0, tagLimit);
-  const allOn = vis.every(c=>tagSel[c.id]);
-  if(allOn) tagSel = {}; else vis.forEach(c=>{ tagSel[c.id]=1; });
-  renderTagChallans();
-}
-/* One challan at a time. */
-function setChallanSeason(cid, sid){
-  const i = (S.challans||[]).findIndex(c=>c && c.id===cid); if(i===-1) return;
-  S.challans[i] = Object.assign({}, S.challans[i], { season: sid||'' });   // replace, never mutate
-  invalidateStock(); saveToCloud(); renderTagChallans();
-}
-/* Everything currently selected, or everything the filter is showing if nothing is ticked. */
-function applyTagTo(sid){
-  const list = tagChallanList();
-  const chosen = Object.keys(tagSel).length ? list.filter(c=>tagSel[c.id]) : list;
-  if(!chosen.length){ alert('Nothing to tag.'); return; }
-  const s = seasonById(sid);
-  const what = s ? s.name : 'no season';
-  if(!confirm('Tag '+chosen.length+' challan(s) as '+what+'?\n\nOnly the season label changes — amounts, dates, items and payments stay exactly as they are.')) return;
-  const ids = {}; chosen.forEach(c=>{ ids[c.id]=1; });
-  S.challans = S.challans.map(c=>(c && ids[c.id]) ? Object.assign({}, c, {season: sid||''}) : c);
-  tagSel = {};
-  invalidateStock(); saveToCloud(); renderTagChallans();
-}
-/* Read each bill's articles and tag accordingly. Only ever touches bills that have no tag,
-   so anything you set by hand — or already tagged Winter — is left alone. */
-function autoTagFromStock(){
-  const tagged = (S.items||[]).filter(it=>it && it.seasonType && it.seasonType!=='ALL').length;
-  if(!tagged){ alert('No articles are tagged yet.\n\nOpen Stock → 🏷️ Season Tags and mark your articles as Summer or Winter first — the suggestion is read from them.'); return; }
-  const hits = (S.challans||[]).filter(c=>c && !c.season).map(c=>({c, s:suggestSeasonFor(c)})).filter(x=>x.s);
-  if(!hits.length){ alert('Nothing could be decided from the articles on the untagged bills.'); return; }
-  const byName = {};
-  hits.forEach(h=>{ byName[h.s.name] = (byName[h.s.name]||0)+1; });
-  const summary = Object.keys(byName).map(k=>byName[k]+' → '+k).join('\n');
-  if(!confirm('Tag '+hits.length+' untagged bill(s) from the articles they contain?\n\n'+summary+
-              '\n\nBills you have already tagged are not touched.')) return;
-  const map = {}; hits.forEach(h=>{ map[h.c.id] = h.s.id; });
-  S.challans = S.challans.map(c=>(c && map[c.id]) ? Object.assign({}, c, {season: map[c.id]}) : c);
-  invalidateStock(); saveToCloud(); renderTagChallans();
-}
-
-function renderTagChallans(){
-  const el = document.getElementById('tagch-content'); if(!el) return;
-  const _ae=document.activeElement;
-  const _foc=(_ae&&_ae.id&&typeof _ae.selectionStart==='number')?{id:_ae.id,pos:_ae.selectionStart}:null;
-
-  const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
-  const list = tagChallanList();
-  const shown = list.slice(0, tagLimit);
-  const nSel = Object.keys(tagSel).length;
-  const nUntagged = (S.challans||[]).filter(c=>c && !c.season).length;
-  const artTagged = (S.items||[]).filter(it=>it && it.seasonType && it.seasonType!=='ALL').length;
-
-  const fbtn=(v,l,on)=>`<button class="btn sm" style="font-size:11.5px;${tagFilter===v?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setTagFilter('${_js(v)}')">${esc(l)}</button>`;
-
-  el.innerHTML = `
-    <div style="background:#fff;border:1px solid #E8E8E8;border-radius:12px;padding:13px 14px;margin-bottom:12px">
-      <div style="font-size:14px;font-weight:800;color:#1A2E5A">🏷️ Tag challans by season</div>
-      <div style="font-size:11.5px;color:#64748B;margin-top:4px;line-height:1.6">
-        ${nUntagged ? `<strong>${nUntagged}</strong> bill(s) have no tag.` : 'Every bill is tagged.'}
-        Only the season label changes — never an amount, date or item.
-      </div>
-      <button class="btn" style="width:100%;justify-content:center;margin-top:10px;background:#EEF2FF;border-color:#C7D2FE;color:#1A2E5A;font-weight:800"
-              onclick="autoTagFromStock()">🤖 Work it out from the articles${artTagged?` (${artTagged} tagged)`:''}</button>
-      <div style="font-size:11px;color:#94A3B8;margin-top:5px;line-height:1.5">
-        Reads the articles on each untagged bill and tags it to match. Tag your articles first in
-        <strong>Stock → 🏷️ Season Tags</strong>. Bills you already tagged are never touched.
-      </div>
-    </div>
-
-    <div class="fbar">
-      ${fbtn('untagged','Untagged ('+nUntagged+')')}${fbtn('all','All ('+(S.challans||[]).length+')')}
-      ${recs.map(r=>fbtn(r.id, r.name+' ('+(S.challans||[]).filter(c=>seasonIdOf(c)===r.id).length+')')).join('')}
-    </div>
-    <input id="tag-q" placeholder="🔍 Challan number or party…" value="${esc(tagQuery)}"
-           oninput="tagQuery=this.value;tagLimit=100;renderTagChallans()"
-           style="width:100%;padding:10px 12px;border:1.5px solid #DDD;border-radius:10px;font-size:13.5px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
-
-    <div style="position:sticky;top:0;z-index:5;background:#FAFAFA;padding:9px 0;border-bottom:1px solid #E8E8E8;margin-bottom:9px">
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <button class="btn sm" style="font-size:11.5px" onclick="tagSelectAllVisible()">${nSel?'✕ Clear':'☑ Select shown'}</button>
-        <span style="font-size:11.5px;font-weight:800;color:${nSel?'#1A2E5A':'#94A3B8'}">${nSel?nSel+' selected':'none selected'}</span>
-      </div>
-      <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
-        <span style="font-size:11px;color:#64748B;align-self:center">Set ${nSel?'selected':'all '+list.length+' shown'} to:</span>
-        ${recs.map(r=>`<button class="btn sm" style="font-size:11.5px;font-weight:700;background:${r.type==='WINTER'?'#DBEAFE':'#FEF3C7'};border-color:${r.type==='WINTER'?'#BFDBFE':'#FDE68A'};color:${r.type==='WINTER'?'#1E40AF':'#92400E'}" onclick="applyTagTo('${_js(r.id)}')">${esc(r.name)}</button>`).join('')}
-        <button class="btn sm" style="font-size:11.5px;color:#DC2626;border-color:#FCA5A5" onclick="applyTagTo('')">Clear tag</button>
-      </div>
-    </div>
-
-    ${shown.length ? shown.map(c=>{
-      const pn = ((S.parties||[]).find(p=>p&&p.id===c.pid)||{}).name || '—';
-      const cur = seasonIdOf(c);
-      const sug = !c.season ? suggestSeasonFor(c) : null;
-      const on = !!tagSel[c.id];
-      const items = (c.items||[]).slice(0,3).map(li=>esc(li.name)).join(', ');
-      return `
-      <div style="background:#fff;border:1px solid ${on?'#C7D2FE':'#ECECEC'};border-radius:11px;padding:11px 12px;margin-bottom:7px;${on?'background:#F8FAFF':''}">
-        <div style="display:flex;align-items:flex-start;gap:9px">
-          <div onclick="toggleTagSel('${_js(c.id)}')" style="width:19px;height:19px;border-radius:5px;border:2px solid ${on?'#1A2E5A':'#CCC'};background:${on?'#1A2E5A':'#fff'};color:#fff;font-size:12px;font-weight:900;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;margin-top:2px">${on?'✓':''}</div>
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:700;color:#1A2E5A">${esc(c.num||'')} <span style="color:#334155;font-weight:600">${esc(pn)}</span></div>
-            <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${fmtD(c.date)} · ${fmt(c.total)}${items?' · '+items+((c.items||[]).length>3?'…':''):''}</div>
-            ${sug?`<div style="font-size:10.5px;color:#065F46;margin-top:3px">🤖 Articles suggest <strong>${esc(sug.name)}</strong></div>`:''}
-          </div>
-          <select onchange="setChallanSeason('${_js(c.id)}', this.value)"
-                  style="width:132px;flex-shrink:0;padding:7px 8px;border:1.5px solid ${cur?'#A7F3D0':'#E2E8F0'};border-radius:8px;font-size:11.5px;font-family:inherit;font-weight:700;color:${cur?'#065F46':'#94A3B8'};background:#fff">
-            <option value="">— none —</option>
-            ${recs.map(r=>`<option value="${esc(r.id)}" ${cur===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}
-          </select>
-        </div>
-      </div>`;}).join('')
-    : '<div style="text-align:center;color:#999;padding:32px 16px;font-size:13px">No challans in this view.</div>'}
-    ${list.length > tagLimit ? `<button class="btn full" onclick="tagLimit+=200;renderTagChallans()">Show more (${list.length-tagLimit} left)</button>` : ''}`;
-
-  if(_foc){ const e2=document.getElementById(_foc.id); if(e2){ e2.focus(); try{e2.setSelectionRange(_foc.pos,_foc.pos);}catch(_e){} } }
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   SEASONS
-   A season is a business period, not a date range. THE SEASON TAG ON A CHALLAN IS
-   MASTER: a bill dated January 2027 tagged "Summer 2026" belongs to Summer 2026 —
-   for reports, party analysis and stock alike. Dates are only ever used as a hint
-   when guessing a default; they never override a tag.
-
-   Seasons live in their own per-doc collection so they can carry status and closing
-   data without bloating meta/state. S.seasons (the old array of plain strings) is
-   kept in sync for backward compatibility with anything still reading it.
-══════════════════════════════════════════════════════════════════════ */
 function seasonType(name){
   const n = String(name||'').toUpperCase();
   if(/WINT/.test(n)) return 'WINTER';
@@ -4782,6 +4688,7 @@ function ownNameTyped(inp,rowId,isEC){
   const it=findItemByName(inp.value);
   if(it){ const ins=document.querySelectorAll('#'+rowId+' input'); if(ins[2]&&!(+ins[2].value)) ins[2].value=+it.rate||0; }
   if(isEC) calcECItem(rowId); else calcTotal();
+  try{ autoSeasonOnBill(isEC?'ec-item-rows':'item-rows', isEC?'ec-season':'ch-season'); }catch(e){}
 }
 
 let _itemsRenderT=null;
@@ -4806,6 +4713,32 @@ function debRenderItems(){ clearTimeout(_itemsRenderT); _itemsRenderT=setTimeout
 let _stockIdx = null;
 function invalidateStock(){ _stockIdx = null; if(typeof invalidateSeasonStock==='function') invalidateSeasonStock(); }
 function stockCutover(){ return S.stockFrom || ''; }          // default only — each item may override
+/* An article is only bounded if SOMETHING gives it a start date: its own opening row, or the
+   default. With neither, _onOrAfter() lets every date through, so three years of challans are
+   deducted from an opening count that was taken last month — the stock reads far too low and
+   the opening figure looks ignored. These two helpers make that visible instead of silent. */
+function articlesWithoutStart(){
+  const g = stockCutover();
+  if(g) return [];                                   // the default covers everything
+  return (S.items||[]).filter(it=>{
+    if(!it || !it.id) return false;
+    const own = (S.stock||[]).find(o=>o && o.itemId===it.id);
+    return !own || !own.date;                        // no date of its own, and no default
+  });
+}
+/* Give every article that has none the default start date, so the bills before it stop
+   counting. Only fills blanks — a date you set yourself is never touched. */
+function applyDefaultStartDates(){
+  const g = stockCutover();
+  if(!g){ alert('Set the default start date first — the date you counted your stock.'); return; }
+  let filled = 0;
+  (S.stock||[]).forEach((o,i)=>{
+    if(o && o.itemId && !o.date){ S.stock[i] = Object.assign({}, o, {date:g}); filled++; }
+  });
+  if(!filled){ alert('Every counted article already has a start date.'); return; }
+  invalidateStock(); saveToCloud(); renderStock();
+  alert('✅ '+filled+' article(s) now start from '+fmtD(g)+'. Bills before that date no longer count against them.');
+}
 function stockReady(){ return !!stockCutover() || (S.stock||[]).length>0; }
 function _onOrAfter(d, cut){ return !cut || String(d||'') >= cut; }
 function openingId(itemId){ return 'OS__' + itemId; }
@@ -5006,6 +4939,44 @@ function renderStockSetup(el){
     </div>`;
 }
 
+/* WHERE THE TOTAL COMES FROM — read-only, changes nothing.
+   Total Units sums the on-hand quantity of articles in POSITIVE stock. Two things are
+   deliberately outside it, and they are the usual reason it looks wrong: articles at a
+   negative count, and lot names matching no article. Both are shown. */
+let stockWhy = false;
+function stockWhyHtml(){
+  const idx = activeStockIndex();
+  let open=0, lotsIn=0, manIn=0, retIn=0, sold=0, manOut=0, pos=0, negUnits=0, negN=0, posN=0;
+  (S.items||[]).forEach(it=>{
+    const r = idx.rows[it.id]; if(!r) return;
+    open+=r.open||0; lotsIn+=r.inCon||0; manIn+=r.manIn||0; retIn+=r.retIn||0;
+    sold+=r.out||0; manOut+=r.manOut||0;
+    if(r.onHand>0){ pos+=r.onHand; posN++; }
+    else if(r.onHand<0){ negUnits+=r.onHand; negN++; }
+  });
+  const un=idx.unmapped||[];
+  const unPieces=un.reduce((t,u)=>t+((+u.inQty||0)-(+u.outQty||0)),0);
+  const line=(l,v,c)=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${l}</span><strong style="color:${c||'#1A1A1A'}">${fmtN(v)}</strong></div>`;
+  return `
+  <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:11px;padding:12px 14px;margin-bottom:12px;font-size:11.5px;color:#334155;line-height:1.6">
+    <div style="font-weight:800;color:#1A2E5A;margin-bottom:6px">How this total is built${(typeof stockMode!=='undefined'&&stockMode!=='ALL')?' · '+esc(stockModeLabel())+' only':''}</div>
+    ${line('Opening stock you entered', open)}
+    ${line('Received on contractor lots', lotsIn, '#059669')}
+    ${line('Added by hand', manIn, '#059669')}
+    ${line('Returned by parties', retIn, '#059669')}
+    ${line('Sold on challans', -sold, '#DC2626')}
+    ${line('Removed by hand', -manOut, '#DC2626')}
+    <div style="border-top:1px solid #CBD5E1;margin:6px 0"></div>
+    ${line(posN+' article(s) in positive stock', pos, '#1A2E5A')}
+    <div style="font-size:10.5px;color:#94A3B8;margin-top:6px;line-height:1.55">
+      Only those are counted. Left out on purpose:
+      ${negN?`<br>· <strong style="color:#B91C1C">${negN} article(s) at a negative count</strong> (${fmtN(negUnits)}) — sold more than the stock on record`:'<br>· no negative articles'}
+      ${un.length?`<br>· <strong style="color:#B45309">${un.length} lot name(s) matching no article</strong> (${fmtN(unPieces)} pcs) — <span style="color:#1A2E5A;text-decoration:underline;cursor:pointer" onclick="setStockView('unmapped')">map them</span>`:'<br>· every lot name is mapped'}
+      <br>· ${(S.items||[]).length} article(s) in the master
+      <br>· start date: <strong>${stockCutover()?fmtD(stockCutover()):'NOT SET — every bill ever written is counted'}</strong>${articlesWithoutStart().length?` · <strong style="color:#B91C1C">${articlesWithoutStart().length} article(s) with no start date</strong>`:''}
+    </div>
+  </div>`;
+}
 function stockSummary(){
   const idx = activeStockIndex();
   let tracked=0, neg=0, zero=0, units=0;
@@ -5035,22 +5006,39 @@ function renderStockOnHand(el){
 
   const chip = (k,lab,n) => `<button class="btn sm" style="flex:1;justify-content:center;font-size:12px;${stockFilter===k?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="stockFilter='${k}';renderStock()">${lab}${n?` <span style="opacity:.75;font-size:10px">${n}</span>`:''}</button>`;
 
-  const warn = sm.unmapped ? `
+  const noStart = articlesWithoutStart().length;
+  const noDefault = !stockCutover();
+  const startWarn = (noDefault || noStart) ? `
+    <div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:11px;padding:12px 13px;margin-bottom:12px;font-size:12px;color:#B91C1C;line-height:1.6">
+      <div style="font-weight:800">${noDefault ? 'No start date is set for stock' : noStart+' article(s) have no start date'}</div>
+      <div style="margin-top:4px;color:#7F1D1D">
+        Without one, <strong>every challan you have ever written</strong> is deducted — including
+        bills from long before you counted the stock. That is why the opening figures look ignored
+        and the totals come out low.
+      </div>
+      <div style="display:flex;gap:7px;margin-top:9px;flex-wrap:wrap">
+        <button class="btn sm" style="flex:1;justify-content:center;font-size:11.5px" onclick="setStockView('opening')">📅 Set the start date</button>
+        ${!noDefault && noStart ? `<button class="btn sm" style="flex:1;justify-content:center;font-size:11.5px;background:#fff" onclick="applyDefaultStartDates()">Use ${fmtD(stockCutover())} for all ${noStart}</button>` : ''}
+      </div>
+    </div>` : '';
+  const warn = startWarn + (sm.unmapped ? `
     <div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E">
       <strong>⚠️ ${sm.unmapped} item name${sm.unmapped>1?'s are':' is'} not linked to the Item Master.</strong>
       <div style="margin-top:4px">Movements under ${sm.unmapped>1?'those names':'that name'} are not counted in stock. Map ${sm.unmapped>1?'them':'it'} to fix the numbers — nothing is changed automatically.</div>
       <button class="btn sm" style="margin-top:8px" onclick="setStockView('unmapped')">Review unmapped names</button>
-    </div>` : '';
+    </div>` : '');
 
   el.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
-      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
+    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('master')">📋 Articles${(S.items||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.items.length}</span>`:''}</button>
+      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('tags')">🏷️ Season Tags${(()=>{const t=(S.items||[]).filter(i=>i&&i.seasonType&&i.seasonType!=='ALL').length;return t?` <span style="color:#999;font-size:10px;margin-left:4px">${t}</span>`:'';})()}</button>
+      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
+      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
     </div>
     ${warn}
     <div style="display:flex;gap:8px;margin-bottom:12px">
-      <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px">
-        <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">TOTAL UNITS</div>
+      <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px;cursor:pointer" onclick="stockWhy=!stockWhy;renderStock()">
+        <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:.4px">TOTAL UNITS ${stockWhy?'▴':'▾'}</div>
         <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.units)}</div>
       </div>
       <div style="flex:1;background:#fff;border:1px solid #ECECEC;border-radius:12px;padding:12px 14px">
@@ -5058,6 +5046,7 @@ function renderStockOnHand(el){
         <div style="font-size:19px;font-weight:800;color:#1A2E5A;margin-top:2px">${fmtN(sm.tracked)}</div>
       </div>
     </div>
+    ${stockWhy?stockWhyHtml():''}
     <div style="font-size:11px;color:#888;margin-bottom:10px">Default start <strong>${stockCutover()?fmtD(stockCutover()):'not set'}</strong>${sm.custom?` · <strong>${sm.custom}</strong> article${sm.custom===1?'':'s'} on their own date`:''} · <button class="btn sm" style="padding:3px 9px;font-size:11px" onclick="setStockView('opening')">edit dates</button></div>
     <input id="stk-search" placeholder="🔍 Search item..." value="${esc(stockSearch)}" oninput="stockSearch=this.value;renderStock()" style="width:100%;margin-bottom:10px">
     <div style="display:flex;gap:6px;margin-bottom:12px">
@@ -5124,7 +5113,7 @@ function renderStockOpening(el){
       </div>
       <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
       <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Fill in as many articles as you like, then save once. Filtering does not lose what you have typed.</div>
-    ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="goTab('items')">Add items first</button></div>` }`;
+    ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="setStockView('master')">Add articles first</button></div>` }`;
 }
 
 function renderStockMoves(el){
@@ -5221,7 +5210,7 @@ function renderStockUnmapped(el){
       (${stockCutover()?fmtD(stockCutover()):'—'}) but do not match any Item Master record, so their
       quantities are not counted in stock. Once mapped, the article's own start date applies. Nothing is changed automatically —
       map them in the Item Master and the numbers correct themselves.
-      <button class="btn sm" style="margin-top:8px" onclick="goTab('items');itemView='review';renderItems()">Open Item Master review</button>
+      <button class="btn sm" style="margin-top:8px" onclick="setStockView('master');itemView='review';renderItems()">Open article review</button>
     </div>
     ${ un.length ? un.map(u=>`
       <div class="payrow">
@@ -5237,7 +5226,10 @@ function renderStockUnmapped(el){
 }
 
 function renderItems(){
-  const el=document.getElementById('items-content'); if(!el) return;
+  // The Item Master now lives inside Stock, so it renders into whichever page is open.
+  const inStock = (curTab==='stock' && stockView==='master');
+  const el = inStock ? document.getElementById('stock-content') : document.getElementById('items-content');
+  if(!el) return;
   // Preserve focus + caret across the innerHTML rebuild (typing in a search box must not lose focus)
   const _ae=document.activeElement;
   const _foc=(_ae&&_ae.id&&typeof _ae.selectionStart==='number')?{id:_ae.id,pos:_ae.selectionStart}:null;
@@ -6856,6 +6848,12 @@ function renderStock(){
   if(stockView==='moves')  { renderStockMoves(el);   _done(); return; }
   if(stockView==='item')   { renderStockItem(el);    _done(); return; }
   if(stockView==='unmapped'){ renderStockUnmapped(el); _done(); return; }
+  if(stockView==='master'){
+    renderItems();
+    const c=document.getElementById('stock-content');
+    if(c) c.innerHTML = '<button class="btn sm" style="margin-bottom:12px" onclick="setStockView(\'onhand\')">← Back to stock</button>' + c.innerHTML;
+    _done(); return;
+  }
   if(stockView==='tags')   { renderStockTags(el);    _done(); return; }
   renderStockOnHand(el);
   // The stock book carries its OWN season, shown at the top. It does not follow the Home
@@ -8479,6 +8477,41 @@ function autoLinkPayments(){
    the same staff member, keeping its history (rolledFrom = the day it was first assigned,
    rolls = how many times it has slipped). Nothing financial is touched.
    Idempotent: once an entry sits on today it stops moving, so this can run on every render. */
+/* CARRY FORWARD A PROMISED DATE THAT NOBODY WORKED
+   autoRollPending() below moves ASSIGNED parties whose day has passed. This handles the other
+   half: a party gave a date, that day came and went, and nobody was ever put on the job — no
+   round was created, so the party quietly sat in the follow-up list and could be missed for
+   weeks. Its date now moves forward on its own, so it keeps appearing on today's list until
+   somebody actually deals with it. Nothing financial changes; only the date moves, and the
+   day it was first promised is kept so you can see how long it has been slipping.
+   Skipped when the party has already cleared its balance — nothing left to collect. */
+function autoRollPromises(){
+  if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
+  const t = today();
+  // A promise is "worked" once somebody is assigned to that party for that very day.
+  const covered = {};
+  (S.visits||[]).forEach(v=>{ if(v) covered[v.sheetId+'|'+v.pid+'|'+(v.visitDate||'')] = 1; });
+  let moved = 0;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    const e = vNorm(v);
+    if(e.status !== 'LATER' || !e.nextDate) return v;
+    if(e.nextDate >= t) return v;                                  // still in the future
+    if(covered[e.sheetId+'|'+e.pid+'|'+e.nextDate]) return v;      // somebody was put on it
+    if(Math.max(0, getAlloc(e.pid).partyBalance) <= 0) return v;   // nothing left to collect
+    moved++;
+    return Object.assign({}, v, {
+      nextDate    : t,
+      promisedFrom: v.promisedFrom || e.nextDate,                  // the date first given
+      promiseRolls: (+v.promiseRolls || 0) + 1
+    });
+  });
+  if(moved){
+    console.log('carried forward', moved, 'missed collection date(s) to', t);
+    saveToCloud();
+  }
+  return moved;
+}
 function autoRollPending(){
   if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
   const t = today();
@@ -8627,6 +8660,7 @@ function sheetsListHtml(){
       <div class="stat"><div class="sl">🚶 Still to visit</div><div class="sv a">${openP}</div></div>
       <div class="stat"><div class="sl">📅 Promised today</div><div class="sv">${dueT}</div></div>
       <div class="stat"><div class="sl">🚨 Promise passed</div><div class="sv r">${lateP}</div></div>
+      <div class="stat"><div class="sl">↷ Carried forward</div><div class="sv a">${allVisits().filter(v=>v.status==='LATER'&&v.promiseRolls>0).length}</div></div>
       <div class="stat"><div class="sl">📋 Sheets</div><div class="sv">${sheets.length}</div></div>
     </div>
     <button class="btn full pri" style="margin-bottom:14px" onclick="openNewSheet()">＋ New Visit Sheet</button>
@@ -8752,7 +8786,8 @@ function sheetDetailHtml(id){
           <span style="font-size:10.5px;color:#94A3B8;font-weight:700">${x.entries.length} part${x.entries.length===1?'y':'ies'}</span>
           <span style="font-size:13px;font-weight:800;color:#DC2626">${fmt(bal)}</span>
         </div>
-        <div style="font-size:11px;color:#64748B;margin-top:5px;line-height:1.55">${x.entries.map(e=>esc(e.pname)).join(' · ')}</div>
+        <div style="font-size:11px;color:#64748B;margin-top:5px;line-height:1.55">${x.entries.map(e=>esc(e.pname)+(e.promiseRolls>0?` <span style="color:#B45309;font-weight:700">↷${e.promiseRolls}</span>`:'')).join(' · ')}</div>
+        ${x.entries.some(e=>e.promiseRolls>0)?`<div style="font-size:10.5px;color:#B45309;margin-top:4px">↷ Carried forward — the promised day passed with nobody assigned.</div>`:''}
         <button class="btn sm" style="width:100%;justify-content:center;margin-top:8px;background:#FFF7ED;border-color:#FDBA74;color:#9A3412;font-weight:800;font-size:11.5px"
                 onclick="openFollowRound('${_js(g.id)}','${x.date}')">🚶 Assign staff for ${fmtD(x.date)}</button>
       </div>`;}).join('')}` : '';
@@ -8897,6 +8932,7 @@ function dueHtml(){
           <div style="font-size:11.5px;color:#666;margin-top:3px;line-height:1.6">
             Promised <strong>${fmtD(v.nextDate)}</strong>${late?` · <span style="color:#B91C1C">${dd}d late</span>`:''} to 🚶 ${esc(v.staff||'—')}
             ${v.amount?` · promised ${fmt(v.amount)}`:''}
+            ${v.promiseRolls>0?`<div style="color:#B45309;font-weight:700;margin-top:2px">↷ Carried forward ${v.promiseRolls}× — originally due ${fmtD(v.promisedFrom||v.nextDate)}</div>`:''}
           </div>
           ${v.reason?`<div style="font-size:11.5px;color:#777;margin-top:2px">“${esc(v.reason)}”</div>`:''}
         </div>
@@ -9521,6 +9557,8 @@ function openEditChallan(cid) {
   sel.innerHTML = partiesSorted().map(p=>`<option value="${p.id}"${p.id===c.pid?' selected':''}>${esc(p.name)}</option>`).join('');
   document.getElementById('ec-date').value = c.date;
   document.getElementById('ec-season').innerHTML = seasonOptions(c.season||'');
+  document.getElementById('ec-season').dataset.manual = c.season ? '1' : '';
+  showSeasonHint('ec-season');
   refreshItemDatalist();
   document.getElementById('ec-rmk').value  = c.remarks || '';
   document.getElementById('ec-subtitle').textContent = c.num + ' — ' + (S.parties.find(p=>p.id===c.pid)?.name || c.pname);
@@ -9560,6 +9598,7 @@ function calcECItem(id) {
   el.dataset.v = a || '';
   calcECTotal();
   try{ checkStockRows('ec-item-rows'); }catch(e){}
+  try{ autoSeasonOnBill('ec-item-rows','ec-season'); }catch(e){}
 }
 
 function calcECTotal() {
@@ -9570,6 +9609,7 @@ function calcECTotal() {
   const box = document.getElementById('ec-total-preview');
   if (total>0) { box.style.display='block'; box.textContent='New Challan Total: '+fmt(total); }
   else box.style.display='none';
+  try{ autoSeasonOnBill('ec-item-rows','ec-season'); }catch(e){}
 }
 
 function saveEditChallan() {
@@ -9591,7 +9631,10 @@ function saveEditChallan() {
   c.pid     = newPid;
   c.pname   = S.parties.find(p=>p.id===newPid)?.name || c.pname;
   c.date    = newDate;
-  c.season  = document.getElementById('ec-season').value||'';
+  let ecSeason = document.getElementById('ec-season').value || '';
+  if(!ecSeason){ const a = seasonForItems(items); ecSeason = a ? a.id : ''; }
+  if(!ecSeason){ alert('This bill needs a season.'); return; }
+  c.season  = ecSeason;
   c.remarks = newRmk;
   c.items   = items;
   c.freight = +document.getElementById('ec-freight').value||0;
