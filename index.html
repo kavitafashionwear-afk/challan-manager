@@ -350,6 +350,15 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   </div>
 
   <!-- ITEM MASTER -->
+  <div class="cscreen" id="cs-items">
+    <div class="pg" id="items-content"></div>
+  </div>
+
+  <!-- CASH IN HAND -->
+  <div class="cscreen" id="cs-cash">
+    <div class="pg" id="cash-content"></div>
+  </div>
+
   <!-- STOCK -->
   <div class="cscreen" id="cs-stock">
     <div class="pg" id="stock-content"></div>
@@ -462,10 +471,13 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
+  <div class="umi" onclick="openSyncStatus();closeMenu()">🔌 Sync Status</div>
   <div class="umi" onclick="goTab('tagch');closeMenu()">🏷️ Tag Challans <span id="tagch-badge" style="display:none;background:#F59E0B;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="openBackup()">💾 Backup &amp; Restore</div>
   <div class="umi" onclick="goTab('visits');closeMenu()">🚶 Visits &amp; Follow-ups <span id="visits-due-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
+  <div class="umi" onclick="goTab('cash');closeMenu()">💰 Cash in Hand</div>
   <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
+  <div class="umi" onclick="goTab('items');closeMenu()">🏷️ Item Master</div>
   <div class="umi" onclick="goTab('reports');closeMenu()">📊 Reports &amp; Analytics</div>
   <div class="umi" onclick="openStaffManager()">👥 Staff Access <span id="staff-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;align-items:center"></span></div>
   <div class="umi" onclick="goTab('trash');closeMenu()">🗑️ Recycle Bin <span id="trash-count-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
@@ -1012,7 +1024,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-04.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-03.5';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2333,7 +2345,7 @@ function netToastFor(state){
       'Your work is safe on this device but has not uploaded yet.'+
       (stalls.length ? '<br>Waiting: <strong>'+esc(stalls.slice(0,4).join(', '))+(stalls.length>4?' +'+(stalls.length-4)+' more':'')+'</strong>' : '')+
       '<br>'+probe,
-      'Check the connection again','probeServer()',null);
+      'Check the connection','probeServer().then(function(){ openSyncStatus(); })',null);
     return;
   }
   if(state==='err'){
@@ -2342,8 +2354,7 @@ function netToastFor(state){
       denied.length
         ? 'Blocked: <strong>'+esc(denied.join(', '))+'</strong>. Nothing is lost — it is held on this device until the permission is fixed.'
         : 'Something could not be saved to the cloud. Your data is safe on this device and will retry.',
-      denied.length ? 'Show me the fix' : 'Try again now',
-      denied.length ? 'showRulesHelp()' : 'forceReconnect(true)', null);
+      'Show me the fix','openSyncStatus()',null);
     return;
   }
   if(state==='ok'){
@@ -2356,9 +2367,7 @@ function netToastFor(state){
   }
 }
 
-var _syncState = 'ok';
 function setSyncDot(s) {
-  _syncState = s;
   const d = document.getElementById('sync-dot');
   if (!d) return;
   d.className = 'sync-dot' + (s==='busy'?' busy':'') + (s==='offline'?' offline':'') + (s==='err'?' err':'') + (s==='stuck'?' stuck':'');
@@ -2368,14 +2377,7 @@ function setSyncDot(s) {
           : s==='stuck' ? 'Not reaching the server — data is queued on this device. Tap for details.'
           : 'Synced ✓';
   d.style.cursor = 'pointer';
-  // Tapping the dot re-tests the connection and reports the result, rather than opening a
-  // screen full of internals nobody needs day to day.
-  if(!d._wired){ d._wired=1; d.onclick=function(){
-    try{
-      if(s==='ok'){ _netToast('ok','Everything is synced','Your data is up to date on the server.',null,null,3000); return; }
-      probeServer().then(function(){ refreshSyncDot(); NT.shown=''; NT.dismissed=''; netToastFor(_syncState||s); });
-    }catch(_e){}
-  }; }
+  if(!d._wired){ d._wired=1; d.onclick=function(){ try{ openSyncStatus(); }catch(_e){} }; }
   try{ netToastFor(s); }catch(e){ console.warn('sync alert skipped:', e); }
 }
 function updateSyncUI(){ refreshSyncDot(); }
@@ -3055,7 +3057,9 @@ function renderAll() {
   if (curTab==='challans') renderChallans();
   if (curTab==='daybook')  renderDaybook();
   if (curTab==='reports')  renderReports();
+  if (curTab==='items')    renderItems();
   if (curTab==='stock')    renderStock();
+  if (curTab==='cash')     renderCash();
   if (curTab==='visits')   renderVisits();
   if (curTab==='tagch')    renderTagChallans();
   if (curTab==='trash')    renderTrash();
@@ -3067,7 +3071,6 @@ function renderAll() {
   try{ if(loadedOnce) migrateSeasons(); }catch(e){ console.warn('season migration skipped:', e); }
   try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
   try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
-  try{ autoRollPromises(); }catch(e){ console.warn('promise carry-forward skipped:', e); }
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
   if (typeof renderIncomingBadge==='function' && typeof _pendingBills!=='undefined') renderIncomingBadge(_pendingBills.length);
@@ -3082,18 +3085,18 @@ function goTab(tab) {
   document.getElementById('cs-'+tab).classList.add('on');
   const nt=document.getElementById('nt-'+tab); if(nt) nt.classList.add('on');   // reports has no bottom-nav tab
   document.getElementById('back-btn').classList.remove('show');
-  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='stock'||tab==='visits'||tab==='tagch') ? 'none' : 'flex';
+  document.getElementById('fab').style.display = (tab==='trash'||tab==='daybook'||tab==='reports'||tab==='items'||tab==='stock'||tab==='cash'||tab==='visits'||tab==='tagch') ? 'none' : 'flex';
   document.getElementById('topbar-title').textContent =
     tab==='home'     ? '📋 Challan Manager' :
     tab==='parties'  ? '👥 Parties' :
     tab==='challans' ? '📋 Challans' :
     tab==='daybook'  ? '📅 Daybook' :
     tab==='reports'  ? '📊 Reports' :
-    tab==='stock'    ? (stockView==='master' ? '📦 Stock · Articles'
-                       : stockView==='tags'   ? '📦 Stock · Season Tags' : '📦 Stock') :
+    tab==='stock'    ? '📦 Stock' :
+    tab==='cash'     ? '💰 Cash in Hand' :
     tab==='visits'   ? '🚶 Visits & Follow-ups' :
     tab==='tagch'    ? '🏷️ Tag Challans' :
-    '🗑️ Recycle Bin';
+    tab==='items'    ? '🏷️ Item Master' : '🗑️ Recycle Bin';
   renderAll();
 }
 
@@ -5040,11 +5043,9 @@ function renderStockOnHand(el){
     </div>` : '';
 
   el.innerHTML = `
-    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('master')">📋 Articles${(S.items||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.items.length}</span>`:''}</button>
-      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('tags')">🏷️ Season Tags${(()=>{const t=(S.items||[]).filter(i=>i&&i.seasonType&&i.seasonType!=='ALL').length;return t?` <span style="color:#999;font-size:10px;margin-left:4px">${t}</span>`:'';})()}</button>
-      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
-      <button class="btn sm" style="flex:1;min-width:130px;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('opening')">📥 Opening Stock</button>
+      <button class="btn sm" style="flex:1;justify-content:center;font-size:12px" onclick="setStockView('moves')">🔁 Movements${(S.stockMv||[]).length?` <span style="color:#999;font-size:10px;margin-left:4px">${S.stockMv.length}</span>`:''}</button>
     </div>
     ${warn}
     <div style="display:flex;gap:8px;margin-bottom:12px">
@@ -5123,7 +5124,7 @@ function renderStockOpening(el){
       </div>
       <button class="btn pri" style="width:100%;justify-content:center" onclick="saveOpeningStock()">💾 Save Opening Stock</button>
       <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Fill in as many articles as you like, then save once. Filtering does not lose what you have typed.</div>
-    ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="setStockView('master')">Add articles first</button></div>` }`;
+    ` : `<div style="text-align:center;color:#999;padding:40px 20px;font-size:13px">No items in the Item Master yet.<br><button class="btn sm" style="margin-top:10px" onclick="goTab('items')">Add items first</button></div>` }`;
 }
 
 function renderStockMoves(el){
@@ -5220,7 +5221,7 @@ function renderStockUnmapped(el){
       (${stockCutover()?fmtD(stockCutover()):'—'}) but do not match any Item Master record, so their
       quantities are not counted in stock. Once mapped, the article's own start date applies. Nothing is changed automatically —
       map them in the Item Master and the numbers correct themselves.
-      <button class="btn sm" style="margin-top:8px" onclick="setStockView('master');itemView='review';renderItems()">Open article review</button>
+      <button class="btn sm" style="margin-top:8px" onclick="goTab('items');itemView='review';renderItems()">Open Item Master review</button>
     </div>
     ${ un.length ? un.map(u=>`
       <div class="payrow">
@@ -5236,10 +5237,7 @@ function renderStockUnmapped(el){
 }
 
 function renderItems(){
-  // The Item Master now lives inside Stock, so it renders into whichever page is open.
-  const inStock = (curTab==='stock' && stockView==='master');
-  const el = inStock ? document.getElementById('stock-content') : document.getElementById('items-content');
-  if(!el) return;
+  const el=document.getElementById('items-content'); if(!el) return;
   // Preserve focus + caret across the innerHTML rebuild (typing in a search box must not lose focus)
   const _ae=document.activeElement;
   const _foc=(_ae&&_ae.id&&typeof _ae.selectionStart==='number')?{id:_ae.id,pos:_ae.selectionStart}:null;
@@ -6858,12 +6856,6 @@ function renderStock(){
   if(stockView==='moves')  { renderStockMoves(el);   _done(); return; }
   if(stockView==='item')   { renderStockItem(el);    _done(); return; }
   if(stockView==='unmapped'){ renderStockUnmapped(el); _done(); return; }
-  if(stockView==='master'){
-    renderItems();
-    const c=document.getElementById('stock-content');
-    if(c) c.innerHTML = '<button class="btn sm" style="margin-bottom:12px" onclick="setStockView(\'onhand\')">← Back to stock</button>' + c.innerHTML;
-    _done(); return;
-  }
   if(stockView==='tags')   { renderStockTags(el);    _done(); return; }
   renderStockOnHand(el);
   // The stock book carries its OWN season, shown at the top. It does not follow the Home
@@ -8487,41 +8479,6 @@ function autoLinkPayments(){
    the same staff member, keeping its history (rolledFrom = the day it was first assigned,
    rolls = how many times it has slipped). Nothing financial is touched.
    Idempotent: once an entry sits on today it stops moving, so this can run on every render. */
-/* CARRY FORWARD A PROMISED DATE THAT NOBODY WORKED
-   autoRollPending() below moves ASSIGNED parties whose day has passed. This handles the other
-   half: a party gave a date, that day came and went, and nobody was ever put on the job — no
-   round was created, so the party quietly sat in the follow-up list and could be missed for
-   weeks. Its date now moves forward on its own, so it keeps appearing on today's list until
-   somebody actually deals with it. Nothing financial changes; only the date moves, and the
-   day it was first promised is kept so you can see how long it has been slipping.
-   Skipped when the party has already cleared its balance — nothing left to collect. */
-function autoRollPromises(){
-  if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
-  const t = today();
-  // A promise is "worked" once somebody is assigned to that party for that very day.
-  const covered = {};
-  (S.visits||[]).forEach(v=>{ if(v) covered[v.sheetId+'|'+v.pid+'|'+(v.visitDate||'')] = 1; });
-  let moved = 0;
-  S.visits = (S.visits||[]).map(v=>{
-    if(!v) return v;
-    const e = vNorm(v);
-    if(e.status !== 'LATER' || !e.nextDate) return v;
-    if(e.nextDate >= t) return v;                                  // still in the future
-    if(covered[e.sheetId+'|'+e.pid+'|'+e.nextDate]) return v;      // somebody was put on it
-    if(Math.max(0, getAlloc(e.pid).partyBalance) <= 0) return v;   // nothing left to collect
-    moved++;
-    return Object.assign({}, v, {
-      nextDate    : t,
-      promisedFrom: v.promisedFrom || e.nextDate,                  // the date first given
-      promiseRolls: (+v.promiseRolls || 0) + 1
-    });
-  });
-  if(moved){
-    console.log('carried forward', moved, 'missed collection date(s) to', t);
-    saveToCloud();
-  }
-  return moved;
-}
 function autoRollPending(){
   if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
   const t = today();
@@ -8670,7 +8627,6 @@ function sheetsListHtml(){
       <div class="stat"><div class="sl">🚶 Still to visit</div><div class="sv a">${openP}</div></div>
       <div class="stat"><div class="sl">📅 Promised today</div><div class="sv">${dueT}</div></div>
       <div class="stat"><div class="sl">🚨 Promise passed</div><div class="sv r">${lateP}</div></div>
-      <div class="stat"><div class="sl">↷ Carried forward</div><div class="sv a">${allVisits().filter(v=>v.status==='LATER'&&v.promiseRolls>0).length}</div></div>
       <div class="stat"><div class="sl">📋 Sheets</div><div class="sv">${sheets.length}</div></div>
     </div>
     <button class="btn full pri" style="margin-bottom:14px" onclick="openNewSheet()">＋ New Visit Sheet</button>
@@ -8796,8 +8752,7 @@ function sheetDetailHtml(id){
           <span style="font-size:10.5px;color:#94A3B8;font-weight:700">${x.entries.length} part${x.entries.length===1?'y':'ies'}</span>
           <span style="font-size:13px;font-weight:800;color:#DC2626">${fmt(bal)}</span>
         </div>
-        <div style="font-size:11px;color:#64748B;margin-top:5px;line-height:1.55">${x.entries.map(e=>esc(e.pname)+(e.promiseRolls>0?` <span style="color:#B45309;font-weight:700">↷${e.promiseRolls}</span>`:'')).join(' · ')}</div>
-        ${x.entries.some(e=>e.promiseRolls>0)?`<div style="font-size:10.5px;color:#B45309;margin-top:4px">↷ Carried forward — the promised day passed with nobody assigned.</div>`:''}
+        <div style="font-size:11px;color:#64748B;margin-top:5px;line-height:1.55">${x.entries.map(e=>esc(e.pname)).join(' · ')}</div>
         <button class="btn sm" style="width:100%;justify-content:center;margin-top:8px;background:#FFF7ED;border-color:#FDBA74;color:#9A3412;font-weight:800;font-size:11.5px"
                 onclick="openFollowRound('${_js(g.id)}','${x.date}')">🚶 Assign staff for ${fmtD(x.date)}</button>
       </div>`;}).join('')}` : '';
@@ -8942,7 +8897,6 @@ function dueHtml(){
           <div style="font-size:11.5px;color:#666;margin-top:3px;line-height:1.6">
             Promised <strong>${fmtD(v.nextDate)}</strong>${late?` · <span style="color:#B91C1C">${dd}d late</span>`:''} to 🚶 ${esc(v.staff||'—')}
             ${v.amount?` · promised ${fmt(v.amount)}`:''}
-            ${v.promiseRolls>0?`<div style="color:#B45309;font-weight:700;margin-top:2px">↷ Carried forward ${v.promiseRolls}× — originally due ${fmtD(v.promisedFrom||v.nextDate)}</div>`:''}
           </div>
           ${v.reason?`<div style="font-size:11.5px;color:#777;margin-top:2px">“${esc(v.reason)}”</div>`:''}
         </div>
