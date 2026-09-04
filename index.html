@@ -1008,7 +1008,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-04.3';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-04.5-fix';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2772,7 +2772,6 @@ function attachDataListeners(){
   _subLots = _col('ct_lots').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.lots = snap.docs.map(d=>d.data());
     invalidateStock();
-    try{ adoptContractorItems(); }catch(e){ console.warn('contractor item adopt skipped:', e); }
     _tokDFCache = null;          // lot item names join the fuzzy-matching corpus
     markLoaded(snap.metadata, 'ct_lots', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('ct_lots',err));
@@ -3064,7 +3063,7 @@ function renderAll() {
   try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
   try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
   try{ autoRollPromises(); }catch(e){ console.warn('promise carry-forward skipped:', e); }
-  try{ adoptContractorItems(); }catch(e){ console.warn('contractor item adopt skipped:', e); }
+  try{ removeAutoCreatedItems(); }catch(e){ console.warn('cleanup skipped:', e); }
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
   if (typeof renderIncomingBadge==='function' && typeof _pendingBills!=='undefined') renderIncomingBadge(_pendingBills.length);
@@ -4729,47 +4728,25 @@ function hasOwnCutover(itemId){
    finished-goods receivals dated on/after the item's own start date credit stock.
    Fabric lots are excluded by design. No other engine change is required. */
 /* ══════════════════════════════════════════════════════════════════════
-   ARTICLES CREATED IN THE CONTRACTOR TRACKER
-   A lot received against an article this app has never heard of used to fall into the
-   "unmapped" pile: the pieces were counted nowhere and the article never appeared in Stock,
-   so making a new item in the Tracker looked like it did nothing here.
-
-   Those articles are now adopted into the Item Master automatically, so the stock shows up
-   on its own. Rules kept deliberately tight so a typo in the Tracker cannot litter the master:
-     • only finished goods, and only where pieces were actually received
-     • only when nothing already matches, including through the fuzzy matcher and any mapping
-     • the rate comes from the lot if it carries one, otherwise 0 for you to fill in
-     • season is left on "Both" — it is not this code's business to decide that
+   UNDO: articles auto-created from contractor lots
+   A previous build added an Item Master record for every lot item name it did not recognise.
+   That was wrong: a historical spelling that belonged to an existing article became a SECOND
+   article, so the stock for one product ended up split across two rows. Every record it made
+   carries fromContractor:true and nothing else creates that flag, so they can be removed
+   exactly, and the pieces fall back onto the real article through the usual name matching.
 ══════════════════════════════════════════════════════════════════════ */
-function adoptContractorItems(){
+function removeAutoCreatedItems(){
   if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
-  if(!Array.isArray(S.lots) || !S.lots.length) return 0;
-  const seen = {};
-  let added = 0;
-  S.lots.forEach(l=>{
-    if(!l || l.kind==='fabric') return;                       // finished goods only
-    const nm = String(l.item||'').trim();
-    if(!nm || nm.length < 2) return;
-    const k = normIName(nm);
-    if(!k || seen[k]) return;
-    // Did anything actually arrive? Never invent an article from an empty lot.
-    const recs = (l.receivals && l.receivals.length) ? l.receivals
-               : (l.piecesReceived!=null && l.piecesReceived!=='' ? [{date:l.dateReceived, pieces:l.piecesReceived}] : []);
-    if(!recs.some(r=>(+r.pieces||0) > 0)) return;
-    seen[k] = 1;
-    if(itemCanon(nm)) return;                                  // already known, mapped or matched
-    if(findDupItem(nm)) return;
-    const rate = Math.round(+l.rate || +l.itemRate || +l.pieceRate || 0);
-    S.items.push({ id:uniqId('IT'), name:nm, code:String(l.code||l.itemCode||'').trim(),
-                   rate:(rate>0?rate:0), seasonType:'ALL', designs:[], fromContractor:true });
-    added++;
-  });
-  if(added){
-    _itemCanonIdx = null; invalidateStock();
-    console.log('adopted', added, 'article(s) created in the Contractor Tracker');
-    saveToCloud();
-  }
-  return added;
+  const bad = (S.items||[]).filter(it=>it && it.fromContractor===true);
+  if(!bad.length) return 0;
+  const ids = {}; bad.forEach(it=>{ ids[it.id]=1; });
+  S.items   = (S.items||[]).filter(it=>!(it && ids[it.id]));
+  S.itemMap = (S.itemMap||[]).filter(m=>!(m && ids[m.itemId]));   // any mapping pointing at them
+  S.stock   = (S.stock||[]).filter(o=>!(o && ids[o.itemId]));     // and their opening rows
+  _itemCanonIdx = null; invalidateStock();
+  console.log('removed', bad.length, 'article(s) auto-created from contractor lots:', bad.map(x=>x.name).join(', '));
+  saveToCloud();
+  return bad.length;
 }
 
 function stockContractorIn(row, cutOf, gcut, unmapped){
@@ -4819,10 +4796,11 @@ function stockContractorIn(row, cutOf, gcut, unmapped){
    own tag is the only thing that decides which book it lives in.
 ══════════════════════════════════════════════════════════════════════ */
 let stockMode = 'ALL';                 // 'SUMMER' | 'WINTER' | 'ALL'
-try{ stockMode = localStorage.getItem('cm_stock_mode') || 'ALL'; }catch(e){}
+// Always open on ALL. A remembered Summer/Winter filter made stock look wrong on load
+// because articles tagged for the other season were simply not on the list.
+try{ localStorage.removeItem('cm_stock_mode'); }catch(e){}
 function setStockMode(m){
   stockMode = m || 'ALL';
-  try{ localStorage.setItem('cm_stock_mode', stockMode); }catch(e){}
   invalidateStock(); renderStock();
 }
 function stockModeLabel(){ return stockMode==='SUMMER' ? 'Summer' : stockMode==='WINTER' ? 'Winter' : 'All articles'; }
@@ -5237,7 +5215,6 @@ function renderItems(){
           <div style="font-size:13.5px;font-weight:700;color:#1A2E5A">${esc(it.name)} ${it.code?`<span style="font-size:10px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;padding:1px 7px;border-radius:8px;font-weight:700">${esc(it.code)}</span>`:''}
             ${(it.seasonType==='SUMMER')?'<span style="font-size:9.5px;background:#FEF3C7;color:#92400E;padding:1px 7px;border-radius:8px;font-weight:800">☀️ SUMMER</span>':''}
             ${(it.seasonType==='WINTER')?'<span style="font-size:9.5px;background:#DBEAFE;color:#1E40AF;padding:1px 7px;border-radius:8px;font-weight:800">❄️ WINTER</span>':''}</div>
-          ${it.fromContractor?`<div style="font-size:9.5px;font-weight:800;color:#065F46;background:#DCFCE7;display:inline-block;padding:1px 7px;border-radius:8px;margin-top:3px">🧵 FROM CONTRACTOR${(+it.rate||0)?'':' · SET A RATE'}</div>`:''}
           <div style="font-size:11px;color:#888;margin-top:2px">Default rate: <strong style="color:${(+it.rate||0)?'#059669':'#DC2626'}">${(+it.rate||0)?fmt(+it.rate):'not set'}</strong>${itemDesigns(it).length?` · <strong style="color:#1A2E5A">${itemDesigns(it).length} design(s)</strong> ${esc(itemDesigns(it).slice(0,6).map(d=>d.code).join(' '))}${itemDesigns(it).length>6?'…':''}`:''}</div>
         </div>
         <button class="btn sm" onclick="openDesigns('${it.id}')" style="font-size:11px">🎨 ${itemDesigns(it).length||''}</button>
