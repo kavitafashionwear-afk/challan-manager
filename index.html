@@ -1008,7 +1008,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-04.4';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-04.3';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -4747,7 +4747,7 @@ function adoptContractorItems(){
   const seen = {};
   let added = 0;
   S.lots.forEach(l=>{
-    if(!lotCountsAsStock(l)) return;                          // finished goods only
+    if(!l || l.kind==='fabric') return;                       // finished goods only
     const nm = String(l.item||'').trim();
     if(!nm || nm.length < 2) return;
     const k = normIName(nm);
@@ -4772,22 +4772,10 @@ function adoptContractorItems(){
   return added;
 }
 
-/* Does this lot represent finished pieces that belong in stock?
-   NO for fabric lots. Fabric is issued to a fabricator in kg or metres and comes back as
-   processed cloth; it only becomes stock once it is allotted onward to a cutting contractor
-   and received as pieces. Counting the fabric lot as well would count the same goods twice.
-   Written as an allowlist — an unknown kind is never assumed to be stock. */
-function lotCountsAsStock(l){
-  if(!l) return false;
-  const k = String(l.kind||'').toLowerCase();
-  if(k === 'fabric') return false;                  // fabric is never finished-goods stock
-  if(l.excludeFromStock) return false;              // explicit opt-out, if ever set
-  return k === '' || k === 'cutting';               // only a cutting lot counts
-}
 function stockContractorIn(row, cutOf, gcut, unmapped){
   if(!Array.isArray(S.lots)) return;               // tracker not merged yet
   S.lots.forEach(l=>{
-    if(!lotCountsAsStock(l)) return;                // finished goods only
+    if(!l || l.kind==='fabric') return;             // finished goods only
     const recs = (l.receivals && l.receivals.length) ? l.receivals
                : (l.piecesReceived!=null && l.piecesReceived!=='' ? [{date:l.dateReceived, pieces:l.piecesReceived}] : []);
     recs.forEach(r=>{
