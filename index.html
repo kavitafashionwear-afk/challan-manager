@@ -1008,7 +1008,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-04.9';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-05.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -5419,8 +5419,15 @@ function stockIndex(){
 function activeStockIndex(){
   return stockMode==='ALL' ? stockIndex() : stockIndexForMode(stockMode);
 }
+/* stockRow follows the book you are LOOKING AT (Summer / Winter / All) — that is right for
+   the stock screen. It is wrong for anything that asks "how many do we actually have", because
+   an article outside the selected book has no row there and reads as zero. */
 function stockRow(itemId){ return activeStockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0}; }
-function stockOnHand(itemId){ return stockRow(itemId).onHand; }
+/* The REAL quantity, whatever book happens to be open. Used by the shortfall warning on a
+   bill: the yellow box was reporting zero for every Winter article whenever the stock screen
+   had been left on Summer, even though the pieces were there and deducted correctly. */
+function stockRowTrue(itemId){ return stockIndex().rows[itemId] || {open:0,inCon:0,manIn:0,manOut:0,out:0,retIn:0,onHand:0}; }
+function stockOnHand(itemId){ return stockRowTrue(itemId).onHand; }
 
 /* Full audit trail for one item — every contribution, oldest first. */
 function stockItemMoves(itemId){
