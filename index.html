@@ -1008,7 +1008,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-05.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-06.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -8459,10 +8459,16 @@ function autoLinkPayments(){
   S.visits = (S.visits||[]).map(v=>{
     if(!v) return v;
     const e = vNorm(v);
-    if(e.status !== 'PENDING') return v;
+    // Any entry still waiting for money qualifies — not just the ones nobody has visited yet.
+    // This previously read PENDING only, so a party who had GIVEN A DATE (status LATER) and
+    // then paid at the counter stayed on today's list for ever: the payment was in the ledger
+    // but the visit entry never closed. Refused and not-available entries close too — if the
+    // money arrived, the job is done however it started.
+    if(e.status === 'COLLECTED') return v;
     // Anchor on the day this party was FIRST put on the round, not on today — carry-forward
     // moves visitDate, and a payment taken the day of the original visit still counts.
-    const anchor = e.rolledFrom || e.visitDate || e.sheetDate || '';
+    // For a rescheduled entry the visit already happened, so its own date is the right anchor.
+    const anchor = e.rolledFrom || e.doneDate || e.visitDate || e.sheetDate || '';
     const hit = (S.payments||[])
       .filter(p => p && p.pid===e.pid && p.date && (!anchor || p.date >= anchor) && !used[p.id] && !skip[p.id])
       .sort((a,b)=>String(a.date).localeCompare(String(b.date)))[0];
