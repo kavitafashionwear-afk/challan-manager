@@ -713,8 +713,11 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   </div>
   <div class="mbody">
     <div class="fg"><label>Staff member visiting *</label>
-      <input id="vas-staff" list="vas-dl" placeholder="Name of the person going" autocomplete="off">
-      <datalist id="vas-dl"></datalist>
+      <div style="display:flex;gap:6px">
+        <select id="vas-staff" style="flex:1"></select>
+        <button class="btn sm" style="flex-shrink:0;font-size:11.5px" onclick="addCollector()">＋ Add</button>
+        <button class="btn sm" style="flex-shrink:0;font-size:11.5px;color:#DC2626;border-color:#FCA5A5" onclick="removeCollector()" title="Remove the selected person from the list">🗑</button>
+      </div>
     </div>
     <div class="fg"><label>Find a party</label>
       <input id="vas-q" placeholder="Search name, city or phone" autocomplete="off" oninput="renderAssignList()">
@@ -1008,11 +1011,11 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-06.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-08.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
-          visits:[], vC:0, defCreditDays:30,
+          visits:[], vC:0, defCreditDays:30, collectors:[],
           seasonRecs:[], stockClose:[], untaggedSeason:'' };
 let uid = null;
 let currentUser = null;
@@ -2393,7 +2396,7 @@ function saveLocal(){
     pC:S.pC, cC:S.cC, pyC:S.pyC, seasons:S.seasons, curSeason:S.curSeason,
     stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns,
     expenses:S.expenses, cashOpen:S.cashOpen, cashModes:S.cashModes, exC:S.exC,
-    visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays,
+    visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays, collectors:S.collectors,
     seasonRecs:S.seasonRecs, stockClose:S.stockClose, untaggedSeason:S.untaggedSeason
   };
   // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
@@ -2429,7 +2432,7 @@ function loadLocal(){
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
     S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; S.expenses=d.expenses||[]; S.cashOpen=d.cashOpen||null;
     if(d.cashModes) S.cashModes=d.cashModes; S.exC=d.exC||0;
-    S.visits=d.visits||[]; S.vC=d.vC||0; if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays;
+    S.visits=d.visits||[]; S.vC=d.vC||0; if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; S.collectors=d.collectors||[];
     S.seasonRecs=d.seasonRecs||[]; S.stockClose=d.stockClose||[]; S.untaggedSeason=d.untaggedSeason||'';
     invalidateStock(); invalidateCash();
     // S.lots is not in the local backup by design — Firestore's own cache restores it.
@@ -2833,7 +2836,7 @@ function attachDataListeners(){
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0);
       // Legacy meta docs still carry trash inline; adopt it once, then it migrates out.
       if(!d.trashMoved && Array.isArray(d.trash) && d.trash.length && !_trashLoaded){ S.trash=d.trash; _trashNeedsMigration=true; }
-      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; if(d.untaggedSeason!=null) S.untaggedSeason=d.untaggedSeason;
+      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; if(Array.isArray(d.collectors)) S.collectors=d.collectors; if(d.untaggedSeason!=null) S.untaggedSeason=d.untaggedSeason;
       if(d.cashOpen!==undefined){ S.cashOpen=d.cashOpen; invalidateCash(); }
       if(d.cashModes!==undefined && d.cashModes){ S.cashModes=d.cashModes; invalidateCash(); } if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
@@ -2897,7 +2900,7 @@ function saveToCloud() {
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     // trash is NOT in here any more — it lives in its own collection, one document per
     // deleted item. meta/state is now bounded: counters and a few small settings only.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), trashMoved:true, untaggedSeason:S.untaggedSeason||'' };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), collectors:S.collectors||[], trashMoved:true, untaggedSeason:S.untaggedSeason||'' };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -8405,6 +8408,7 @@ function creditDaysOf(pid){
 function hasPartyLimit(pid){ const p=(S.parties||[]).find(x=>x&&x.id===pid); return !!(p&&p.creditDays&&+p.creditDays>0); }
 
 /* ── Assignment record ── */
+const PAY_MODES = ['Cash','UPI','NEFT/RTGS','Cheque','Other'];
 const VSTATUS = {
   PENDING  : { lbl:'TO VISIT',   bg:'#EEF2FF', fg:'#1A2E5A', bd:'#C7D2FE' },
   COLLECTED: { lbl:'COLLECTED',  bg:'#DCFCE7', fg:'#065F46', bd:'#A7F3D0' },
@@ -8584,11 +8588,41 @@ function visitsDueCount(){
   const openAssign=allVisits().filter(v=>v.status==='PENDING').length;
   return promises+openAssign;
 }
+/* The people who go out collecting. Kept as a real list you manage, rather than only being
+   inferred from past rounds — a new staff member could not be chosen before their first visit
+   existed, which is the wrong way round. Names already used, and any approved app user, are
+   folded in so nothing that worked before disappears. */
 function collectorNames(){
   const set={};
+  (S.collectors||[]).forEach(nm=>{ if(nm) set[String(nm).trim()]=1; });
   allVisits().forEach(v=>{ if(v.staff) set[String(v.staff).trim()]=1; });
   ((typeof window!=='undefined'&&window._staffApproved)||[]).forEach(st=>{ const nm=(st&&(st.name||st.email))||''; if(nm) set[String(nm).trim()]=1; });
   return Object.keys(set).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+}
+function addCollector(){
+  const nm = (prompt('Name of the staff member who collects payments:','')||'').trim();
+  if(!nm) return;
+  if(collectorNames().some(x=>normIName(x)===normIName(nm))){ alert('“'+nm+'” is already on the list.'); return; }
+  if(!Array.isArray(S.collectors)) S.collectors=[];
+  S.collectors.push(nm);
+  saveToCloud();
+  fillStaffSelect(nm);
+}
+function removeCollector(){
+  const sel=document.getElementById('vas-staff'); const nm=sel?sel.value:'';
+  if(!nm){ alert('Choose the person to remove from the list first.'); return; }
+  const used=allVisits().filter(v=>normIName(v.staff||'')===normIName(nm)).length;
+  if(!confirm('Remove “'+nm+'” from the staff list?'+(used?'\n\n'+used+' past assignment(s) keep their name — nothing already recorded is changed.':''))) return;
+  S.collectors=(S.collectors||[]).filter(x=>normIName(x)!==normIName(nm));
+  saveToCloud();
+  fillStaffSelect('');
+}
+function fillStaffSelect(pick){
+  const sel=document.getElementById('vas-staff'); if(!sel) return;
+  const list=collectorNames();
+  sel.innerHTML = (list.length ? '<option value="">— choose staff —</option>' : '<option value="">— no staff yet, tap ＋ Add —</option>')
+    + list.map(nm=>`<option value="${esc(nm)}">${esc(nm)}</option>`).join('');
+  if(pick) sel.value=pick;
 }
 
 /* ── Sheets are derived by grouping assignments on sheetId ── */
@@ -8906,9 +8940,15 @@ function entryCardHtml(e){
                  onkeydown="if(event.key==='Enter'){event.preventDefault();quickCollect('${e.id}');}"
                  style="flex:1;min-width:0;padding:8px 0;border:none;background:transparent;font-size:13px;font-family:inherit;outline:none">
         </div>
+        <select id="qcm-${e.id}" title="How it was paid" style="width:78px;flex-shrink:0;padding:8px 4px;border:1.5px solid #A7F3D0;border-radius:8px;background:#F0FDF4;font-size:11.5px;font-family:inherit;font-weight:700;color:#059669">
+          ${PAY_MODES.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('')}
+        </select>
         <button class="btn sm" style="font-size:11.5px;background:#059669;color:#fff;border-color:#059669;font-weight:800;flex-shrink:0" onclick="quickCollect('${e.id}')">✓</button>
         <button class="btn sm" style="font-size:13px;background:#FFFBEB;color:#92400E;border-color:#FDE68A;flex-shrink:0" title="Come another day" onclick="openLater('${e.id}')">📅</button>
       </div>
+      <input id="qcr-${e.id}" placeholder="Remarks (cheque no., part payment…)" autocomplete="off"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();quickCollect('${e.id}');}"
+             style="width:100%;margin-top:5px;padding:7px 9px;border:1px solid #E2E8F0;border-radius:8px;font-size:11.5px;font-family:inherit;box-sizing:border-box">
       <div id="qc-hint-${e.id}" style="font-size:10px;color:#059669;margin-top:4px;min-height:12px"></div>
       <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap">
         ${f.party.phone?`<a class="btn sm" style="font-size:11px;text-decoration:none" href="tel:${esc(f.party.phone)}">📞 Call</a>`:''}
@@ -9074,9 +9114,8 @@ function openFollowRound(sheetId, dateISO){
 }
 function _openAssignModal(){
   assignPicked={};
-  document.getElementById('vas-staff').value='';
+  fillStaffSelect('');
   document.getElementById('vas-q').value='';
-  document.getElementById('vas-dl').innerHTML=collectorNames().map(n=>`<option value="${esc(n)}"></option>`).join('');
   document.getElementById('vas-sub').textContent =
     (assignVisitDate && assignVisitDate!==assignSheetDate ? '🔁 Follow-up round · ' : '📋 ')
     + fmtD(assignVisitDate||assignSheetDate);
@@ -9208,7 +9247,7 @@ function saveAssignAndContinue(){
   if(!_commitAssign()) return;
   const staffBox=document.getElementById('vas-staff');
   const done=staffBox.value.trim();
-  staffBox.value='';
+  fillStaffSelect('');                 // ready for the next person on the same round
   document.getElementById('vas-q').value='';
   renderAssignList();
   renderVisits();
@@ -9283,7 +9322,9 @@ function quickCollect(id){
   const bal=Math.max(0,getAlloc(e.pid).partyBalance);
   if(amt>bal && !confirm(fmt(amt)+' is more than '+(e.pname||'this party')+"'s balance of "+fmt(bal)+
      '.\n\nThe extra will sit as an advance. Record it anyway?')) return;
-  _recordCollection(e, amt, today(), 'Cash', '');
+  const mode = (document.getElementById('qcm-'+id)||{}).value || 'Cash';
+  const rmk  = ((document.getElementById('qcr-'+id)||{}).value || '').trim();
+  _recordCollection(e, amt, today(), mode, rmk);
   saveToCloud(); renderAll();
   if(curParty) renderPartyDetail(curParty);
 }
