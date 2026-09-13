@@ -1011,7 +1011,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-08.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-10.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -3049,6 +3049,19 @@ function renderAll() {
   _itemCanonIdx = null;   // item/mapping/challan data may have changed   // derived state is recomputed fresh each render pass from the ledger
   invalidateStock();      // on-hand depends on items, mappings, challans and stock docs
   invalidateCash();       // cash depends on payments, expenses and contractor payouts
+
+  /* These three change what the screens are about to show — a payment entered on the party
+     page closes a visit entry, a missed day moves forward. They used to run at the BOTTOM of
+     this function, after the screens had already been drawn, so the change only appeared on
+     some later render. That is why a payment recorded on the party page did not show up as
+     collected in the visit sheet. They run first now, and anything they touch is reflected in
+     the very same pass. */
+  try{ if(loadedOnce) migrateSeasons(); }catch(e){ console.warn('season migration skipped:', e); }
+  try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
+  try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
+  try{ autoRollPromises(); }catch(e){ console.warn('promise carry-forward skipped:', e); }
+  invalidateAllAlloc();
+
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
@@ -3062,10 +3075,6 @@ function renderAll() {
   const cnt = (S.trash||[]).length;
   const badge = document.getElementById('trash-count-badge');
   if (badge) { badge.style.display = cnt>0?'inline':'none'; badge.textContent = cnt; }
-  try{ if(loadedOnce) migrateSeasons(); }catch(e){ console.warn('season migration skipped:', e); }
-  try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
-  try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
-  try{ autoRollPromises(); }catch(e){ console.warn('promise carry-forward skipped:', e); }
   const vb = document.getElementById('visits-due-badge');
   if (vb) { const vd = visitsDueCount(); vb.style.display = vd>0?'inline':'none'; vb.textContent = vd; }
   if (typeof renderIncomingBadge==='function' && typeof _pendingBills!=='undefined') renderIncomingBadge(_pendingBills.length);
