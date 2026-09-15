@@ -1011,11 +1011,11 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-10.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-13.1';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
-          visits:[], vC:0, defCreditDays:30, collectors:[],
+          visits:[], vC:0, defCreditDays:30, collectors:[], hiddenCollectors:[],
           seasonRecs:[], stockClose:[], untaggedSeason:'' };
 let uid = null;
 let currentUser = null;
@@ -2396,7 +2396,7 @@ function saveLocal(){
     pC:S.pC, cC:S.cC, pyC:S.pyC, seasons:S.seasons, curSeason:S.curSeason,
     stock:S.stock, stockMv:S.stockMv, stockFrom:S.stockFrom, returns:S.returns,
     expenses:S.expenses, cashOpen:S.cashOpen, cashModes:S.cashModes, exC:S.exC,
-    visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays, collectors:S.collectors,
+    visits:S.visits, vC:S.vC, defCreditDays:S.defCreditDays, collectors:S.collectors, hiddenCollectors:S.hiddenCollectors,
     seasonRecs:S.seasonRecs, stockClose:S.stockClose, untaggedSeason:S.untaggedSeason
   };
   // Tier 1: everything. Tier 2: drop the recycle bin. Tier 3: drop derived/optional extras too.
@@ -2432,7 +2432,7 @@ function loadLocal(){
     S.seasons=d.seasons||[]; S.curSeason=d.curSeason||'';
     S.stock=d.stock||[]; S.stockMv=d.stockMv||[]; S.stockFrom=d.stockFrom||''; S.returns=d.returns||[]; S.expenses=d.expenses||[]; S.cashOpen=d.cashOpen||null;
     if(d.cashModes) S.cashModes=d.cashModes; S.exC=d.exC||0;
-    S.visits=d.visits||[]; S.vC=d.vC||0; if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; S.collectors=d.collectors||[];
+    S.visits=d.visits||[]; S.vC=d.vC||0; if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; S.collectors=d.collectors||[]; S.hiddenCollectors=d.hiddenCollectors||[];
     S.seasonRecs=d.seasonRecs||[]; S.stockClose=d.stockClose||[]; S.untaggedSeason=d.untaggedSeason||'';
     invalidateStock(); invalidateCash();
     // S.lots is not in the local backup by design — Firestore's own cache restores it.
@@ -2836,7 +2836,7 @@ function attachDataListeners(){
     if(snap.exists){ const d=snap.data(); S.pC=Math.max(S.pC||0,d.pC||0); S.cC=Math.max(S.cC||0,d.cC||0); S.pyC=Math.max(S.pyC||0,d.pyC||0);
       // Legacy meta docs still carry trash inline; adopt it once, then it migrates out.
       if(!d.trashMoved && Array.isArray(d.trash) && d.trash.length && !_trashLoaded){ S.trash=d.trash; _trashNeedsMigration=true; }
-      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; if(Array.isArray(d.collectors)) S.collectors=d.collectors; if(d.untaggedSeason!=null) S.untaggedSeason=d.untaggedSeason;
+      if(d.seasons) S.seasons=d.seasons; if(d.curSeason!=null) S.curSeason=d.curSeason; if(d.rtC!=null) S.rtC=Math.max(S.rtC||0,d.rtC); if(d.exC!=null) S.exC=Math.max(S.exC||0,d.exC); if(d.vC!=null) S.vC=Math.max(S.vC||0,d.vC); if(d.defCreditDays!=null) S.defCreditDays=d.defCreditDays; if(Array.isArray(d.collectors)) S.collectors=d.collectors; if(Array.isArray(d.hiddenCollectors)) S.hiddenCollectors=d.hiddenCollectors; if(d.untaggedSeason!=null) S.untaggedSeason=d.untaggedSeason;
       if(d.cashOpen!==undefined){ S.cashOpen=d.cashOpen; invalidateCash(); }
       if(d.cashModes!==undefined && d.cashModes){ S.cashModes=d.cashModes; invalidateCash(); } if(d.stockFrom!=null){ S.stockFrom=d.stockFrom; invalidateStock(); } }
     markLoaded(snap.metadata, 'meta', snap.docs?snap.docs.length:null);
@@ -2900,7 +2900,7 @@ function saveToCloud() {
     // echoes back through the meta listener and triggers an extra re-render for no reason.
     // trash is NOT in here any more — it lives in its own collection, one document per
     // deleted item. meta/state is now bounded: counters and a few small settings only.
-    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), collectors:S.collectors||[], trashMoved:true, untaggedSeason:S.untaggedSeason||'' };
+    const metaObj = { pC:S.pC||0, cC:S.cC||0, pyC:S.pyC||0, rtC:S.rtC||0, exC:S.exC||0, seasons:S.seasons||[], curSeason:S.curSeason||'', stockFrom:S.stockFrom||'', cashOpen:S.cashOpen||null, cashModes:S.cashModes||null, vC:S.vC||0, defCreditDays:(S.defCreditDays==null?30:S.defCreditDays), collectors:S.collectors||[], hiddenCollectors:S.hiddenCollectors||[], trashMoved:true, untaggedSeason:S.untaggedSeason||'' };
     const metaSig = JSON.stringify(metaObj);
     if (metaSig !== _lastMetaSig) {
       _lastMetaSig = metaSig;
@@ -8601,19 +8601,29 @@ function visitsDueCount(){
    inferred from past rounds — a new staff member could not be chosen before their first visit
    existed, which is the wrong way round. Names already used, and any approved app user, are
    folded in so nothing that worked before disappears. */
+/* Names also come from past rounds and from approved app users, which is what makes a new
+   staff member usable straight away. It also meant a deleted name reappeared the moment the
+   list was rebuilt — the delete looked broken. Removed names are remembered here and filtered
+   out, so a name stays gone without touching a single past assignment. */
+function isHiddenCollector(nm){
+  const k = normIName(nm);
+  return (S.hiddenCollectors||[]).some(h=>normIName(h)===k);
+}
 function collectorNames(){
   const set={};
   (S.collectors||[]).forEach(nm=>{ if(nm) set[String(nm).trim()]=1; });
   allVisits().forEach(v=>{ if(v.staff) set[String(v.staff).trim()]=1; });
   ((typeof window!=='undefined'&&window._staffApproved)||[]).forEach(st=>{ const nm=(st&&(st.name||st.email))||''; if(nm) set[String(nm).trim()]=1; });
-  return Object.keys(set).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  return Object.keys(set).filter(nm=>nm && !isHiddenCollector(nm)).sort((a,b)=>a.localeCompare(b));
 }
 function addCollector(){
   const nm = (prompt('Name of the staff member who collects payments:','')||'').trim();
   if(!nm) return;
   if(collectorNames().some(x=>normIName(x)===normIName(nm))){ alert('“'+nm+'” is already on the list.'); return; }
   if(!Array.isArray(S.collectors)) S.collectors=[];
-  S.collectors.push(nm);
+  if(!S.collectors.some(x=>normIName(x)===normIName(nm))) S.collectors.push(nm);
+  // Adding a name back undoes an earlier removal.
+  S.hiddenCollectors = (S.hiddenCollectors||[]).filter(h=>normIName(h)!==normIName(nm));
   saveToCloud();
   fillStaffSelect(nm);
 }
@@ -8621,8 +8631,12 @@ function removeCollector(){
   const sel=document.getElementById('vas-staff'); const nm=sel?sel.value:'';
   if(!nm){ alert('Choose the person to remove from the list first.'); return; }
   const used=allVisits().filter(v=>normIName(v.staff||'')===normIName(nm)).length;
-  if(!confirm('Remove “'+nm+'” from the staff list?'+(used?'\n\n'+used+' past assignment(s) keep their name — nothing already recorded is changed.':''))) return;
+  if(!confirm('Remove “'+nm+'” from the staff list?'+
+      (used?'\n\n'+used+' past assignment(s) keep their name — nothing already recorded is changed.':'')+
+      '\n\nAdd the name again any time to bring them back.')) return;
   S.collectors=(S.collectors||[]).filter(x=>normIName(x)!==normIName(nm));
+  if(!Array.isArray(S.hiddenCollectors)) S.hiddenCollectors=[];
+  if(!isHiddenCollector(nm)) S.hiddenCollectors.push(nm);   // stays gone across reloads
   saveToCloud();
   fillStaffSelect('');
 }
