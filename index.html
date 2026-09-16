@@ -1011,7 +1011,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-13.1';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-16.2';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -8420,7 +8420,8 @@ function hasPartyLimit(pid){ const p=(S.parties||[]).find(x=>x&&x.id===pid); ret
 const PAY_MODES = ['Cash','UPI','NEFT/RTGS','Cheque','Other'];
 const VSTATUS = {
   PENDING  : { lbl:'TO VISIT',   bg:'#EEF2FF', fg:'#1A2E5A', bd:'#C7D2FE' },
-  COLLECTED: { lbl:'COLLECTED',  bg:'#DCFCE7', fg:'#065F46', bd:'#A7F3D0' },
+  COLLECTED: { lbl:'SETTLED',    bg:'#DCFCE7', fg:'#065F46', bd:'#A7F3D0' },
+  PARTPAID : { lbl:'PART PAID',  bg:'#FEF3C7', fg:'#92400E', bd:'#FDE68A' },
   LATER    : { lbl:'NEXT DATE',  bg:'#FEF3C7', fg:'#92400E', bd:'#FDE68A' },
   NOTMET   : { lbl:'NOT MET',    bg:'#F3F4F6', fg:'#4B5563', bd:'#E5E7EB' },
   REFUSED  : { lbl:'REFUSED',    bg:'#FEE2E2', fg:'#B91C1C', bd:'#FCA5A5' }
@@ -8460,6 +8461,72 @@ function allVisits(){ return (S.visits||[]).filter(Boolean).map(vNorm); }
    so a party that had paid stayed on the round for ever. This pass links any unlinked payment
    dated on or after the day the party was assigned, and closes the entry.
    The ledger is untouched — we only attach an existing payment id to the visit record. */
+/* The earliest date this entry could reasonably be paid against, with a week's slack.
+   The previous rule took the first date it found — usually the sheet's own date — so a payment
+   dated even one day earlier than the round was silently ignored. That is exactly what happens
+   when yesterday's collection is entered this morning, and it made the whole feature look dead.
+   Taking the EARLIEST of the entry's dates and allowing a week before it fixes that, while
+   still refusing to grab a payment from months back. */
+const LINK_GRACE_DAYS = 7;
+/* The earliest date a payment could belong to this entry.
+   Two things this has to get right, and earlier versions got both wrong:
+     • A round is often booked for a FUTURE day. Money taken before that day is still this
+       round's money — it cannot be "too early" for a visit that has not happened yet. So the
+       anchor is never later than today, however far ahead the round is scheduled.
+     • It must still refuse a payment from months back that belonged to something else.
+   The day the assignment was created is the honest lower bound: anything received from then
+   on is fair game. Older records have no createdAt, so the entry's own dates are used, capped
+   at today, with a week of slack for a payment entered a little late. */
+function linkAnchor(e){
+  const dates = [ (e.createdAt||'').slice(0,10), e.rolledFrom, e.promisedFrom,
+                  e.sheetDate, e.visitDate, e.doneDate ]
+    .filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  if(!dates.length) return '';
+  let earliest = dates[0];
+  const t = today();
+  if(earliest > t) earliest = t;          // a future round anchors at today, not at its own date
+  return addDaysISO(earliest, -LINK_GRACE_DAYS);
+}
+/* Why did each open entry not close? Plain answers, no code-reading required. */
+function linkReport(){
+  const used = {}, skip = {};
+  (S.visits||[]).forEach(v=>{ if(!v) return; if(v.payId) used[v.payId]=1; (v.noAutoLink||[]).forEach(id=>{skip[id]=1;}); });
+  const rows = [];
+  allVisits().forEach(e=>{
+    if(e.status === 'COLLECTED') return;
+    const anchor = linkAnchor(e);
+    const all = (S.payments||[]).filter(p=>p && p.pid===e.pid && p.date);
+    const free = all.filter(p=>!used[p.id] && !skip[p.id]);
+    const inRange = free.filter(p=>!anchor || p.date >= anchor);
+    let why;
+    if(inRange.length)      why = {ok:true,  txt:'will close with '+fmt(inRange[0].amount)+' of '+fmtD(inRange[0].date)};
+    else if(!all.length)    why = {ok:false, txt:'no payment recorded for this party at all'};
+    else if(!free.length)   why = {ok:false, txt:all.length+' payment(s) exist but every one is already attached to another visit'};
+    else                    why = {ok:false, txt:free.length+' unattached payment(s), but all dated before '+fmtD(anchor)+' (newest '+fmtD(free.map(p=>p.date).sort().pop())+')'};
+    rows.push({ name:e.pname||'—', status:e.status, sheet:e.sheetDate, why:why });
+  });
+  return rows;
+}
+function showLinkReport(){
+  const rows = linkReport();
+  const n = autoLinkPayments();
+  const body = rows.length
+    ? rows.map(r=>`<div style="display:flex;gap:8px;padding:7px 0;border-bottom:1px solid #F1F5F9;font-size:11.5px">
+        <div style="flex:1;min-width:0"><strong>${esc(r.name)}</strong>
+          <div style="color:#94A3B8;font-size:10.5px">${esc(r.status)} · round ${fmtD(r.sheet)}</div></div>
+        <div style="flex:1.2;color:${r.why.ok?'#059669':'#B45309'}">${esc(r.why.txt)}</div>
+      </div>`).join('')
+    : '<div style="color:#94A3B8;padding:14px 0">Every party on every sheet is already marked collected.</div>';
+  alert(n ? (n+' payment(s) just matched and marked collected.') : 'Nothing new matched — see the reasons listed.');
+  const el = document.getElementById('visits-content');
+  if(el) el.insertAdjacentHTML('afterbegin',
+    `<div style="background:#F8FAFC;border:1.5px solid #CBD5E1;border-radius:11px;padding:12px 14px;margin-bottom:12px">
+       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+         <strong style="font-size:12.5px;color:#1A2E5A">Payment matching — ${rows.length} open entry(ies)</strong>
+         <span style="flex:1"></span>
+         <button class="btn sm" style="font-size:11px" onclick="renderVisits()">✕</button>
+       </div>${body}</div>`);
+}
 function autoLinkPayments(){
   if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
   const used = {}, skip = {};
@@ -8478,13 +8545,10 @@ function autoLinkPayments(){
     // but the visit entry never closed. Refused and not-available entries close too — if the
     // money arrived, the job is done however it started.
     if(e.status === 'COLLECTED') return v;
-    // Anchor on the day this party was FIRST put on the round, not on today — carry-forward
-    // moves visitDate, and a payment taken the day of the original visit still counts.
-    // For a rescheduled entry the visit already happened, so its own date is the right anchor.
-    const anchor = e.rolledFrom || e.doneDate || e.visitDate || e.sheetDate || '';
+    const anchor = linkAnchor(e);
     const hit = (S.payments||[])
       .filter(p => p && p.pid===e.pid && p.date && (!anchor || p.date >= anchor) && !used[p.id] && !skip[p.id])
-      .sort((a,b)=>String(a.date).localeCompare(String(b.date)))[0];
+      .sort((a,b)=>String(b.date).localeCompare(String(a.date)))[0];   // newest first
     if(!hit) return v;
     used[hit.id] = 1; n++;
     return Object.assign({}, v, {
@@ -8733,7 +8797,10 @@ function sheetsListHtml(){
       <div class="stat"><div class="sl">↷ Carried forward</div><div class="sv a">${allVisits().filter(v=>v.status==='LATER'&&v.promiseRolls>0).length}</div></div>
       <div class="stat"><div class="sl">📋 Sheets</div><div class="sv">${sheets.length}</div></div>
     </div>
-    <button class="btn full pri" style="margin-bottom:14px" onclick="openNewSheet()">＋ New Visit Sheet</button>
+    <div style="display:flex;gap:7px;margin-bottom:14px">
+      <button class="btn pri" style="flex:1;justify-content:center" onclick="openNewSheet()">＋ New Visit Sheet</button>
+      <button class="btn" style="flex-shrink:0;font-size:11.5px" onclick="showLinkReport()" title="Match payments entered on party pages">🔄 Check payments</button>
+    </div>
     ${cards||'<div style="text-align:center;color:#999;padding:34px 20px;font-size:13px">No visit sheets yet.<br>Create one to assign parties to your staff.</div>'}`;
 }
 
@@ -8925,8 +8992,10 @@ function sheetDetailHtml(id){
 /* One party inside a round. Compact by design: identity + money on the first line, the
    collection clock on the second, then either the outcome or the one-line entry row. */
 function entryCardHtml(e){
-  const st=VSTATUS[e.status]||VSTATUS.PENDING;
   const f=followUp(e.pid);
+  // A collected entry is only SETTLED if the party owes nothing now; otherwise it was a part
+  // payment and the balance should stay visible rather than reading as finished.
+  const st=(e.status==='COLLECTED' && f.bal>0) ? VSTATUS.PARTPAID : (VSTATUS[e.status]||VSTATUS.PENDING);
   const clk=f.clock;
   const ageTxt = clk.days==null ? 'no payment history'
     : (clk.anchor==='payment' ? `${clk.days}d since last payment` : `never paid · oldest bill ${clk.days}d old`);
@@ -8946,9 +9015,14 @@ function entryCardHtml(e){
       </div>
     </div>
 
-    ${e.status==='COLLECTED'?ib('#F0FDF4','#A7F3D0','#065F46',
-        `✅ <strong>${fmt(e.amount)}</strong>${e.mode?' · '+esc(e.mode):''} on ${fmtD(e.doneDate||e.visitDate)}${e.reason?`<br>“${esc(e.reason)}”`:''}`+
-        (e.autoLinked?`<div style="font-size:10.5px;opacity:.8;margin-top:2px">Matched from a payment entered on the party page.</div>`:'')):''}
+    ${e.status==='COLLECTED'?(()=>{
+        const clear = f.bal <= 0;
+        return ib(clear?'#F0FDF4':'#FFFBEB', clear?'#A7F3D0':'#FDE68A', clear?'#065F46':'#92400E',
+          `${clear?'✅':'🧾'} <strong>${fmt(e.amount)}</strong>${e.mode?' · '+esc(e.mode):''} on ${fmtD(e.doneDate||e.visitDate)}`
+          + `<div style="font-weight:800;margin-top:2px">${clear?'SETTLED — nothing left to collect':'PART PAYMENT · '+fmt(f.bal)+' still due'}</div>`
+          + (e.reason?`<div>“${esc(e.reason)}”</div>`:'')
+          + (e.autoLinked?`<div style="font-size:10.5px;opacity:.8;margin-top:2px">Matched from a payment entered on the party page.</div>`:''));
+      })():''}
     ${e.status==='LATER'?ib('#FFFBEB','#FDE68A','#92400E',
         `📅 Come back <strong>${fmtD(e.nextDate)}</strong>${(()=>{const d=daysBetweenISO(e.nextDate);return d>0?` · <span style="color:#B91C1C">${d}d overdue</span>`:(d===0?' · today':` · in ${Math.abs(d)}d`);})()}${e.amount?` · promised ${fmt(e.amount)}`:''}${e.reason?`<br>“${esc(e.reason)}”`:''}`):''}
     ${(e.status==='NOTMET'||e.status==='REFUSED')?ib('#F8FAFC','#E2E8F0','#475569',
