@@ -1011,7 +1011,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-16.2';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-18.2';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -3986,7 +3986,10 @@ function savePayment() {
   if (!pid||!dt||!amt) { alert('Fill all required fields'); return; }
   S.pyC++;
   const payId=uniqId('PAY');
-  S.payments.push({id:payId,pid,date:dt,amount:amt,mode,remarks:rmk});
+  const _newPay = {id:payId,pid,date:dt,amount:amt,mode,remarks:rmk};
+  S.payments.push(_newPay);
+  // Same moment, the other direction: close this party's open visit entry.
+  try{ linkPaymentToVisit(_newPay); }catch(e){ console.warn('visit update skipped:', e); }
   invalidateCash();
   // Re-derive only this party's FIFO allocation (manual pins preserved), then save.
   recomputeParty(pid);
@@ -4111,6 +4114,7 @@ function removePaymentToTrash(payId, why){
   S.settlements=S.settlements.filter(s=>s.payId!==payId);
   removeOverridesForPayment(payId);   // a pin backed by a deleted payment must go
   S.payments=S.payments.filter(x=>x&&x.id!==payId);
+  try{ unlinkPaymentFromVisit(payId); }catch(e){}   // the party goes back on the round
   recomputeParty(ppid);
   return true;
 }
@@ -8467,42 +8471,26 @@ function allVisits(){ return (S.visits||[]).filter(Boolean).map(vNorm); }
    when yesterday's collection is entered this morning, and it made the whole feature look dead.
    Taking the EARLIEST of the entry's dates and allowing a week before it fixes that, while
    still refusing to grab a payment from months back. */
-const LINK_GRACE_DAYS = 7;
-/* The earliest date a payment could belong to this entry.
-   Two things this has to get right, and earlier versions got both wrong:
-     • A round is often booked for a FUTURE day. Money taken before that day is still this
-       round's money — it cannot be "too early" for a visit that has not happened yet. So the
-       anchor is never later than today, however far ahead the round is scheduled.
-     • It must still refuse a payment from months back that belonged to something else.
-   The day the assignment was created is the honest lower bound: anything received from then
-   on is fair game. Older records have no createdAt, so the entry's own dates are used, capped
-   at today, with a week of slack for a payment entered a little late. */
-function linkAnchor(e){
-  const dates = [ (e.createdAt||'').slice(0,10), e.rolledFrom, e.promisedFrom,
-                  e.sheetDate, e.visitDate, e.doneDate ]
-    .filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-  if(!dates.length) return '';
-  let earliest = dates[0];
-  const t = today();
-  if(earliest > t) earliest = t;          // a future round anchors at today, not at its own date
-  return addDaysISO(earliest, -LINK_GRACE_DAYS);
-}
+/* Payments only count towards a visit if they arrived after that visit was created.
+   That is the single rule left — the grace windows and date arithmetic that used to live here
+   are gone, because they were the reason payments silently failed to register. */
+function paidSince(e){ return (e && e.createdAt || '').slice(0,10); }
 /* Why did each open entry not close? Plain answers, no code-reading required. */
 function linkReport(){
   const used = {}, skip = {};
-  (S.visits||[]).forEach(v=>{ if(!v) return; if(v.payId) used[v.payId]=1; (v.noAutoLink||[]).forEach(id=>{skip[id]=1;}); });
+  (S.visits||[]).forEach(v=>{ if(!v) return; if(v.payId) used[v.payId]=1; });
   const rows = [];
   allVisits().forEach(e=>{
     if(e.status === 'COLLECTED') return;
-    const anchor = linkAnchor(e);
+    const since = paidSince(e);
     const all = (S.payments||[]).filter(p=>p && p.pid===e.pid && p.date);
-    const free = all.filter(p=>!used[p.id] && !skip[p.id]);
-    const inRange = free.filter(p=>!anchor || p.date >= anchor);
+    const free = all.filter(p=>!used[p.id]);
+    const inRange = free.filter(p=>!since || p.date >= since);
     let why;
     if(inRange.length)      why = {ok:true,  txt:'will close with '+fmt(inRange[0].amount)+' of '+fmtD(inRange[0].date)};
     else if(!all.length)    why = {ok:false, txt:'no payment recorded for this party at all'};
     else if(!free.length)   why = {ok:false, txt:all.length+' payment(s) exist but every one is already attached to another visit'};
-    else                    why = {ok:false, txt:free.length+' unattached payment(s), but all dated before '+fmtD(anchor)+' (newest '+fmtD(free.map(p=>p.date).sort().pop())+')'};
+    else                    why = {ok:false, txt:free.length+' payment(s) predate this visit (newest '+fmtD(free.map(p=>p.date).sort().pop())+')'};
     rows.push({ name:e.pname||'—', status:e.status, sheet:e.sheetDate, why:why });
   });
   return rows;
@@ -8527,13 +8515,101 @@ function showLinkReport(){
          <button class="btn sm" style="font-size:11px" onclick="renderVisits()">✕</button>
        </div>${body}</div>`);
 }
+/* A payment that exists for this party but did NOT close the entry, and the reason.
+   The matcher silently refuses a payment in two cases — it is already attached to another
+   visit entry, or it was detached by an Undo. Both were invisible, so the card just sat there
+   saying TO VISIT while the party page clearly showed the money. This surfaces it. */
+function strandedPaymentFor(e){
+  if(!e || e.status==='COLLECTED') return null;
+  const since = paidSince(e);
+  const heldBy = {};
+  (S.visits||[]).forEach(v=>{ if(v && v.payId && v.id!==e.id) heldBy[v.payId] = v; });
+  const cands = (S.payments||[])
+    .filter(p => p && p.pid===e.pid && p.date && (!since || p.date >= since))
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  if(!cands.length) return null;
+  const p = cands[0];
+  if(heldBy[p.id]){
+    const o = heldBy[p.id];
+    return { pay:p, why:'already counted on the round of '+fmtD(o.visitDate||o.sheetDate)+(o.staff?' with '+o.staff:'') };
+  }
+  return null;                                   // nothing stopping it — the matcher will take it
+}
+/* Attach it here regardless: take it off whatever else holds it and clear any detach mark.
+   Only the visit records change — the payment itself is untouched. */
+function forceLinkPayment(entryId, payId){
+  const e = findEntry(entryId); if(!e) return;
+  const p = (S.payments||[]).find(x=>x && x.id===payId); if(!p) return;
+  const other = (S.visits||[]).find(v=>v && v.payId===payId && v.id!==entryId);
+  if(!confirm('Mark '+(e.pname||'this party')+' collected with '+fmt(p.amount)+' of '+fmtD(p.date)+'?'+
+      (other?'\n\nIt is currently counted on the round of '+fmtD(other.visitDate||other.sheetDate)+'. That entry goes back to TO VISIT — the payment itself is not changed.':''))) return;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    if(v.id===entryId){
+      return Object.assign({}, v, { status:'COLLECTED', amount:+p.amount||0, mode:p.mode||'',
+        payId:p.id, doneDate:p.date, autoLinked:true,
+        noAutoLink:(v.noAutoLink||[]).filter(id=>id!==payId) });
+    }
+    if(v.payId===payId){
+      return Object.assign({}, v, { status:'PENDING', amount:0, mode:'', payId:'', doneDate:'', autoLinked:false });
+    }
+    return v;
+  });
+  saveToCloud(); renderAll();
+  if(curParty) renderPartyDetail(curParty);
+}
+/* ══════════════════════════════════════════════════════════════════════
+   PARTY PAGE → VISIT SHEET
+   Recording a collection in the visit sheet creates a payment. This is the same thing the
+   other way round: saving a payment on the party page closes that party's open visit entry
+   and marks it collected with the amount and mode.
+
+   It runs AT THE MOMENT the payment is saved, which is why it is reliable. The scanning pass
+   below had to guess whether a payment it found later belonged to a visit — dates, windows,
+   already-claimed checks — and every one of those guesses was a way to fail. Here there is
+   nothing to guess: this payment was just entered, so it is this party's current money.
+══════════════════════════════════════════════════════════════════════ */
+function openVisitEntriesFor(pid){
+  return allVisits()
+    .filter(e => e.pid===pid && e.status!=='COLLECTED')
+    .sort((a,b)=>String(a.visitDate||a.sheetDate||'').localeCompare(String(b.visitDate||b.sheetDate||'')));
+}
+/* The party paid, so the party is done — every round they are sitting on closes.
+   No dates, no windows, no picking one entry: a payment entered right now is this party's
+   live money, and nothing about it needs working out. */
+function linkPaymentToVisit(pay){
+  if(!pay || !pay.id || !pay.pid) return 0;
+  let closed = 0;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    const e = vNorm(v);
+    if(e.pid !== pay.pid || e.status === 'COLLECTED') return v;
+    closed++;
+    return Object.assign({}, v, { status:'COLLECTED', amount:+pay.amount||0, mode:pay.mode||'',
+                                  payId:pay.id, doneDate:pay.date||today(), reason:pay.remarks||'',
+                                  autoLinked:true, noAutoLink:[] });
+  });
+  if(closed) console.log('payment on the party page closed', closed, 'open visit(s) for this party');
+  return closed;
+}
+/* And the mirror: removing that payment puts the party back on the round. */
+function unlinkPaymentFromVisit(payId){
+  if(!payId) return 0;
+  let touched=0;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v || v.payId!==payId) return v;
+    touched++;
+    return Object.assign({}, v, { status:'PENDING', amount:0, mode:'', payId:'',
+                                  doneDate:'', reason:'', autoLinked:false });
+  });
+  return touched;
+}
 function autoLinkPayments(){
   if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
-  const used = {}, skip = {};
+  const used = {};
   (S.visits||[]).forEach(v=>{
     if(!v) return;
     if(v.payId) used[v.payId] = 1;
-    (v.noAutoLink||[]).forEach(id=>{ skip[id] = 1; });   // deliberately unlinked by the owner
   });
   let n = 0;
   S.visits = (S.visits||[]).map(v=>{
@@ -8545,9 +8621,13 @@ function autoLinkPayments(){
     // but the visit entry never closed. Refused and not-available entries close too — if the
     // money arrived, the job is done however it started.
     if(e.status === 'COLLECTED') return v;
-    const anchor = linkAnchor(e);
+    // The only condition kept: the payment must have arrived after this visit was created.
+    // Without that a round made today would close on money received last year — which is not
+    // a "window", just the difference between a payment for this visit and one for something
+    // that happened before it existed.
+    const since = (e.createdAt||'').slice(0,10);
     const hit = (S.payments||[])
-      .filter(p => p && p.pid===e.pid && p.date && (!anchor || p.date >= anchor) && !used[p.id] && !skip[p.id])
+      .filter(p => p && p.pid===e.pid && p.date && (!since || p.date >= since) && !used[p.id])
       .sort((a,b)=>String(b.date).localeCompare(String(a.date)))[0];   // newest first
     if(!hit) return v;
     used[hit.id] = 1; n++;
@@ -9047,6 +9127,13 @@ function entryCardHtml(e){
              onkeydown="if(event.key==='Enter'){event.preventDefault();quickCollect('${e.id}');}"
              style="width:100%;margin-top:5px;padding:7px 9px;border:1px solid #E2E8F0;border-radius:8px;font-size:11.5px;font-family:inherit;box-sizing:border-box">
       <div id="qc-hint-${e.id}" style="font-size:10px;color:#059669;margin-top:4px;min-height:12px"></div>
+      ${(()=>{ const sp=strandedPaymentFor(e); if(!sp) return '';
+        return `<div style="background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:9px;padding:9px 10px;margin-top:4px;font-size:11.5px;color:#92400E;line-height:1.55">
+          <strong>${fmt(sp.pay.amount)} received on ${fmtD(sp.pay.date)}</strong>${sp.pay.mode?' · '+esc(sp.pay.mode):''} is in the ledger but not on this visit.
+          <div style="font-size:10.5px;margin-top:2px;opacity:.85">Reason: ${esc(sp.why)}.</div>
+          <button class="btn sm" style="width:100%;justify-content:center;margin-top:7px;background:#059669;color:#fff;border-color:#059669;font-weight:800;font-size:11.5px"
+                  onclick="forceLinkPayment('${_js(e.id)}','${_js(sp.pay.id)}')">✓ Mark collected with this payment</button>
+        </div>`; })()}
       <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap">
         ${f.party.phone?`<a class="btn sm" style="font-size:11px;text-decoration:none" href="tel:${esc(f.party.phone)}">📞 Call</a>`:''}
         <button class="btn sm" style="font-size:11px;color:#94A3B8" onclick="markNoCollect('${e.id}')">✕ Couldn't collect</button>
@@ -9592,8 +9679,7 @@ function undoEntry(id){
     if(!confirm('Detach this payment from the visit?\n\nThe payment of '+fmt(e.amount)+' stays in the ledger — '+esc(e.pname||'this party')+' just goes back on the round.')) return;
     S.visits=S.visits.map(v=>(v&&v.id===e.id)
       ? Object.assign({}, v, { status:'PENDING', amount:0, mode:'', payId:'', nextDate:'', reason:'',
-                               doneDate:'', autoLinked:false,
-                               noAutoLink:(v.noAutoLink||[]).concat([e.payId]) })
+                               doneDate:'', autoLinked:false })
       : v);
     saveToCloud(); renderAll();
     if(curParty) renderPartyDetail(curParty);
