@@ -1011,7 +1011,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-18.2';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-18.3';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -3058,8 +3058,6 @@ function renderAll() {
      the very same pass. */
   try{ if(loadedOnce) migrateSeasons(); }catch(e){ console.warn('season migration skipped:', e); }
   try{ autoLinkPayments(); }catch(e){ console.warn('payment link skipped:', e); }
-  try{ autoRollPending(); }catch(e){ console.warn('carry-forward skipped:', e); }
-  try{ autoRollPromises(); }catch(e){ console.warn('promise carry-forward skipped:', e); }
   invalidateAllAlloc();
 
   if (curTab==='home')     renderHome();
@@ -8647,69 +8645,13 @@ function autoLinkPayments(){
    the same staff member, keeping its history (rolledFrom = the day it was first assigned,
    rolls = how many times it has slipped). Nothing financial is touched.
    Idempotent: once an entry sits on today it stops moving, so this can run on every render. */
-/* CARRY FORWARD A PROMISED DATE THAT NOBODY WORKED
-   autoRollPending() below moves ASSIGNED parties whose day has passed. This handles the other
-   half: a party gave a date, that day came and went, and nobody was ever put on the job — no
-   round was created, so the party quietly sat in the follow-up list and could be missed for
-   weeks. Its date now moves forward on its own, so it keeps appearing on today's list until
-   somebody actually deals with it. Nothing financial changes; only the date moves, and the
-   day it was first promised is kept so you can see how long it has been slipping.
-   Skipped when the party has already cleared its balance — nothing left to collect. */
-function autoRollPromises(){
-  if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
-  const t = today();
-  // A promise is "worked" once somebody is assigned to that party for that very day.
-  const covered = {};
-  (S.visits||[]).forEach(v=>{ if(v) covered[v.sheetId+'|'+v.pid+'|'+(v.visitDate||'')] = 1; });
-  let moved = 0;
-  S.visits = (S.visits||[]).map(v=>{
-    if(!v) return v;
-    const e = vNorm(v);
-    if(e.status !== 'LATER' || !e.nextDate) return v;
-    if(e.nextDate >= t) return v;                                  // still in the future
-    if(covered[e.sheetId+'|'+e.pid+'|'+e.nextDate]) return v;      // somebody was put on it
-    if(Math.max(0, getAlloc(e.pid).partyBalance) <= 0) return v;   // nothing left to collect
-    moved++;
-    return Object.assign({}, v, {
-      nextDate    : t,
-      promisedFrom: v.promisedFrom || e.nextDate,                  // the date first given
-      promiseRolls: (+v.promiseRolls || 0) + 1
-    });
-  });
-  if(moved){
-    console.log('carried forward', moved, 'missed collection date(s) to', t);
-    saveToCloud();
-  }
-  return moved;
-}
-function autoRollPending(){
-  if(!loadedOnce || !uid || !isOwnerUid(uid)) return 0;
-  const t = today();
-  let moved = 0;
-  S.visits = (S.visits||[]).map(v=>{
-    if(!v) return v;
-    const e = vNorm(v);
-    if(e.status !== 'PENDING') return v;          // collected / rescheduled / refused: leave alone
-    if(!e.visitDate || e.visitDate >= t) return v; // today or future: nothing to do
-    moved++;
-    return Object.assign({}, v, {
-      visitDate : t,
-      rolledFrom: v.rolledFrom || e.visitDate,     // the day it was originally due
-      rolls     : (+v.rolls || 0) + 1,
-      rolledAt  : t
-    });
-  });
-  if(moved){
-    console.log('carried forward', moved, 'unvisited party(ies) into', t);
-    saveToCloud();
-  }
-  return moved;
-}
 function partyVisits(pid){
   return allVisits().filter(v=>v.pid===pid)
     .sort((a,b)=>String(b.sheetDate||'').localeCompare(String(a.sheetDate||''))||String(b.id||'').localeCompare(String(a.id||'')));
 }
-// The live promise for a party: newest unfulfilled "come another day" date.
+/* Entries no longer move between sheets. A round is a record of what happened that day, so
+   an entry stays on its own sheet; anything still open when the next round is started is
+   closed as "couldn't collect" and listed at the foot of that sheet. */
 function openPromise(pid){
   const vs=partyVisits(pid).filter(v=>v.status==='LATER'&&v.nextDate);
   return vs.length?vs[0]:null;
@@ -8874,7 +8816,6 @@ function sheetsListHtml(){
       <div class="stat"><div class="sl">🚶 Still to visit</div><div class="sv a">${openP}</div></div>
       <div class="stat"><div class="sl">📅 Promised today</div><div class="sv">${dueT}</div></div>
       <div class="stat"><div class="sl">🚨 Promise passed</div><div class="sv r">${lateP}</div></div>
-      <div class="stat"><div class="sl">↷ Carried forward</div><div class="sv a">${allVisits().filter(v=>v.status==='LATER'&&v.promiseRolls>0).length}</div></div>
       <div class="stat"><div class="sl">📋 Sheets</div><div class="sv">${sheets.length}</div></div>
     </div>
     <div style="display:flex;gap:7px;margin-bottom:14px">
@@ -8974,7 +8915,7 @@ function sheetDetailHtml(id){
         ${_chev(rOpen)}
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:800;color:${isFollow?'#92400E':'#1A2E5A'}">${isFollow?'🔁 Follow-up':'📋 Main round'} · ${fmtD(dt)}</div>
-          <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${Object.keys(byStaff).length} staff · ${dayEntries.length} part${dayEntries.length===1?'y':'ies'}${carried?` · <span style="color:#B45309;font-weight:700">${carried} carried over</span>`:''}</div>
+          <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${Object.keys(byStaff).length} staff · ${dayEntries.length} part${dayEntries.length===1?'y':'ies'}</div>
         </div>
         ${chip}
         <div style="text-align:right;flex-shrink:0">
@@ -9066,11 +9007,52 @@ function sheetDetailHtml(id){
       </div>`:''; })()}
     ${followBox}
     ${unBox}
-    ${rounds}`;
+    ${rounds}
+    ${(()=>{
+      const miss = g.entries.filter(e=>e.status==='NOTMET' || e.status==='REFUSED');
+      const open = g.entries.filter(e=>e.status==='PENDING' || e.status==='LATER');
+      if(!miss.length && !open.length) return `
+        <div style="background:#F0FDF4;border:1.5px solid #A7F3D0;border-radius:11px;padding:12px 14px;margin-top:16px;font-size:12px;color:#065F46">
+          <strong>Every party on this round was collected from.</strong>
+        </div>`;
+      const row = e => {
+        const f = followUp(e.pid);
+        return `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid #FEE2E2">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12.5px;font-weight:700;color:#1A1A1A">${esc(e.pname||'—')}</div>
+            <div style="font-size:10.5px;color:#B91C1C">${esc(e.staff||'—')}${e.reason?' · '+esc(e.reason):''}</div>
+          </div>
+          <div style="font-size:12.5px;font-weight:800;color:#DC2626;flex-shrink:0">${fmt(f.bal)}</div>
+        </div>`;
+      };
+      const all = miss.concat(open);
+      const due = all.reduce((t,e)=>t+Math.max(0,getAlloc(e.pid).partyBalance),0);
+      return `
+      <div style="background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:11px;padding:12px 14px;margin-top:16px">
+        <div style="font-size:13px;font-weight:800;color:#B91C1C">Payment not collected — ${all.length} part${all.length===1?'y':'ies'}</div>
+        <div style="font-size:11px;color:#7F1D1D;margin-top:3px;line-height:1.55">${fmt(due)} still outstanding between them${open.length?` · ${open.length} still open on this round`:''}.</div>
+        <div style="margin-top:8px">${all.map(row).join('')}</div>
+        <button class="btn sm" style="width:100%;justify-content:center;margin-top:9px;background:#fff;font-size:11.5px"
+                onclick="copyUncollected('${_js(g.id)}')">📋 Copy the list</button>
+      </div>`;
+    })()}`;
 }
 
 /* One party inside a round. Compact by design: identity + money on the first line, the
    collection clock on the second, then either the outcome or the one-line entry row. */
+/* The missed list, as plain text to send on. */
+function copyUncollected(sheetId){
+  const g = sheetById(sheetId); if(!g) return;
+  const all = g.entries.filter(e=>e.status!=='COLLECTED');
+  if(!all.length){ alert('Everyone on this round was collected from.'); return; }
+  const txt = 'Not collected — round of '+fmtD(g.date)+'\n\n'
+    + all.map(e=>'• '+(e.pname||'—')+' — '+fmt(Math.max(0,getAlloc(e.pid).partyBalance))
+            +' ('+(e.staff||'—')+(e.reason?', '+e.reason:'')+')').join('\n');
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(()=>alert('Copied.'));
+    else prompt('Copy this:', txt);
+  }catch(e){ prompt('Copy this:', txt); }
+}
 function entryCardHtml(e){
   const f=followUp(e.pid);
   // A collected entry is only SETTLED if the party owes nothing now; otherwise it was a part
@@ -9087,7 +9069,6 @@ function entryCardHtml(e){
       <div style="flex:1;min-width:0">
         <div style="font-size:13.5px;font-weight:800;color:#1A1A1A;cursor:pointer" onclick="openParty('${e.pid}')">${esc(e.pname||'—')}</div>
         <div style="font-size:10.5px;color:#94A3B8;margin-top:2px">${ageTxt}${overTxt}</div>
-        ${(e.rolls>0 && e.status==='PENDING')?`<div style="font-size:9.5px;font-weight:800;color:#B45309;background:#FEF3C7;display:inline-block;padding:2px 7px;border-radius:10px;margin-top:4px">↷ CARRIED FROM ${fmtD(e.rolledFrom||e.visitDate)}${e.rolls>1?` · ${e.rolls} times`:''}</div>`:''}
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:13.5px;font-weight:800;color:${f.bal>0?'#DC2626':'#059669'}">${fmt(f.bal)}</div>
@@ -9397,11 +9378,42 @@ function renderAssignList(){
 function toggleAssign(pid){ if(assignPicked[pid]) delete assignPicked[pid]; else assignPicked[pid]=1; renderAssignList(); }
 
 // Returns true when the assignments were actually written.
+/* A sheet is a record of one round, so an entry belongs to the sheet it was written on and
+   never moves. When a new round is started, anything still open on an older sheet is closed as
+   "couldn't collect" — that is what actually happened — and the sheet keeps the list so you can
+   see who was missed. Entries are never carried forward into the new sheet. */
+function closeOpenOnOlderSheets(newSheetId){
+  let closed = 0;
+  const names = {};
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    const e = vNorm(v);
+    if(e.sheetId === newSheetId) return v;          // the round being started
+    if(e.status === 'COLLECTED' || e.status === 'NOTMET' || e.status === 'REFUSED') return v;
+    closed++; names[e.pname||'—'] = 1;
+    return Object.assign({}, v, {
+      status:'NOTMET', doneDate:today(), nextDate:'',
+      reason: e.reason || 'Round closed — not collected'
+    });
+  });
+  if(closed) console.log('closed', closed, 'uncollected entry(ies) on earlier rounds:', Object.keys(names).join(', '));
+  return { closed, names:Object.keys(names) };
+}
 function _commitAssign(){
   const staff=document.getElementById('vas-staff').value.trim();
   if(!staff){ alert('Enter which staff member is visiting'); return false; }
   const pids=Object.keys(assignPicked);
   if(!pids.length){ alert('Select at least one party'); return false; }
+  // Starting a new round closes whatever is still open on the previous ones.
+  const isNewSheet = !(S.visits||[]).some(v=>v && v.sheetId===assignSheetId);
+  if(isNewSheet){
+    const r = closeOpenOnOlderSheets(assignSheetId);
+    if(r.closed && !confirm(r.closed+' party(ies) are still open on earlier rounds:\n\n'+
+        r.names.slice(0,12).join(', ')+(r.names.length>12?' …':'')+
+        '\n\nStarting this round marks them “couldn\'t collect”. They stay on their own sheet — nothing is carried forward.\n\nContinue?')){
+      return false;
+    }
+  }
   pids.forEach(pid=>{
     const p=S.parties.find(x=>x&&x.id===pid); if(!p) return;
     S.vC=(+S.vC||0)+1;
