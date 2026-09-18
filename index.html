@@ -683,6 +683,17 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="mfoot"><button class="btn" style="width:100%;justify-content:center" onclick="closeModal('backup')">Close</button></div>
 </div></div>
 
+<!-- ══════════ VISITS: ALLOT TO A STAFF MEMBER ══════════ -->
+<div class="overlay" id="mo-restaff">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>🚶 Allot to staff</h3><div style="font-size:12px;color:#888" id="rs-sub"></div></div>
+    <button class="xbtn" onclick="closeModal('restaff')">✕</button>
+  </div>
+  <div class="mbody" id="rs-body"></div>
+  <div class="mfoot"><button class="btn" style="width:100%;justify-content:center" onclick="closeModal('restaff')">Cancel</button></div>
+</div></div>
+
 <!-- ══════════ VISITS: NEW SHEET ══════════ -->
 <div class="overlay" id="mo-vsheet">
 <div class="mbox"><div class="mhandle"></div>
@@ -1011,7 +1022,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-18.3';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-18.4';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -8597,8 +8608,10 @@ function unlinkPaymentFromVisit(payId){
   S.visits = (S.visits||[]).map(v=>{
     if(!v || v.payId!==payId) return v;
     touched++;
+    // Back to unassigned, not back under whoever was going to visit: that visit never
+    // happened, so the party needs allotting again rather than sitting under a staff member.
     return Object.assign({}, v, { status:'PENDING', amount:0, mode:'', payId:'',
-                                  doneDate:'', reason:'', autoLinked:false });
+                                  doneDate:'', reason:'', autoLinked:false, staff:'' });
   });
   return touched;
 }
@@ -8880,9 +8893,11 @@ function sheetDetailHtml(id){
                 : (dd<0 ? '<span style="font-size:9px;font-weight:700;color:#94A3B8">in '+Math.abs(dd)+'d</span>' : '');
 
     const byStaff={};
-    dayEntries.forEach(e=>{ const k=(e.staff||'—').trim(); (byStaff[k]=byStaff[k]||[]).push(e); });
+    // A party with no staff is waiting to be allotted — it stays on the round, in its own group.
+    dayEntries.forEach(e=>{ const k=String(e.staff||'').trim() || '\u00A0UNASSIGNED'; (byStaff[k]=byStaff[k]||[]).push(e); });
 
     const staffBlocks=Object.keys(byStaff).sort().map(k=>{
+      const unassigned = (k === '\u00A0UNASSIGNED');
       const list=byStaff[k].slice().sort((a,b)=>(a.status==='PENDING'?0:1)-(b.status==='PENDING'?0:1)||String(a.pname||'').localeCompare(String(b.pname||'')));
       const got=list.filter(e=>e.status==='COLLECTED').reduce((s,e)=>s+(+e.amount||0),0);
       const left=list.filter(e=>e.status==='PENDING').length;
@@ -8895,7 +8910,7 @@ function sheetDetailHtml(id){
         <div onclick="toggleStaff('${_js(g.id)}','${dt}','${_js(k)}',${sDef})"
              style="display:flex;align-items:center;gap:8px;padding:10px 11px;cursor:pointer;background:${sOpen?'#F8FAFC':'#fff'}">
           ${_chev(sOpen)}
-          <div style="font-size:12.5px;font-weight:800;color:#1A2E5A;flex:1;min-width:0">🚶 ${esc(k)}</div>
+          <div style="font-size:12.5px;font-weight:800;color:${unassigned?'#B45309':'#1A2E5A'};flex:1;min-width:0">${unassigned?'⚠️ Needs a staff member':'🚶 '+esc(k)}</div>
           ${left?`<span style="font-size:9.5px;font-weight:800;background:#FEF3C7;color:#92400E;padding:2px 7px;border-radius:20px">${left} left</span>`
                 :`<span style="font-size:9.5px;font-weight:800;background:#DCFCE7;color:#065F46;padding:2px 7px;border-radius:20px">DONE</span>`}
           <span style="font-size:10.5px;color:#94A3B8;font-weight:700">${list.length-left}/${list.length}</span>
@@ -8903,7 +8918,8 @@ function sheetDetailHtml(id){
         </div>
         <div style="height:3px;background:#F1F5F9"><div style="height:3px;width:${pctS}%;background:${accent}"></div></div>
         ${sOpen?`<div style="padding:10px 10px 4px">
-          ${left?`<button class="btn sm" style="width:100%;justify-content:center;font-size:11.5px;background:#ECFDF5;color:#059669;border-color:#A7F3D0;font-weight:800;margin-bottom:9px" onclick="openStaffCollect('${_js(g.id)}','${dt}','${_js(k)}')">💵 ${esc(k)} returned — enter all ${left} at once</button>`:''}
+          ${unassigned?`<button class="btn sm" style="width:100%;justify-content:center;font-size:11.5px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;font-weight:800;margin-bottom:9px" onclick="openRestaff('','${_js(g.id)}','${dt}')">🚶 Allot all ${list.length} to a staff member</button>`
+            : (left?`<button class="btn sm" style="width:100%;justify-content:center;font-size:11.5px;background:#ECFDF5;color:#059669;border-color:#A7F3D0;font-weight:800;margin-bottom:9px" onclick="openStaffCollect('${_js(g.id)}','${dt}','${_js(k)}')">💵 ${esc(k)} returned — enter all ${left} at once</button>`:'')}
           ${list.map(entryCardHtml).join('')}
         </div>`:''}
       </div>`;}).join('');
@@ -9053,6 +9069,37 @@ function copyUncollected(sheetId){
     else prompt('Copy this:', txt);
   }catch(e){ prompt('Copy this:', txt); }
 }
+/* Take a party off a staff member without removing it from the round. */
+function unassignEntry(id){
+  const e = findEntry(id); if(!e) return;
+  if(e.status==='COLLECTED' && !confirm('Unassign '+(e.pname||'this party')+'?\n\nThe collection already recorded is kept — only the staff member is cleared.')) return;
+  S.visits = (S.visits||[]).map(v => (v && v.id===id) ? Object.assign({}, v, { staff:'' }) : v);
+  saveToCloud(); renderVisits();
+}
+/* Give one, or every unassigned party on a round, to a staff member. */
+let restaffTarget = null;
+function openRestaff(entryId, sheetId, dateISO){
+  restaffTarget = { entryId:entryId||'', sheetId:sheetId||'', date:dateISO||'' };
+  const list = collectorNames();
+  const who = entryId ? ((findEntry(entryId)||{}).pname||'this party') : 'every unassigned party on this round';
+  document.getElementById('rs-sub').textContent = who;
+  document.getElementById('rs-body').innerHTML = list.length
+    ? list.map(nm=>`<button class="btn" style="width:100%;justify-content:center;margin-bottom:7px" onclick="applyRestaff('${_js(nm)}')">🚶 ${esc(nm)}</button>`).join('')
+    : '<div style="color:#94A3B8;font-size:12.5px;padding:10px 0">No staff on the list yet. Add one from ＋ Assign parties.</div>';
+  document.getElementById('mo-restaff').classList.add('open');
+}
+function applyRestaff(nm){
+  const t = restaffTarget; if(!t) return;
+  S.visits = (S.visits||[]).map(v=>{
+    if(!v) return v;
+    const e = vNorm(v);
+    const match = t.entryId ? (e.id===t.entryId)
+                            : (e.sheetId===t.sheetId && e.visitDate===t.date && !String(e.staff||'').trim());
+    return match ? Object.assign({}, v, { staff:nm }) : v;
+  });
+  saveToCloud(); closeModal('restaff'); renderVisits();
+}
+
 function entryCardHtml(e){
   const f=followUp(e.pid);
   // A collected entry is only SETTLED if the party owes nothing now; otherwise it was a part
@@ -9118,11 +9165,15 @@ function entryCardHtml(e){
       <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap">
         ${f.party.phone?`<a class="btn sm" style="font-size:11px;text-decoration:none" href="tel:${esc(f.party.phone)}">📞 Call</a>`:''}
         <button class="btn sm" style="font-size:11px;color:#94A3B8" onclick="markNoCollect('${e.id}')">✕ Couldn't collect</button>
+        ${String(e.staff||'').trim()
+          ? `<button class="btn sm" style="font-size:11px;color:#B45309;border-color:#FDE68A" onclick="unassignEntry('${_js(e.id)}')">↩ Unassign</button>`
+          : `<button class="btn sm" style="font-size:11px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;font-weight:700" onclick="openRestaff('${_js(e.id)}','','')">🚶 Allot to staff</button>`}
         <span style="flex:1"></span>
         <button class="btn sm" onclick="delEntry('${e.id}')" style="border:none;background:none;color:#DC2626;font-size:12px">🗑</button>
       </div>`
     :`<div style="display:flex;gap:5px;margin-top:7px;flex-wrap:wrap">
         <button class="btn sm" style="font-size:11px" onclick="undoEntry('${e.id}')">↩ Undo</button>
+        ${String(e.staff||'').trim()?`<button class="btn sm" style="font-size:11px;color:#B45309;border-color:#FDE68A" onclick="unassignEntry('${_js(e.id)}')">↩ Unassign</button>`:''}
         ${f.party.phone?`<a class="btn sm" style="font-size:11px;text-decoration:none" href="tel:${esc(f.party.phone)}">📞 Call</a>`:''}
         <span style="flex:1"></span>
         <button class="btn sm" onclick="delEntry('${e.id}')" style="border:none;background:none;color:#DC2626;font-size:12px">🗑</button>
