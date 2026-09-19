@@ -1060,7 +1060,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-19.4-diagnose';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-19.5-payments-first';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2744,12 +2744,25 @@ function attachDataListeners(){
   const markLoaded = (meta, coll, n)=>{
     loadedOnce = true;
     if(coll) LOADED[coll] = true;      // which collection this actually was
+    if(coll && meta && !meta.fromCache) noteReads(coll, n);   // cache hits cost nothing
     reconcileCounters();
     saveLocal();
     syncMark(coll||'?', meta, n);     // aggregate state decides the dot, not this one snapshot
     if (!(meta && meta.hasPendingWrites)) scheduleRender();   // skip the echo of our own write
   };
   // One listener per collection — each rebuilds only its own array.
+  /* PAYMENTS FIRST — deliberately.
+     Listeners attach in the order they are written here, and each one reads its whole
+     collection. When the daily read quota runs out part-way through, whatever is still
+     waiting never loads: challans came through, payments did not, and the app showed
+     Received Rs.0 as though the money had vanished. The ledger that decides what people owe
+     is now read before anything else, so if reads run short it is the least important
+     collection that goes missing, not the most important one. */
+  _subPay = _col('payments').onSnapshot({includeMetadataChanges:true}, snap=>{
+    S.payments = snap.docs.map(d=>d.data());
+    _lastSaved.payments = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
+    markLoaded(snap.metadata, 'payments', snap.docs?snap.docs.length:null);
+  }, err=>onSubErr('payments',err));
   _subParts = _col('parties').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.parties = snap.docs.map(d=>d.data());
     _lastSaved.parties = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
@@ -2763,12 +2776,7 @@ function attachDataListeners(){
     markLoaded(snap.metadata, 'challans', snap.docs?snap.docs.length:null);
     if(snap.metadata && !snap.metadata.fromCache){ _chServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('challans',err));
-  _subPay = _col('payments').onSnapshot({includeMetadataChanges:true}, snap=>{
-    S.payments = snap.docs.map(d=>d.data());
-    _lastSaved.payments = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
-    markLoaded(snap.metadata, 'payments', snap.docs?snap.docs.length:null);
-    if(snap.metadata && !snap.metadata.fromCache){ _payServerLoaded=true; tryReconcileAll(); }
-  }, err=>onSubErr('payments',err));
+  // (payments is attached first, above)
   /* Settlements are legacy records — nothing live reads them, and there can be thousands.
      Attached only when something actually needs them. */
   LAZY_SUBS['_make_settlements'] = ()=> _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
@@ -2780,26 +2788,26 @@ function attachDataListeners(){
   _subSet = null;
   // Manual overrides — the ONLY manual-allocation business record. Same per-document + offline-safe
   // treatment as every other collection (durable Firestore queue + localStorage backup).
-  _subOv = _col('overrides').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subOv = _col('overrides').onSnapshot({includeMetadataChanges:false}, snap=>{
     S.overrides = snap.docs.map(d=>d.data());
     _lastSaved.overrides = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), overrideId);
     invalidateAllAlloc();
     markLoaded(snap.metadata, 'overrides', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('overrides',err));
-  _subItems = _col('items').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subItems = _col('items').onSnapshot({includeMetadataChanges:false}, snap=>{
     S.items = snap.docs.map(d=>d.data());
     _lastSaved.items = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     _itemCanonIdx = null;
     markLoaded(snap.metadata, 'items', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('items',err));
-  _subMap = _col('itemmap').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subMap = _col('itemmap').onSnapshot({includeMetadataChanges:false}, snap=>{
     S.itemMap = snap.docs.map(d=>d.data());
     _lastSaved.itemMap = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), mapDocId);
     _itemCanonIdx = null;
     markLoaded(snap.metadata, 'itemmap', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('itemmap',err));
   // Opening stock — one doc per item (deterministic id → idempotent across devices/offline).
-  _subStock = _col('stock').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subStock = _col('stock').onSnapshot({includeMetadataChanges:false}, snap=>{
     S.stock = snap.docs.map(d=>d.data());
     _lastSaved.stock = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     invalidateStock();
@@ -2854,14 +2862,14 @@ function attachDataListeners(){
   /* visits — payment-collection follow-ups. Purely operational: a visit NEVER touches the
      ledger (creates no payment, no challan, no balance change). Same per-doc + deep-copy
      baseline + diffWrite + localStorage contract as every other collection. */
-  _subVisits = _col('visits').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subVisits = _col('visits').onSnapshot({includeMetadataChanges:false}, snap=>{
     S.visits = snap.docs.map(d=>d.data());
     _lastSaved.visits = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     markLoaded(snap.metadata, 'visits', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('visits',err));
   /* seasons — one document each, so a season can carry status and closing data without
      bloating meta/state. */
-  _subSeasons = _col('seasons').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subSeasons = _col('seasons').onSnapshot({includeMetadataChanges:false}, snap=>{
     _seasonsLoaded = true;
     S.seasonRecs = snap.docs.map(d=>d.data());
     _lastSaved.seasonRecs = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
@@ -2871,7 +2879,7 @@ function attachDataListeners(){
 
   /* stockClose — a frozen closing-stock snapshot per closed season. THIS is the source of
      truth for next year's opening stock; the Excel export is the owner's external record. */
-  _subStockClose = _col('stockClose').onSnapshot({includeMetadataChanges:true}, snap=>{
+  _subStockClose = _col('stockClose').onSnapshot({includeMetadataChanges:false}, snap=>{
     S.stockClose = snap.docs.map(d=>d.data());
     _lastSaved.stockClose = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     markLoaded(snap.metadata, 'stockclose', snap.docs?snap.docs.length:null);
@@ -2909,6 +2917,13 @@ function attachDataListeners(){
 /* Keep the real reason a collection failed, so it can be shown on screen instead of leaving
    someone staring at a zero and guessing whether their data is gone. */
 const READ_ERR = {};
+/* Roughly how many documents this session has pulled. The free plan allows 50,000 reads a day
+   across every device, and running out is what made the payments disappear. */
+const READS = { docs:0, byColl:{} };
+function noteReads(coll, n){
+  if(!(n>0)) return;
+  READS.docs += n; READS.byColl[coll] = (READS.byColl[coll]||0) + n;
+}
 function onSubErr(which, err){
   const code = (err && err.code) || 'unknown';
   console.warn('READ BLOCKED ('+which+'):', code, err);
@@ -3348,8 +3363,19 @@ function renderHome() {
       </div>
     </div>` : '';
 
+  const readBar = READS.docs > 1500 ? `
+    <div class="stat" style="grid-column:1/-1;padding:10px 13px;background:${READS.docs>15000?'#FEF2F2':'#FFFBEB'};border:1.5px solid ${READS.docs>15000?'#FCA5A5':'#FDE68A'}">
+      <div style="font-size:11.5px;font-weight:800;color:${READS.docs>15000?'#B91C1C':'#92400E'}">
+        ${fmtN(READS.docs)} records read from the server this session
+      </div>
+      <div style="font-size:10.5px;color:#92400E;margin-top:3px;line-height:1.5">
+        The free plan allows 50,000 a day across all your devices. Running out is what made the
+        payments read as zero. ${READS.docs>15000?'<strong>Switch the project to the Blaze plan.</strong>':''}
+      </div>
+    </div>` : '';
+
   document.getElementById('home-stats').innerHTML =
-    dataWarn + seasonSelectorHtml() + `
+    dataWarn + readBar + seasonSelectorHtml() + `
     <div class="stat"><div class="sl">📦 Challans ${tag}</div><div class="sv">${scoped.length}</div></div>
     <div class="stat"><div class="sl">💰 Outstanding ${tag}</div><div class="sv r">${fmt(outScope)}</div></div>
     <div class="stat"><div class="sl">✅ Received ${tag}</div><div class="sv g">${fmt(recScope)}</div></div>
