@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Payment Rescue — Challan Manager</title>
+<style>
+  :root{ box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); }
+  *{ box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  body{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        background:#1A2E5A; color:#1A1A1A; min-height:100%; padding:18px; }
+  .card{ background:#fff; border-radius:16px; padding:20px; max-width:620px; margin:0 auto 14px; }
+  h1{ font-size:19px; color:#1A2E5A; margin-bottom:4px; }
+  .sub{ font-size:12.5px; color:#64748B; line-height:1.6; margin-bottom:14px; }
+  .note{ background:#F0FDF4; border:1.5px solid #A7F3D0; color:#065F46; border-radius:11px;
+         padding:11px 13px; font-size:12px; line-height:1.6; margin-bottom:14px; }
+  button{ width:100%; padding:15px; border:none; border-radius:12px; background:#1A2E5A; color:#fff;
+          font-size:15px; font-weight:800; font-family:inherit; cursor:pointer; }
+  button.alt{ background:#fff; color:#1A2E5A; border:1.5px solid #C7D2FE; margin-top:9px; }
+  .stat{ display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #F1F5F9; font-size:13px; }
+  .stat strong{ color:#1A2E5A; }
+  .big{ font-size:30px; font-weight:800; color:#059669; text-align:center; margin:10px 0 2px; }
+  .mid{ text-align:center; font-size:12.5px; color:#64748B; margin-bottom:14px; }
+  .warn{ background:#FFFBEB; border:1.5px solid #FDE68A; color:#92400E; border-radius:11px;
+         padding:11px 13px; font-size:12.5px; line-height:1.6; }
+  .src{ font-size:11.5px; color:#475569; padding:5px 0; border-bottom:1px solid #F8FAFC; }
+  code{ background:#F1F5F9; padding:1px 5px; border-radius:4px; font-size:11px; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>🛟 Payment Rescue</h1>
+  <div class="sub">
+    Reads the copy of your data stored in <strong>this browser, on this device</strong>, and saves
+    whatever payments it finds to a file.
+  </div>
+  <div class="note">
+    This page only <strong>reads</strong>. It never writes, never signs in, and never touches the
+    app or the server. Opening it cannot make anything worse.
+  </div>
+  <button id="go">🔍 Look for my payments</button>
+  <button class="alt" id="dl" style="display:none">⬇ Save the file</button>
+</div>
+
+<div class="card" id="out" style="display:none"></div>
+
+<script>
+/* Served from the same origin as the app, so the same localStorage is visible.
+   Read-only throughout: nothing here writes, deletes or signs in. */
+var RESULT = null;
+
+function scan(){
+  var found = {}, sources = [], scanned = 0, keys = [];
+  for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (k) keys.push(k); }
+
+  keys.forEach(function(k){
+    if (!/^(cm_snap_|challan_backup_|contractor_backup_)/.test(k)) return;
+    scanned++;
+    var obj = null;
+    try { obj = JSON.parse(localStorage.getItem(k)); } catch(e){ return; }
+    if (!obj) return;
+    var pays  = obj.payments || (obj.S && obj.S.payments) || [];
+    var trash = obj.trash    || (obj.S && obj.S.trash)    || [];
+    var n = 0;
+    (pays||[]).forEach(function(p){ if(p && p.id && !found[p.id]){ found[p.id]=p; n++; } });
+    (trash||[]).forEach(function(t){ var p=t&&t.payment; if(p && p.id && !found[p.id]){ found[p.id]=p; n++; } });
+    if (n) sources.push({ where:k, at:(obj._at||''), added:n });
+  });
+
+  var list  = Object.keys(found).map(function(id){ return found[id]; });
+  var total = list.reduce(function(t,p){ return t + (+p.amount||0); }, 0);
+  var dates = list.map(function(p){ return p.date; }).filter(Boolean).sort();
+  return { list:list, total:total, sources:sources, scanned:scanned,
+           allKeys:keys.length, from:dates[0]||'', to:dates[dates.length-1]||'' };
+}
+
+function inr(n){ return 'Rs.' + Math.round(n||0).toLocaleString('en-IN'); }
+
+document.getElementById('go').onclick = function(){
+  var r = RESULT = scan();
+  var out = document.getElementById('out');
+  out.style.display = 'block';
+
+  if (!r.list.length) {
+    out.innerHTML =
+      '<div class="warn"><strong>No payments found in this browser.</strong><br><br>'
+      + 'Storage is separate for every browser, so this usually means the app was never opened in '
+      + 'this particular one. Try the others on this phone (Chrome, Samsung Internet, Safari), and '
+      + 'any other device.<br><br>Storage keys seen: <code>' + r.allKeys
+      + '</code>, of which <code>' + r.scanned + '</code> belonged to these apps.</div>';
+    return;
+  }
+
+  out.innerHTML =
+    '<div class="big">' + r.list.length + '</div>'
+    + '<div class="mid">payments found on this device</div>'
+    + '<div class="stat"><span>Total value</span><strong>' + inr(r.total) + '</strong></div>'
+    + '<div class="stat"><span>Oldest</span><strong>' + (r.from||'-') + '</strong></div>'
+    + '<div class="stat"><span>Newest</span><strong>' + (r.to||'-') + '</strong></div>'
+    + '<div class="stat"><span>Copies searched</span><strong>' + r.scanned + '</strong></div>'
+    + '<div style="margin-top:12px;font-size:12px;font-weight:800;color:#1A2E5A">Where they came from</div>'
+    + r.sources.map(function(s){
+        return '<div class="src">' + s.where + (s.at ? ' &middot; ' + s.at.slice(0,10) : '')
+             + ' &rarr; <strong>' + s.added + '</strong></div>'; }).join('')
+    + '<div class="note" style="margin-top:14px;margin-bottom:0">Now tap <strong>Save the file</strong> '
+    + 'above and send it over. Do not open the app on this device yet.</div>';
+
+  document.getElementById('dl').style.display = 'block';
+};
+
+document.getElementById('dl').onclick = function(){
+  if (!RESULT || !RESULT.list.length) return;
+  var payload = { _rescued:new Date().toISOString(), _device:navigator.userAgent,
+                  _count:RESULT.list.length, _total:RESULT.total,
+                  sources:RESULT.sources, payments:RESULT.list };
+  var blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'payments-rescued-' + new Date().toISOString().slice(0,10)
+             + '-' + RESULT.list.length + 'records.json';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+};
+</script>
+</body>
+</html>
