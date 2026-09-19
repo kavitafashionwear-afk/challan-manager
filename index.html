@@ -457,6 +457,7 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 <div class="umenu" id="umenu">
   <div class="umh"><div class="umn" id="um-name"></div><div class="ume" id="um-email"></div></div>
   <div class="umi" onclick="openImport()">📥 Import from Excel</div>
+  <div class="umi" onclick="openRecovery();closeMenu()">🛟 Recover Payments</div>
   <div class="umi" onclick="openBackup()">💾 Backup &amp; Restore</div>
   <div class="umi" onclick="goTab('visits');closeMenu()">🚶 Visits &amp; Follow-ups <span id="visits-due-badge" style="display:none;background:#DC2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></div>
   <div class="umi" onclick="goTab('stock');closeMenu()">📦 Stock</div>
@@ -669,6 +670,20 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
   <div class="mfoot" style="display:flex;gap:8px">
     <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('closeseason')">Cancel</button>
     <button class="btn pri" id="sc-go" style="flex:1;justify-content:center" onclick="confirmCloseSeason()" disabled>🔒 Close &amp; export</button>
+  </div>
+</div></div>
+
+<!-- ══════════ RECOVER PAYMENTS ══════════ -->
+<div class="overlay" id="mo-recover">
+<div class="mbox"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>🛟 Recover Payments</h3><div style="font-size:12px;color:#888">Looks everywhere on this device</div></div>
+    <button class="xbtn" onclick="closeModal('recover')">✕</button>
+  </div>
+  <div class="mbody" id="rec-body"></div>
+  <div class="mfoot" style="display:flex;gap:8px">
+    <button class="btn" style="flex:1;justify-content:center" onclick="closeModal('recover')">Close</button>
+    <button class="btn pri" id="rec-go" style="flex:1;justify-content:center" onclick="runRecovery()">✓ Put them back</button>
   </div>
 </div></div>
 
@@ -1013,6 +1028,29 @@ try {
 } catch(e) { PERSIST.state='off'; PERSIST.code='exception'; console.warn('Persistence setup skipped', e); }
 let isOnline = (typeof navigator!=='undefined') ? navigator.onLine : true;
 let loadedOnce = false; // true after a successful cloud read; guards against blank/stale overwrites
+/* loadedOnce goes true on the FIRST collection to report, whichever that is. That is not
+   enough to write by: if payments has not arrived yet, S.payments is [] while the screen
+   happily shows Received Rs.0 — and any save would then be comparing an empty list against a
+   baseline. LOADED records each collection separately so a collection is never written until
+   its own listener has delivered. */
+const LOADED = {};
+function collLoaded(c){ return !!LOADED[c]; }
+/* ── Read budget ──
+   Every listener reads its whole collection on first attach, and this app attached 17 of them
+   on every single load, on every device. With a few hundred challans and payments each that is
+   thousands of reads per session, which is how the free tier's 50,000 reads a day ran out —
+   and once it does, Firestore stops serving reads, so figures read as zero everywhere at once.
+
+   Only what the app genuinely needs at startup is attached now. The rest is attached the first
+   time its screen is opened, and never again in that session. Nothing about how the data is
+   stored or written changes. */
+const LAZY_SUBS = {};
+function ensureSub(name){
+  if(LAZY_SUBS[name]) return;
+  const fn = LAZY_SUBS['_make_'+name];
+  if(typeof fn !== 'function') return;
+  LAZY_SUBS[name] = fn();
+}
 // On reconnect we do NOT push local data — Firestore auto-flushes its own queued writes,
 // and the live snapshot brings down anything other devices changed while we were offline.
 // (Pushing here would overwrite newer remote bills with our stale copy.)
@@ -1022,7 +1060,7 @@ window.addEventListener('offline', function(){ isOnline = false; if(typeof updat
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-18.4';   // bump on every delivery — confirms which file is actually live
+const BUILD = '2026-09-19.4-diagnose';   // bump on every delivery — confirms which file is actually live
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2511,6 +2549,14 @@ function syncErrMark(coll, code){
    operations, so we chunk at 400 to leave headroom. A batch is atomic and costs ONE round
    trip, which is the difference between a bulk edit taking a second and taking a minute. */
 var _writeQueue = [];
+/* Collections whose save was refused for trying to delete too much at once, and the opt-in
+   the owner can give when a big deletion really is intended. */
+const BULK_BLOCKED = {}, _bulkDeleteOK = {};
+function allowBulkDelete(coll){
+  if(!confirm('Allow '+(BULK_BLOCKED[coll]||0)+' records to be deleted from "'+coll+'" on the server?\n\nOnly do this if you meant to remove them. If figures look wrong or history is missing, press Cancel and reload instead.')) return;
+  _bulkDeleteOK[coll] = true; delete BULK_BLOCKED[coll];
+  saveToCloud(); renderAll();
+}
 const BATCH_MAX = 400;
 function flushWrites(){
   if(!_writeQueue.length) return;
@@ -2697,6 +2743,7 @@ function attachDataListeners(){
   const scheduleRender = ()=>{ if(_renderTimer) return; _renderTimer = setTimeout(()=>{ _renderTimer=null; renderAll(); }, 60); };
   const markLoaded = (meta, coll, n)=>{
     loadedOnce = true;
+    if(coll) LOADED[coll] = true;      // which collection this actually was
     reconcileCounters();
     saveLocal();
     syncMark(coll||'?', meta, n);     // aggregate state decides the dot, not this one snapshot
@@ -2722,12 +2769,15 @@ function attachDataListeners(){
     markLoaded(snap.metadata, 'payments', snap.docs?snap.docs.length:null);
     if(snap.metadata && !snap.metadata.fromCache){ _payServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('payments',err));
-  _subSet = _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
+  /* Settlements are legacy records — nothing live reads them, and there can be thousands.
+     Attached only when something actually needs them. */
+  LAZY_SUBS['_make_settlements'] = ()=> _col('settlements').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.settlements = snap.docs.map(d=>d.data());
     _lastSaved.settlements = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), settlementId);
     markLoaded(snap.metadata, 'settlements', snap.docs?snap.docs.length:null);
     if(snap.metadata && !snap.metadata.fromCache){ _setServerLoaded=true; tryReconcileAll(); }
   }, err=>onSubErr('settlements',err));
+  _subSet = null;
   // Manual overrides — the ONLY manual-allocation business record. Same per-document + offline-safe
   // treatment as every other collection (durable Firestore queue + localStorage backup).
   _subOv = _col('overrides').onSnapshot({includeMetadataChanges:true}, snap=>{
@@ -2756,21 +2806,21 @@ function attachDataListeners(){
     markLoaded(snap.metadata, 'stock', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('stock',err));
   // Manual stock movements (purchases, returns, damage, corrections).
-  _subStockMv = _col('stockmv').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_stockmv'] = ()=> _col('stockmv').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.stockMv = snap.docs.map(d=>d.data());
     _lastSaved.stockMv = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))));
     invalidateStock();
     markLoaded(snap.metadata, 'stockmv', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('stockmv',err));
   // Goods returned by a party. Each return credits stock back on its own return date.
-  _subRet = _col('returns').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_returns'] = ()=> _col('returns').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.returns = snap.docs.map(d=>d.data());
     _lastSaved.returns = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     invalidateStock();
     markLoaded(snap.metadata, 'returns', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('returns',err));
   // Business expenses paid out of hand.
-  _subExp = _col('expenses').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_expenses'] = ()=> _col('expenses').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.expenses = snap.docs.map(d=>d.data());
     _lastSaved.expenses = _indexById(snap.docs.map(d=>JSON.parse(JSON.stringify(d.data()))), x=>x.id);
     invalidateCash();
@@ -2783,7 +2833,7 @@ function attachDataListeners(){
      this app can never write to, reshape, or delete a lot. The Contractor Tracker stays the
      sole owner of that collection. If the read is denied (staff account), S.lots stays empty
      and stock simply shows no contractor inward — nothing breaks. */
-  _subLots = _col('ct_lots').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_ct_lots'] = ()=> _col('ct_lots').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.lots = snap.docs.map(d=>d.data());
     invalidateStock();
     _tokDFCache = null;          // lot item names join the fuzzy-matching corpus
@@ -2791,12 +2841,12 @@ function attachDataListeners(){
   }, err=>onSubErr('ct_lots',err));
   /* Contractor payments and advances — READ ONLY, same rule as ct_lots. They are real money
      leaving the business, so they reduce cash in hand. Never written from this app. */
-  _subCtPays = _col('ct_pays').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_ct_pays'] = ()=> _col('ct_pays').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.ctPays = snap.docs.map(d=>d.data());
     invalidateCash();
     markLoaded(snap.metadata, 'ct_pays', snap.docs?snap.docs.length:null);
   }, err=>onSubErr('ct_pays',err));
-  _subCtAdv = _col('ct_advances').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_ct_advances'] = ()=> _col('ct_advances').onSnapshot({includeMetadataChanges:true}, snap=>{
     S.ctAdv = snap.docs.map(d=>d.data());
     invalidateCash();
     markLoaded(snap.metadata, 'ct_advances', snap.docs?snap.docs.length:null);
@@ -2829,7 +2879,7 @@ function attachDataListeners(){
 
   /* trash — one document per deleted item. Same per-doc + deep-copy baseline + diffWrite
      contract as every other collection, so the recycle bin can grow without bound. */
-  _subTrash = _col('trash').onSnapshot({includeMetadataChanges:true}, snap=>{
+  LAZY_SUBS['_make_trash'] = ()=> _col('trash').onSnapshot({includeMetadataChanges:true}, snap=>{
     _trashLoaded = true;
     const cloud = snap.docs.map(d=>d.data());
     if(_trashNeedsMigration && !cloud.length && (S.trash||[]).length){
@@ -2856,10 +2906,30 @@ function attachDataListeners(){
   unsubDB = function(){ [_subParts,_subCh,_subPay,_subSet,_subOv,_subItems,_subMap,_subStock,_subStockMv,_subRet,_subExp,_subLots,_subCtPays,_subCtAdv,_subVisits,_subTrash,_subSeasons,_subStockClose,_subMeta].forEach(u=>{try{u&&u();}catch(e){}}); };
 }
 
+/* Keep the real reason a collection failed, so it can be shown on screen instead of leaving
+   someone staring at a zero and guessing whether their data is gone. */
+const READ_ERR = {};
 function onSubErr(which, err){
-  console.warn('READ BLOCKED ('+which+'):', err && err.code, err);
-  syncErrMark(which, err && err.code);
+  const code = (err && err.code) || 'unknown';
+  console.warn('READ BLOCKED ('+which+'):', code, err);
+  READ_ERR[which] = { code: code, msg: (err && err.message) || '', at: new Date().toISOString() };
+  syncErrMark(which, code);
   if (!loadedOnce && loadLocal()) renderAll();
+  try{ renderAll(); }catch(e){}
+}
+/* Plain English for the codes that actually strand a collection. */
+function readErrHelp(code){
+  if(code==='resource-exhausted')
+    return { what:'Firestore has stopped serving reads — the free plan\'s daily limit of 50,000 was used up.',
+             fix:'Your data is safe and untouched. Reads resume when the quota resets at midnight US Pacific (about 12:30 PM IST), or immediately if you switch the project to the Blaze plan.' };
+  if(code==='permission-denied')
+    return { what:'The security rules are refusing to let this account read that collection.',
+             fix:'Your data is safe and untouched. Check the Firestore rules in the Firebase console — this collection is not covered by a rule that allows the owner to read it.' };
+  if(code==='unauthenticated')
+    return { what:'The sign-in has expired.', fix:'Sign out and sign in again.' };
+  if(code==='unavailable')
+    return { what:'The device could not reach Firestore.', fix:'Check the connection and reload.' };
+  return { what:'Firestore refused the read ('+esc(code)+').', fix:'Your data is not deleted by this. Reload, and send me this code if it persists.' };
 }
 
 // Keep numbering counters ahead of the highest existing number (offline devices may drift).
@@ -2885,6 +2955,13 @@ function _clean(o){ const c=JSON.parse(JSON.stringify(o)); deepSanitize(c); retu
 function saveToCloud() {
   if (!uid) return;
   if (!loadedOnce) { console.warn('Save skipped — initial read not confirmed; data left untouched.'); _saveBlocked=true; refreshSyncDot(); return; }
+  // While a core collection cannot be READ, the copy in memory is not the truth. Writing from
+  // it is the one thing that could turn a temporary read failure into permanent data loss.
+  const _blind = ['parties','challans','payments','overrides','items'].filter(c=>READ_ERR[c] && !collLoaded(c));
+  if (_blind.length) {
+    console.error('SAVE HELD BACK — cannot read: '+_blind.join(', ')+'. Nothing written until this clears.');
+    _saveBlocked=true; refreshSyncDot(); return;
+  }
   _saveBlocked=false;
   saveLocal();
   refreshSyncDot();
@@ -2927,7 +3004,11 @@ function saveToCloud() {
 }
 let _lastMetaSig = null;
 
+const BULK_DELETE_LIMIT = 15;
 function diffWrite(coll, arr, lastIndex, keyFn){
+  // A collection that has not delivered yet is an empty array in memory, not an empty
+  // collection on the server. Writing from it is how a whole ledger gets erased.
+  if(!collLoaded(coll) && Object.keys(lastIndex||{}).length === 0 && (!arr || !arr.length)) return;
   const nowIndex = {};
   (arr||[]).forEach(item=>{
     const id = keyFn(item);
@@ -2951,9 +3032,18 @@ function diffWrite(coll, arr, lastIndex, keyFn){
       _writeQueue.push({ coll:coll, id:String(id), payload:payload });
     }
   });
-  Object.keys(lastIndex).forEach(id=>{
-    if (!(id in nowIndex)) _writeQueue.push({ coll:coll, id:String(id), del:true });
-  });
+  const gone = Object.keys(lastIndex).filter(id => !(id in nowIndex));
+  // A handful of deletions is ordinary editing. Hundreds means something has gone wrong —
+  // a collection that failed to load, a bad merge — and pushing that to the server destroys
+  // real records. Refuse, shout, and leave the server exactly as it is.
+  if (gone.length > BULK_DELETE_LIMIT && !_bulkDeleteOK[coll]) {
+    console.error('REFUSED: ' + gone.length + ' deletions queued for "' + coll + '". Nothing written.');
+    BULK_BLOCKED[coll] = gone.length;
+    _writeQueue = _writeQueue.filter(j => j.coll !== coll);   // drop this collection's writes too
+    refreshSyncDot();
+    return;
+  }
+  gone.forEach(id=>{ _writeQueue.push({ coll:coll, id:String(id), del:true }); });
   Object.keys(lastIndex).forEach(k=>{ delete lastIndex[k]; });
   // Baseline must be SNAPSHOTS, not live references — otherwise an in-place edit mutates the
   // baseline too, the JSON diff sees "no change", and the write is silently skipped.
@@ -3074,11 +3164,11 @@ function renderAll() {
   if (curTab==='home')     renderHome();
   if (curTab==='parties')  renderParties();
   if (curTab==='challans') renderChallans();
-  if (curTab==='daybook')  renderDaybook();
-  if (curTab==='reports')  renderReports();
-  if (curTab==='stock')    renderStock();
+  if (curTab==='daybook') { ensureSub('expenses'); ensureSub('returns'); renderDaybook(); }
+  if (curTab==='reports') { ensureSub('expenses'); ensureSub('returns'); ensureSub('ct_lots'); ensureSub('ct_pays'); ensureSub('ct_advances'); renderReports(); }
+  if (curTab==='stock')   { ensureSub('stockmv'); ensureSub('returns'); ensureSub('ct_lots'); renderStock(); }
   if (curTab==='visits')   renderVisits();
-  if (curTab==='trash')    renderTrash();
+  if (curTab==='trash')   { ensureSub('trash'); ensureSub('settlements'); renderTrash(); }
   if (curParty) renderPartyDetail(curParty);
   // Update trash badge
   const cnt = (S.trash||[]).length;
@@ -3229,8 +3319,37 @@ function renderHome() {
   const tag = scoping ? `<span style="font-weight:600;color:#BBB">· ${esc(selLabel())}</span>`
                       : `<span style="font-weight:600;color:#BBB">· all time</span>`;
 
+  // Never let a collection that has not arrived read as a real zero.
+  const CORE = [['parties','Parties'],['challans','Challans'],['payments','Payments'],
+                ['items','Items'],['overrides','Adjustments']];
+  const notIn = CORE.filter(([c])=>!collLoaded(c));
+  const blocked = Object.keys(BULK_BLOCKED);
+  const dataWarn = (notIn.length || blocked.length) ? `
+    <div class="stat" style="grid-column:1/-1;padding:13px 15px;background:#FEF2F2;border:2px solid #DC2626">
+      <div style="font-size:14px;font-weight:800;color:#B91C1C">
+        ${notIn.length ? '⚠️ '+notIn.map(x=>x[1]).join(' and ')+' could not be read' : '⚠️ A save was refused to protect your data'}
+      </div>
+      <div style="font-size:11.5px;color:#7F1D1D;margin-top:4px;line-height:1.6">
+        ${notIn.length ? (()=>{
+            const e = notIn.map(x=>READ_ERR[x[0]]).filter(Boolean)[0];
+            const h = e ? readErrHelp(e.code) : null;
+            return 'The figures below are <strong>not your real figures</strong> — '+notIn.map(x=>x[1].toLowerCase()).join(' and ')+
+                   ' could not be loaded, so amounts read as zero and history looks empty.'
+                 + (h ? '<div style="margin-top:6px"><strong>Reason:</strong> '+h.what+'</div><div style="margin-top:4px">'+h.fix+'</div>'
+                      : '<div style="margin-top:6px">Nothing has been lost — this is a loading problem, not a deletion.</div>')
+                 + (e ? '<div style="margin-top:5px;font-size:10.5px;opacity:.75">code: '+esc(e.code)+'</div>' : '')
+                 + '<div style="margin-top:6px;font-weight:800">Do not add or edit anything until this clears.</div>';
+          })()
+          : blocked.map(c=>'<strong>'+esc(c)+'</strong> tried to delete '+BULK_BLOCKED[c]+' records and was stopped.').join('<br>')+'<br>Reload first. Only allow it if you really did delete that much.'}
+      </div>
+      <div style="display:flex;gap:7px;margin-top:9px;flex-wrap:wrap">
+        <button class="btn sm" style="flex:1;justify-content:center;font-size:11.5px" onclick="location.reload()">↻ Reload</button>
+        ${blocked.map(c=>`<button class="btn sm" style="font-size:11.5px;color:#B91C1C;border-color:#FCA5A5" onclick="allowBulkDelete('${_js(c)}')">Allow ${BULK_BLOCKED[c]} deletions</button>`).join('')}
+      </div>
+    </div>` : '';
+
   document.getElementById('home-stats').innerHTML =
-    seasonSelectorHtml() + `
+    dataWarn + seasonSelectorHtml() + `
     <div class="stat"><div class="sl">📦 Challans ${tag}</div><div class="sv">${scoped.length}</div></div>
     <div class="stat"><div class="sl">💰 Outstanding ${tag}</div><div class="sv r">${fmt(outScope)}</div></div>
     <div class="stat"><div class="sl">✅ Received ${tag}</div><div class="sv g">${fmt(recScope)}</div></div>
@@ -4108,6 +4227,7 @@ function delChallan(cid) {
    payment is always recoverable from the Recycle Bin instead of being destroyed outright —
    deleting a visit sheet used to wipe every payment collected on it with no undo. */
 function removePaymentToTrash(payId, why){
+  ensureSub('settlements'); ensureSub('trash');
   const pay=S.payments.find(x=>x&&x.id===payId); if(!pay) return false;
   const ppid=pay.pid;
   const setl=S.settlements.filter(s=>s.payId===payId);
@@ -5979,9 +6099,128 @@ function listSnapshots(){
 }
 /* Take at most one snapshot a day, and never before the first successful cloud read —
    snapshotting an empty state would otherwise overwrite a good one with nothing. */
+/* ══════════════════════════════════════════════════════════════════════
+   PAYMENT RECOVERY
+   Looks in every place a payment could still survive on this device, and puts back anything
+   the live ledger has lost. Purely additive: a payment already present is never touched, and
+   nothing is deleted. Run it on each device you use — a phone that has not opened the app
+   since the loss may still hold a full day's snapshot.
+
+   Sources, best first:
+     1. Daily snapshots in this browser (cm_snap_…) — a complete copy of that day
+     2. This browser's working cache — complete unless the app has since overwritten it
+     3. The Recycle Bin — payments deleted through the app's own buttons
+     4. Old settlement documents — these were left in Firestore on purpose as a backstop, and
+        carry payId, challan, amount and date, so a payment can be rebuilt from them
+══════════════════════════════════════════════════════════════════════ */
+function _recSources(){
+  const out = [];
+  // 1 + 2: anything stored locally
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const k = localStorage.key(i);
+      if(!k) continue;
+      if(k.indexOf(SNAP_PREFIX)!==0 && k.indexOf('challan_backup_')!==0) continue;
+      let d; try{ d = JSON.parse(localStorage.getItem(k)); }catch(e){ continue; }
+      if(!d) continue;
+      const pays = d.payments || (d.S && d.S.payments) || [];
+      if(Array.isArray(pays) && pays.length)
+        out.push({ label:(k.indexOf(SNAP_PREFIX)===0 ? 'Snapshot '+k.slice(SNAP_PREFIX.length) : 'This browser\'s cache'),
+                   at:d._at||'', payments:pays, trash:d.trash||[] });
+    }
+  }catch(e){}
+  return out.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+}
+function recoverablePayments(){
+  const have = {}; (S.payments||[]).forEach(p=>{ if(p&&p.id) have[p.id]=1; });
+  const found = {}, from = {};
+  _recSources().forEach(src=>{
+    (src.payments||[]).forEach(p=>{
+      if(!p || !p.id || have[p.id] || found[p.id]) return;
+      found[p.id] = p; from[p.id] = src.label;
+    });
+    (src.trash||[]).forEach(t=>{
+      const p = t && t.payment;
+      if(!p || !p.id || have[p.id] || found[p.id]) return;
+      found[p.id] = p; from[p.id] = src.label + ' (recycle bin)';
+    });
+  });
+  // The app's own bin, as it stands now
+  (S.trash||[]).forEach(t=>{
+    const p = t && t.payment;
+    if(!p || !p.id || have[p.id] || found[p.id]) return;
+    found[p.id] = p; from[p.id] = 'Recycle Bin';
+  });
+  // Old settlement docs: rebuild a payment from what they recorded about it
+  const byPay = {};
+  (S.settlements||[]).forEach(st=>{
+    if(!st || !st.payId || have[st.payId] || found[st.payId]) return;
+    const c = (S.challans||[]).find(x=>x&&x.id===st.cid);
+    const b = byPay[st.payId] || (byPay[st.payId] = { id:st.payId, pid:(c&&c.pid)||'', date:st.date||'', amount:0, mode:'', remarks:'rebuilt from settlement records' });
+    b.amount = _r2(b.amount + (+st.amount||0));
+    if(!b.date && st.date) b.date = st.date;
+  });
+  Object.keys(byPay).forEach(id=>{
+    const b = byPay[id];
+    if(!b.pid || !(b.amount>0)) return;
+    found[id] = b; from[id] = 'Settlement records';
+  });
+  return Object.keys(found).map(id=>({ pay:found[id], src:from[id] }));
+}
+function openRecovery(){
+  ensureSub('settlements'); ensureSub('trash');
+  const list = recoverablePayments();
+  const tot = list.reduce((t,x)=>t+(+x.pay.amount||0),0);
+  const bySrc = {}; list.forEach(x=>{ bySrc[x.src] = (bySrc[x.src]||0)+1; });
+  const body = document.getElementById('rec-body'); if(!body) return;
+  body.innerHTML = list.length ? `
+    <div class="ibox" style="background:#F0FDF4;border-color:#A7F3D0;color:#065F46;margin:0 0 12px">
+      <strong>${list.length} payment(s) found, ${fmt(tot)} in total.</strong>
+      Putting them back only adds — nothing already in your books is changed or removed.
+    </div>
+    <div style="font-size:12px;color:#475569;line-height:1.8">
+      ${Object.keys(bySrc).map(k=>`${esc(k)}: <strong>${bySrc[k]}</strong>`).join('<br>')}
+    </div>
+    <div style="font-size:11px;color:#94A3B8;margin-top:10px;line-height:1.55">
+      Run this on every device you use — one that has not opened the app since the problem may
+      still hold a fuller copy.
+    </div>`
+  : `<div class="ibox amb" style="margin:0">
+      <strong>Nothing recoverable on this device.</strong>
+      <div style="margin-top:5px;line-height:1.6">Try the same button on another phone or computer that had the app open before the problem — especially one that has not been opened since. Otherwise use Restore from a backup file below.</div>
+    </div>`;
+  const btn = document.getElementById('rec-go');
+  if(btn){ btn.style.display = list.length ? '' : 'none'; btn.textContent = '✓ Put back '+list.length+' payment(s)'; }
+  document.getElementById('mo-recover').classList.add('open');
+}
+function runRecovery(){
+  const list = recoverablePayments();
+  if(!list.length) return;
+  const tot = list.reduce((t,x)=>t+(+x.pay.amount||0),0);
+  if(!confirm('Put back '+list.length+' payment(s) totalling '+fmt(tot)+'?\n\nNothing currently in your books is changed or deleted.')) return;
+  const have = {}; (S.payments||[]).forEach(p=>{ if(p&&p.id) have[p.id]=1; });
+  let added = 0;
+  list.forEach(x=>{
+    const p = x.pay;
+    if(!p || !p.id || have[p.id]) return;
+    S.payments.push({ id:p.id, pid:p.pid, date:p.date||today(), amount:+p.amount||0,
+                      mode:p.mode||'', remarks:p.remarks||'' });
+    have[p.id] = 1; added++;
+  });
+  if(!added){ alert('Nothing new to put back.'); return; }
+  const pids = {}; S.payments.forEach(p=>{ if(p&&p.pid) pids[p.pid]=1; });
+  Object.keys(pids).forEach(pid=>{ try{ recomputeParty(pid); }catch(e){} });
+  invalidateCash(); invalidateAllAlloc();
+  saveToCloud(); closeModal('recover'); renderAll();
+  alert('✅ '+added+' payment(s) put back, '+fmt(tot)+'.\n\nCheck the Received figure on Home, then run this on your other devices too.');
+}
+
 function autoSnapshot(){
   if(!loadedOnce || !uid) return;
   if(!(S.challans||[]).length && !(S.parties||[]).length) return;
+  // Never overwrite a good snapshot with one taken while a collection is missing — that is
+  // how the last surviving copy gets destroyed.
+  if(!collLoaded('payments') || !collLoaded('challans') || !collLoaded('parties')) return;
   const d = today();
   const key = _snapKey(d);
   try{
@@ -6448,6 +6687,8 @@ function renderBackupPanel(){
     </details>`;
 }
 function openBackup(){
+  // A backup must hold everything, so attach whatever has not been needed yet.
+  ['settlements','stockmv','returns','expenses','ct_lots','ct_pays','ct_advances','trash'].forEach(ensureSub);
   closeMenu();
   renderBackupPanel();
   document.getElementById('mo-backup').classList.add('open');
