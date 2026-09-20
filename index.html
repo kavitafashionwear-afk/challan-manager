@@ -892,7 +892,7 @@ setTimeout(()=>{if(!isOnline)showOfflineAlert();},0);
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-20.7-backup-time';
+const BUILD = '2026-09-20.8-multi-season';
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2037,7 +2037,7 @@ async function mergeIncomingBills(bills) {
       pid:party.id, pname:party.name, date:b.date||today(),
       items:items, freight:freight, total:total, status:'P',
       remarks:b.remarks||'',
-      season: (typeof defaultSeasonId==='function' ? (defaultSeasonId()||S.curSeason||'') : (S.curSeason||'')),
+      season: resolvedBillSeason(items,defaultSeasonId()||S.curSeason||'',b.date||today()),
       staffGenerated:true,
       staffEmail:(b.createdBy&&b.createdBy.email)||'',
       staffName:(b.createdBy&&b.createdBy.name)||'',
@@ -2748,7 +2748,7 @@ function _saveSel(){ try{ localStorage.setItem('cm_sel', JSON.stringify({fy:selF
 function setSelFY(v){
   selFY = (v===''||v==null) ? null : +v;
   // A season from another year cannot stay selected.
-  if(selSeason){ const s=seasonById(selSeason); if(!s || (selFY!=null && s.fy!==selFY)) selSeason=''; }
+  if(selSeason){ const s=seasonById(selSeason); if(!s || (selSeason!=='BOTH'&&selFY!=null && s.fy!==selFY)) selSeason=''; }
   _saveSel(); renderAll();
 }
 function setSelSeason(v){
@@ -2766,7 +2766,7 @@ function selLabel(){
    ignore dates entirely, so a January bill tagged Summer 2026 stays in Summer 2026. */
 function inScope(c){
   if(!c) return false;
-  if(selSeason) return seasonIdOf(c)===selSeason;
+  if(selSeason) return seasonIdOf(c)===selSeason&&(selSeason!=='BOTH'||selFY==null||fyOf(c.date)===selFY);
   if(selFY!=null) return fyOf(c.date)===selFY;
   return true;
 }
@@ -3043,7 +3043,7 @@ function renderPartyDetail(pid) {
         </div>
       </div>`; })()}
     ${(()=>{
-      const recs=(S.seasonRecs||[]).filter(x=>x && (S.challans||[]).some(c=>c && c.pid===pid && seasonIdOf(c)===x.id))
+      const recs=[...(S.seasonRecs||[]),{id:'BOTH',name:'Both',type:'BOTH',fy:null}].filter(x=>x && (S.challans||[]).some(c=>c && c.pid===pid && seasonIdOf(c)===x.id))
         .sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
       if(!recs.length) return '';
       const chip=(v,l,on)=>`<button class="btn sm" style="font-size:11px;${on?'background:#1A2E5A;color:#fff;border-color:#1A2E5A':''}" onclick="setPartySeason('${_js(pid)}','${_js(v)}')">${esc(l)}</button>`;
@@ -3304,6 +3304,8 @@ function confirmStockShortfall(scope){
 ══════════════════════════════ */
 let rtRowId = 0, curReturnPid = null;
 function openReturnFor(pid){
+  if(!canEditLedger())return;
+  refreshItemDatalist();
   const p = S.parties.find(x=>x&&x.id===pid); if(!p) return;
   curReturnPid = pid;
   document.getElementById('rt-subtitle').textContent = 'From ' + p.name;
@@ -3569,7 +3571,7 @@ async function saveChallan() {
     if(name&&qty&&rate) items.push(dz ? {name,qty,rate,amount,design:dz} : {name,qty,rate,amount});
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
-  let chSeason = document.getElementById('ch-season').value || '';
+  let chSeason = resolvedBillSeason(items,document.getElementById('ch-season').value,dt);
   if(!chSeason){ const a = seasonForItems(items); chSeason = a ? a.id : ''; }
   if(!chSeason){ alert('This bill needs a season.\n\nNo season exists yet — open Menu → Seasons.'); return; }
   if (!confirmStockShortfall('item-rows')) return;
@@ -3850,7 +3852,17 @@ function renderDaybook(){
    tagged "Both", or an even split) the current season is used, and the box on the form can
    always be set by hand.
 ══════════════════════════════════════════════════════════════════════ */
+function hasBothSeasons(items){
+  const types=new Set((items||[]).map(li=>li.seasonType||itemCanon(li.name)?.seasonType));
+  return types.has('SUMMER')&&types.has('WINTER');
+}
+function resolvedBillSeason(items,selected,date){
+  if(hasBothSeasons(items))return 'BOTH';
+  if(selected&&selected!=='BOTH')return selected;
+  return suggestSeasonFor({items,date})?.id||defaultSeasonId()||'';
+}
 function seasonForItems(items){
+  if(hasBothSeasons(items))return {id:'BOTH',name:'Both',type:'BOTH',fy:null};
   return suggestSeasonFor({ items: items||[] }) || seasonById(defaultSeasonId()) || null;
 }
 function seasonFromRows(rowsId){
@@ -3864,8 +3876,9 @@ function seasonFromRows(rowsId){
 }
 function autoSeasonOnBill(rowsId, selId){
   const sel=document.getElementById(selId); if(!sel) return;
-  if(sel.dataset.manual==='1') return;             // set by hand — leave it alone
   const s=seasonFromRows(rowsId);
+  if(sel.dataset.manual==='1'&&s?.id!=='BOTH'&&sel.value!=='BOTH')return;
+  if(s?.id==='BOTH')sel.dataset.manual='';
   if(s && sel.value!==s.id) sel.value=s.id;
   showSeasonHint(selId);
 }
@@ -3892,6 +3905,7 @@ function showSeasonHint(selId){
   const t = items.length ? suggestSeasonType({items:items}) : null;
   const cur = seasonById(sel && sel.value);
   if(!items.length){ box.innerHTML='Set automatically once you add the articles.'; return; }
+  if(hasBothSeasons(items)){box.innerHTML='☑ <strong>Both</strong> — this challan contains Summer and Winter articles.';return;}
   if(t){
     box.innerHTML='☑ <strong>'+esc(cur?cur.name:'')+'</strong> — from the '+(t==='SUMMER'?'Summer':'Winter')+' articles on this bill.';
   } else {
@@ -3967,7 +3981,8 @@ function renderUntaggedBox(){
    tag, everything untagged simply counts as Summer, and changing the setting (or clearing it)
    takes effect instantly and reverses just as cleanly. */
 function seasonOf(c){
-  if(!c) return null;
+  if(!c)return null;
+  if(c.season==='BOTH')return {id:'BOTH',name:'Both',type:'BOTH',fy:fyOf(c.date)};
   if(!c.season){
     return S.untaggedSeason ? ((S.seasonRecs||[]).find(s=>s && s.id===S.untaggedSeason) || null) : null;
   }
@@ -3985,9 +4000,9 @@ async function setUntaggedSeason(v){
 function seasonIdOf(c){ const s=seasonOf(c); return s ? s.id : ''; }
 // If a tag does not resolve to a real season, show nothing — never the stored value.
 function seasonNameOf(c){ const s=seasonOf(c); return s ? s.name : ''; }
-function seasonById(id){ return (S.seasonRecs||[]).find(s=>s && s.id===id) || null; }
+function seasonById(id){if(id==='BOTH')return {id:'BOTH',name:'Both',type:'BOTH',fy:null}; return (S.seasonRecs||[]).find(s=>s && s.id===id) || null; }
 function seasonsForFY(fy){
-  return (S.seasonRecs||[]).filter(s=>s && (fy==null || s.fy===fy))
+  return [...(S.seasonRecs||[]),{id:'BOTH',name:'Both',type:'BOTH',fy:fy==null?null:fy}].filter(s=>s && (fy==null || s.fy===fy))
     .sort((a,b)=>String(a.name).localeCompare(String(b.name)));
 }
 function allSeasonFYs(){
@@ -4042,13 +4057,14 @@ function syncSeasonNames(){
 function seasonOptions(sel){
   // Values are season IDs now. A legacy name still selects correctly because seasonById()
   // falls back to matching on name.
+  const both='<option value="BOTH" '+(sel==='BOTH'?'selected':'')+'>Both (Summer + Winter)</option>';
   const cur = defaultSeasonId();
   const recs = (S.seasonRecs||[]).slice().sort((a,b)=>(b.fy-a.fy)||String(a.name).localeCompare(String(b.name)));
   if(!recs.length){
-    return '<option value="">— No season —</option>'+(S.seasons||[]).map(x=>`<option value="${esc(x)}" ${x===sel?'selected':''}>${esc(x)}</option>`).join('');
+    return '<option value="">— No season —</option>'+both+(S.seasons||[]).map(x=>`<option value="${esc(x)}" ${x===sel?'selected':''}>${esc(x)}</option>`).join('');
   }
   const selId = (function(){ const r=(S.seasonRecs||[]).find(x=>x && (x.id===sel || x.name===sel)); return r?r.id:''; })();
-  return '<option value="">— No season —</option>'+recs.map(x=>
+  return '<option value="">— No season —</option>'+both+recs.map(x=>
     `<option value="${esc(x.id)}" ${x.id===selId?'selected':''}>${esc(x.name)}${x.status==='CLOSED'?' (closed)':(x.id===cur?' (current)':'')}</option>`).join('');
 }
 function openSeasons(){ renderSeasonList(); document.getElementById('mo-seasons').classList.add('open'); }
@@ -4150,20 +4166,10 @@ function billSeasonType(){
   const s = sel ? seasonById(sel.value) : null;
   return s ? s.type : null;
 }
-function itemsForBill(){
-  const want = billSeasonType();
-  return itemsByRate().filter(it=>{
-    const t = (it && it.seasonType) || 'ALL';
-    return t==='ALL' || !want || want==='OTHER' || t===want;
-  });
-}
+// Returns and challans may contain articles from either season.
+function itemsForBill(){return itemsByRate();}
 function itemOptions(){
-  const want = billSeasonType();
-  const list = itemsForBill();
-  const hidden = itemsByRate().length - list.length;
-  return '<option value="">— pick item'+(want?' ('+(want==='WINTER'?'Winter':'Summer')+' stock)':'')+' —</option>'
-    + list.map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('')
-    + (hidden?`<option value="" disabled>— ${hidden} article(s) hidden: other season —</option>`:'');
+  return '<option value="">— pick item (all seasons) —</option>'+itemsByRate().map(it=>`<option value="${it.id}">${esc(it.name)}${it.code?' ['+esc(it.code)+']':''} · ₹${+it.rate||0}</option>`).join('');
 }
 /* Changing the season on the bill re-stocks every item dropdown already on screen. */
 function seasonChangedOnBill(){
@@ -4173,6 +4179,8 @@ function seasonChangedOnBill(){
     sel.innerHTML = opts;
   });
   refreshItemDatalist();
+  if(document.getElementById('mo-challan').classList.contains('open'))autoSeasonOnBill('item-rows','ch-season');
+  if(document.getElementById('mo-edit-challan').classList.contains('open'))autoSeasonOnBill('ec-item-rows','ec-season');
 }
 function findItemByName(v){ const n=normIName(v); if(!n) return null; return (S.items||[]).find(it=>normIName(it.name)===n)||null; }
 function refreshItemDatalist(){
@@ -5542,35 +5550,59 @@ async function saveDailyTime(){
     await dailyPulse();
   }catch(e){dailySetStatus('Backup time was not saved: '+e.message);alert(_dailyMessage);}
 }
-async function chooseDailyFolder(){
+function dailyConfig(raw){
+  const c={...(raw||{})};
+  c.destinations=Array.isArray(c.destinations)?c.destinations.map(d=>({...d})):c.folder?[{id:'legacy',folder:c.folder,startDate:c.startDate,lastDue:c.lastDue||'',lastFile:c.lastFile||'',lastSaved:c.lastSaved||'',error:''}]:[];
+  delete c.folder;delete c.lastDue;delete c.lastFile;delete c.lastSaved;
+  return c;
+}
+async function changeDailyConfig(owner,fn){
+  const change=async()=>{if(uid!==owner)return;const config=dailyConfig(await dailyStore('config:'+owner));await fn(config);await dailyStore('config:'+owner,config);};
+  if(navigator.locks?.request)await navigator.locks.request('challan-daily-json-'+owner,change);
+  else {if(_dailyBusy)throw Error('A backup is running. Please retry in a moment.');await change();}
+}
+async function renderDailyDestinations(){
+  const owner=uid,el=document.getElementById('daily-destinations');if(!owner||!el)return;
+  try{
+    const c=dailyConfig(await dailyStore('config:'+owner));if(uid!==owner||document.getElementById('daily-destinations')!==el)return;
+    el.innerHTML=c.destinations.length?c.destinations.map((d,i)=>`<div style="padding:10px;border:1px solid #ddd;border-radius:8px;margin:8px 0;overflow-wrap:anywhere">
+      <strong>${i+1}. ${esc(d.folder.name)}</strong><div style="font-size:12px;color:${d.error?'#b91c1c':'#475569'}">${esc(d.error|| (d.lastSaved?'Verified: '+new Date(d.lastSaved).toLocaleString('en-IN',{timeZone:DAILY_ZONE}):'Waiting for first scheduled backup'))}</div>
+      <button class="btn sm" onclick="chooseDailyFolder('${_js(d.id)}')">Reconnect / change</button>
+      <button class="btn sm" onclick="removeDailyDestination('${_js(d.id)}')">Remove destination</button></div>`).join(''):'<p>No backup folders selected.</p>';
+  }catch(e){el.textContent='Could not load destinations: '+e.message;}
+}
+async function chooseDailyFolder(replaceId){
   if(!uid||!isOwnerUid(uid))return;
-  if(!window.showDirectoryPicker){alert('Open this app in Windows Chrome or Edge to choose a backup folder.');return;}
+  if(!window.showDirectoryPicker){alert('Open this app in Windows Chrome or Edge to choose backup folders.');return;}
   const owner=uid;
   try{
-    const folder=await window.showDirectoryPicker({id:'challan-daily-json',mode:'readwrite'});
-    if(uid!==owner)return;
-    const prior=await dailyStore('config:'+owner);
-    const config={folder,enabled:true,time:dailyTime(prior),startDate:prior?.startDate||dailyClock().date,lastDue:prior?.lastDue||'',lastFile:prior?.lastFile||'',lastSaved:prior?.lastSaved||''};
-    await dailyStore('config:'+owner,config);
-    _dailyRetryAt=0;_dailyNotice='';dailySetStatus('Folder selected: '+folder.name+'. Preparing a complete confirmed copy.');
-    if(isOnline)ensureSubs(BACKUP_COLS);
-    await dailyPulse();
+    const folder=await window.showDirectoryPicker({id:'challan-daily-json',mode:'readwrite'});if(uid!==owner)return;
+    await changeDailyConfig(owner,async c=>{
+      let duplicate=null;
+      for(const d of c.destinations){if(d.folder===folder||(d.folder.isSameEntry&&await d.folder.isSameEntry(folder)))duplicate=d;}
+      if(duplicate&&duplicate.id!==replaceId){duplicate.folder=folder;duplicate.error='';c.enabled=true;return;}
+      const old=c.destinations.find(d=>d.id===replaceId);
+      const same=old&&(old.folder===folder||(old.folder.isSameEntry&&await old.folder.isSameEntry(folder)));
+      const dest={id:old?.id||uniqId('DEST'),folder,startDate:same?old.startDate:dailyClock().date,lastDue:same?old.lastDue:'',lastFile:same?old.lastFile:'',lastSaved:same?old.lastSaved:'',error:''};
+      if(old)c.destinations[c.destinations.indexOf(old)]=dest;else c.destinations.push(dest);
+      c.enabled=true;c.time=dailyTime(c);c.startDate=c.startDate||dailyClock().date;
+    });
+    _dailyRetryAt=0;_dailyNotice='';dailySetStatus('Backup destination saved: '+folder.name);await renderDailyDestinations();
+    if(isOnline)ensureSubs(BACKUP_COLS);await dailyPulse();
   }catch(e){if(e.name!=='AbortError'){dailySetStatus('Folder setup failed: '+e.message);alert(_dailyMessage);}}
 }
-async function renewDailyPermission(){
-  if(!uid)return;
-  // Use the picker directly within the click gesture; Windows can remember the previous folder.
-  return chooseDailyFolder();
+async function removeDailyDestination(id){
+  if(!uid||!confirm('Remove this backup destination? Files already saved there will be kept.'))return;
+  try{await changeDailyConfig(uid,c=>{c.destinations=c.destinations.filter(d=>d.id!==id);if(!c.destinations.length)c.enabled=false;});await renderDailyDestinations();dailySetStatus('Destination removed. Existing backup files were kept.');}catch(e){alert(e.message);}
 }
+async function renewDailyPermission(){return chooseDailyFolder();}
 async function stopDailyBackup(){
-  const owner=uid;if(!owner)return;
-  try{const config=await dailyStore('config:'+owner);if(config){config.enabled=false;await dailyStore('config:'+owner,config);}dailySetStatus('Daily folder backup paused. Existing files and the last confirmed copy are kept.');}
-  catch(e){dailySetStatus('Could not pause backup: '+e.message);}
+  if(!uid)return;try{await changeDailyConfig(uid,c=>{c.enabled=false;});dailySetStatus('All daily folder backups paused. Existing files are kept.');}catch(e){alert(e.message);}
 }
 async function writeDailyJSON(config,body,owner,due,now){
   if(body._uid!==owner||body._excluded?.length||!BACKUP_COLS.every(k=>body._coverage?.includes(k)))throw Error('A complete confirmed copy is not available yet. Connect and open Backup & Restore first.');
   validateNumbers(body,'saved copy');
-  if(await config.folder.queryPermission({mode:'readwrite'})!=='granted')throw Error('Folder permission needs renewal. Open Backup & Restore and click Choose / reconnect folder.');
+  if(await config.folder.queryPermission({mode:'readwrite'})!=='granted')throw Error('Folder permission needs renewal. Open Backup & Restore and click Reconnect / change beside that destination.');
   if(uid!==owner)throw Error('Account changed. Backup cancelled.');
   const stamp=new Date(now).toISOString();
   const payload={...body,_export:{scheduledFor:due+'T'+dailyTime(config)+':00+05:30',savedAt:stamp,sourceConfirmedAt:body._at,offline:!isOnline||navigator.onLine===false,timezone:DAILY_ZONE,missedDatesNotReconstructed:true}};
@@ -5590,23 +5622,25 @@ async function writeDailyJSON(config,body,owner,due,now){
   return filename;
 }
 async function dailyWork(owner,now){
-  let config=await dailyStore('config:'+owner);if(!config?.enabled||uid!==owner)return;
-  // Attach each missing archive once per session, without requiring it for ordinary ledger work.
+  let config=dailyConfig(await dailyStore('config:'+owner));if(!config.enabled||uid!==owner)return;
   if(isOnline&&navigator.onLine!==false)ensureSubs(BACKUP_COLS);
-  await dailyCapture(owner);
-  if(uid!==owner)return;
-  const clock=dailyClock(now,dailyTime(config)),due=clock.due;
-  if(due<config.startDate||(config.lastDue&&due<=config.lastDue)){
-    dailySetStatus('Daily at '+dailyTime(config)+' IST → '+config.folder.name+(config.lastSaved?' · Last verified save: '+new Date(config.lastSaved).toLocaleString('en-IN',{timeZone:DAILY_ZONE}):' · First save pending.'));return;
+  await dailyCapture(owner);if(uid!==owner)return;
+  const due=dailyClock(now,dailyTime(config)).due;
+  const pending=config.destinations.filter(d=>due>=(d.startDate||config.startDate||due)&&(!d.lastDue||due>d.lastDue));
+  if(!pending.length){dailySetStatus('Daily at '+dailyTime(config)+' IST · '+config.destinations.length+' destination(s). No backup currently due.');await renderDailyDestinations();return;}
+  const source=await dailyStore('source:'+owner);if(!source?.body)throw Error('No complete confirmed copy is available yet. Connect and open Backup & Restore.');
+  let successful=0,failed=0;
+  for(const dest of pending){
+    if(uid!==owner)return;
+    try{
+      const filename=await writeDailyJSON({...config,folder:dest.folder},source.body,owner,due,now);
+      dest.lastDue=due;dest.lastFile=filename;dest.lastSaved=new Date(now).toISOString();dest.error='';successful++;
+    }catch(e){dest.error=e.message;failed++;}
+    // Persist each destination independently so the next retry skips already verified copies.
+    await dailyStore('config:'+owner,config);
   }
-  const source=await dailyStore('source:'+owner);
-  if(!source?.body)throw Error('No complete confirmed copy exists on this device yet. Connect and open Backup & Restore to prepare it.');
-  const filename=await writeDailyJSON(config,source.body,owner,due,now);
-  // Mark the date complete only after the file has been closed and read back successfully.
-  config={...config,lastDue:due,lastFile:filename,lastSaved:new Date(now).toISOString()};
-  await dailyStore('config:'+owner,config);
-  dailySetStatus('Verified JSON saved: '+filename+' · Data confirmed: '+new Date(source.body._at).toLocaleString('en-IN',{timeZone:DAILY_ZONE}));
-  _dailyNotice='';
+  dailySetStatus(successful+' destination(s) verified'+(failed?' · '+failed+' unavailable. Will retry while the app is open.':' · All due destinations saved.')+' Data confirmed: '+new Date(source.body._at).toLocaleString('en-IN',{timeZone:DAILY_ZONE}));
+  await renderDailyDestinations();
 }
 async function dailyPulse(now=Date.now()){
   if(_dailyBusy||!uid||!isOwnerUid(uid)||Date.now()<_dailyRetryAt)return false;
@@ -5915,9 +5949,10 @@ function renderBackupPanel(){
       <button class="btn" onclick="saveDailyTime()">Save time</button>
     </div>
     <p style="font-size:12px;color:#64748B;margin-bottom:12px">If the selected time has already passed, the pending daily backup runs when possible. A successful backup is not repeated just because you change its time.</p>
-    <button class="btn pri full" onclick="chooseDailyFolder()">Choose / reconnect backup folder</button>
-    <div id="daily-status" style="font-size:12px;margin:10px 0;overflow-wrap:anywhere">${esc(_dailyMessage||'Choose a folder to enable daily JSON backups. Folder permission may need renewal after reopening the browser.')}</div>
-    <button class="btn full" onclick="stopDailyBackup()">Pause daily folder backups</button>
+    <button class="btn pri full" onclick="chooseDailyFolder()">Add backup destination</button>
+    <div id="daily-destinations"></div>
+    <div id="daily-status" style="font-size:12px;margin:10px 0;overflow-wrap:anywhere">${esc(_dailyMessage||'Add one or more folders to enable daily JSON backups. Folder permission may need renewal after reopening the browser.')}</div>
+    <button class="btn full" onclick="stopDailyBackup()">Pause all daily folder backups</button>
     <hr style="margin:14px 0;border:0;border-top:1px solid #ddd">
     <button class="btn pri full" onclick="downloadExcelNow()">Download Excel backup</button>
     <button class="btn full" style="margin-top:10px" onclick="downloadBackup()">Download complete backup (.cmb)</button>
@@ -5925,7 +5960,7 @@ function renderBackupPanel(){
     <input type="file" id="bk-file" accept=".xlsx,.cmb,.json" style="display:none" onchange="backupFileChosen(this)">
     <button class="btn full" style="margin-top:10px" onclick="pickBackupFile()">Restore from a backup file</button>
     <p style="font-size:12px;color:#64748B">Only missing IDs are added. Existing records are preserved. Previous browser backups are not loaded automatically.</p></details>`;
-  loadDailyTimer();
+  loadDailyTimer();renderDailyDestinations();
 }
 function openBackup(){
   // A backup must hold everything, so pull in whatever this session has not needed yet.
@@ -7234,7 +7269,7 @@ function renderReports(){
   const filterBar=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
     <div style="font-size:15px;font-weight:800;color:#1A2E5A;flex:1;min-width:150px">📊 Reports &amp; Analytics</div>
     <select onchange="repFY=+this.value;renderReports()" style="padding:8px 10px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;font-weight:700;color:#1A2E5A">${yearsAll.map(y=>`<option value="${y}" ${y===repFY?'selected':''}>${fyLbl(y)}${y===curFYnow?' (current)':''}</option>`).join('')}</select>
-    <select onchange="repSeason=this.value;renderReports()" style="padding:8px 10px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;color:#1A2E5A"><option value="">All seasons</option>${(S.seasons||[]).map(s=>`<option value="${esc(s)}" ${s===repSeason?'selected':''}>${esc(s)}</option>`).join('')}</select>
+    <select onchange="repSeason=this.value;renderReports()" style="padding:8px 10px;border:1.5px solid #DDD;border-radius:8px;font-size:13px;color:#1A2E5A"><option value="">All seasons</option>${[...(S.seasons||[]),'BOTH'].map(s=>`<option value="${esc(s)}" ${s===repSeason?'selected':''}>${s==='BOTH'?'Both':esc(s)}</option>`).join('')}</select>
     <button class="btn sm" onclick="openSeasons()" style="font-size:11px">🗓️ Manage</button>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
@@ -8006,7 +8041,7 @@ async function saveEditChallan() {
   });
   if (!items.length) { alert('Add at least one item with name, qty and rate'); return; }
   if (!confirmStockShortfall('ec-item-rows')) return;
-  let ecSeason = document.getElementById('ec-season').value || '';
+  let ecSeason = resolvedBillSeason(items,document.getElementById('ec-season').value,newDate);
   if(!ecSeason){ const a = seasonForItems(items); ecSeason = a ? a.id : ''; }
   if(!ecSeason){ alert('This bill needs a season.'); return; }
   c.pid=newPid;c.pname=S.parties.find(p=>p.id===newPid)?.name||c.pname;c.date=newDate;
