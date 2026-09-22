@@ -2289,9 +2289,17 @@ function canEditLedger(){
   if(!loadedOnce || !fullServerRead()){
     alert('Please wait for the complete cloud data to load before changing records. If this continues, open Sync Status.');return false;
   }
-  const stale=[...document.querySelectorAll('.overlay.open')].some(el=>EDIT_MODALS.has(el.id)&&el._ledgerRevision!=null&&el._ledgerRevision!==_dataRevision);
-  if(stale){alert('Cloud records changed while this form was open. Close it and reopen it before saving, so newer data is not overwritten.');return false;}
+  // Remember when the open form was opened. saveToCloud() then blocks only if the records
+  // this save touches (or the party/challan/item they belong to) changed since then.
+  const since=openFormSince();
+  if(since!==Infinity){
+    const keep=_pendingSince&&Date.now()-_pendingSince.t<180000?_pendingSince.since:Infinity;
+    _pendingSince={since:Math.min(since,keep),t:Date.now()};
+  }
   return true;
+}
+function openFormSince(){
+  return [...document.querySelectorAll('.overlay.open')].filter(el=>EDIT_MODALS.has(el.id)&&el._ledgerSeq!=null).reduce((m,el)=>Math.min(m,el._ledgerSeq),Infinity);
 }
 function showOfflineAlert(){
   isOnline=false;_connectionGeneration++;_dataRevision++;loadedOnce=false;refreshSyncDot();
@@ -2310,14 +2318,136 @@ function restoreConfirmedView(){
   if(_lastMetaData)applyMeta(_lastMetaData);
   invalidateAllAlloc();invalidateStock();invalidateCash();reconcileCounters();
 }
-function externalChange(coll,before,after){
-  return [...new Set([...Object.keys(before),...Object.keys(after)])].some(id=>{
+function externalChangedIds(coll,before,after){
+  return [...new Set([...Object.keys(before),...Object.keys(after)])].filter(id=>{
     if(sameRecord(before[id]||null,after[id]||null))return false;
     const own=_activeJobs.find(j=>j.coll===coll&&j.id===id);
     if(own&&sameRecord(after[id]||null,own.del?null:own.payload))return false;
     if(coll==='trash'&&_activeJobs.some(j=>j.history&&j.history.id===id&&sameRecord(j.history,after[id])))return false;
     return true;
   });
+}
+function externalChange(coll,before,after){return externalChangedIds(coll,before,after).length>0;}
+/* ── Multi-device editing ──────────────────────────────────────────────────────────────
+   Every save still passes through meta/state, so saves from all devices are serialised.
+   meta/state also carries a short journal: which records each save touched, and which
+   parties / challans / payments / items / seasons those records link to. If another device
+   saved first, this device merges on top of it ONLY when none of those overlap; otherwise it
+   stops exactly as before. Record documents stay compare-and-set, so a newer version is
+   never overwritten. Counters only ever go up, and a new CH/RT/EX number that another
+   device already used is re-issued inside the same transaction, so numbers never repeat. */
+const COUNTER_KEYS=['pC','cC','pyC','rtC','exC'];
+const NUMBERED={challans:['cC','CH-'],returns:['rtC','RT-'],expenses:['exC','EX-']};
+const JOURNAL_MAX=50, JOURNAL_KEYS_MAX=60, MASS_DELETE_LIMIT=10;
+// Collections written ONLY by this app get per-record fingerprints (items is shared with Contractor Tracker).
+const HASHED_COLS=new Set(['parties','challans','payments','overrides','returns','expenses']);
+let _extSeq=0, _pendingSince=null; const _extMarks={};
+function conflictErr(msg){const e=Error(msg);e.conflict=true;return e;}
+function num0(x){x=+x;return Number.isFinite(x)?x:0;}
+function metaVal(o,k){return o&&o[k]!==undefined?o[k]:null;}
+function stripJournal(m){if(!m)return m;const c=clone(m);delete c._journal;return c;}
+function recKeys(coll,rec,id){
+  const own=new Set(), link=new Set();
+  if(id)own.add(coll+'/'+id);
+  if(rec&&typeof rec==='object'){
+    if(coll==='parties'&&rec.name)own.add('pname/'+normPName(rec.name));
+    if(coll==='items'&&rec.name)own.add('iname/'+String(rec.name).trim().toLowerCase().replace(/\s+/g,' '));
+    if(rec.pid)link.add('parties/'+rec.pid);
+    if(rec.cid)link.add('challans/'+rec.cid);
+    if(rec.payId)link.add('payments/'+rec.payId);
+    if(rec.itemId)link.add('items/'+rec.itemId);
+    if(rec.season&&typeof rec.season==='string')link.add('seasons/'+rec.season);
+  }
+  return {own,link};
+}
+function jobKeys(jobs,metaKeys){
+  const own=new Set(), link=new Set();
+  jobs.forEach(j=>{
+    if(j.coll==='meta')return;
+    [j.prev,j.payload].forEach(r=>{const k=recKeys(j.coll,r,j.id);k.own.forEach(x=>own.add(x));k.link.forEach(x=>link.add(x));});
+  });
+  (metaKeys||[]).forEach(k=>own.add('meta/'+k));
+  return {own,link};
+}
+function markExternal(keys){_extSeq++;keys.forEach(k=>{_extMarks[k]=_extSeq;});}
+function entryClashes(e,keys){
+  if(!e||e.all)return true;
+  const eo=new Set([...(e.o||[]),...Object.keys(e.h||{})]), er=new Set(e.r||[]);
+  for(const k of keys.own)if(eo.has(k)||er.has(k))return true;
+  for(const k of keys.link)if(eo.has(k))return true;
+  return false;
+}
+/* Short fingerprint of a record's saved content ('x' = deleted), identical on every device. */
+function recHash(r){
+  if(r==null)return 'x';
+  const s=JSON.stringify(stableValue(r));let h=0x811c9dc5;
+  for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,0x01000193);}
+  return (h>>>0).toString(36)+s.length.toString(36);
+}
+/* Journal entries whose record changes this device has NOT received yet. Listeners for
+   different collections can arrive in any order, so this is judged record by record:
+   the newest fingerprint of each journalled record is compared with what this device holds. */
+function unseenEntries(jr,lookup,from){
+  const latest={}, owner={};
+  for(let i=jr.length-1;i>=0;i--){const e=jr[i];if(!e||!e.h)continue;
+    Object.keys(e.h).forEach(k=>{if(!(k in latest)){latest[k]=e.h[k];owner[k]=i;}});}
+  const out=new Set();
+  Object.keys(latest).forEach(k=>{const have=lookup(k);if(have!==undefined&&recHash(have)!==latest[k])out.add(owner[k]);});
+  jr.forEach((e,i)=>{if(e&&e.all&&i>from)out.add(i);});   // bulk entries after our base cannot be checked record by record
+  return [...out].map(i=>jr[i]);
+}
+function recordLabel(j){
+  return ({parties:'This party',challans:'This challan',payments:'This payment',items:'This item',returns:'This return',expenses:'This expense',incomingBills:'This staff bill'})[j.coll]||('A record in '+j.coll);
+}
+/* Builds the meta/state document to write, on top of whatever the server holds right now. */
+function planLedgerMeta(jobs,base,mine,live,keys,version,at,lookup){
+  const b=base||{}, l=live||{};
+  const ljr=Array.isArray(l._journal)?l._journal:[];
+  let from=ljr.length-1;
+  if(!sameRecord(live,base)){
+    if(!live||!base)throw conflictErr('Settings were changed on another device. Nothing was saved — wait a few seconds for this screen to update, then try again.');
+    from=b._ledgerVersion?ljr.findIndex(e=>e&&e.v===b._ledgerVersion):-1;
+    if(from<0||!ljr.length||ljr[ljr.length-1].v!==l._ledgerVersion)
+      throw conflictErr('Another device saved changes that this screen has not received yet. Nothing was saved — wait a few seconds for the screen to update, then try again.');
+  }
+  // Any change from another device that this screen has not received, and that touches the
+  // same records or the party / challan / item they belong to, stops this save.
+  const check=new Set(ljr.slice(from+1));if(lookup)unseenEntries(ljr,lookup,from).forEach(e=>check.add(e));
+  if([...check].some(e=>entryClashes(e,keys)))
+    throw conflictErr('The same party or record was changed on another device just now. Nothing was saved — the screen now shows the latest data. Check it and enter your change again.');
+  const out=clone(l);
+  META_KEYS.forEach(k=>{
+    if(COUNTER_KEYS.includes(k)||mine[k]===undefined)return;
+    const bv=metaVal(b,k), lv=metaVal(l,k);
+    if(sameRecord(mine[k],bv))return;                       // unchanged here: keep the cloud value
+    if(!sameRecord(lv,bv)&&!sameRecord(lv,mine[k]))
+      throw conflictErr('The setting "'+k+'" was also changed on another device. Nothing was saved — check it and try again.');
+    out[k]=clone(mine[k]);
+  });
+  COUNTER_KEYS.forEach(k=>{
+    if(mine[k]===undefined&&l[k]===undefined)return;
+    out[k]=Math.max(num0(l[k]),num0(mine[k]));             // counters never go down
+  });
+  Object.entries(NUMBERED).forEach(([coll,[k,prefix]])=>{
+    const lc=num0(l[k]), bc=num0(b[k]);
+    if(lc<=bc)return;                                       // nobody else issued numbers meanwhile
+    const re=new RegExp('^'+prefix+'0*(\\d+)$');
+    const fresh=jobs.filter(j=>j.coll===coll&&!j.del&&!j.prev&&j.payload&&re.test(j.payload.num||''));
+    if(!fresh.length)return;
+    fresh.sort((x,y)=>(+re.exec(x.payload.num)[1])-(+re.exec(y.payload.num)[1]));
+    let n=lc;
+    fresh.forEach(j=>{n++;j.payload.num=prefix+pad(n);});
+    out[k]=Math.max(n,num0(out[k]));
+  });
+  const jr=(Array.isArray(l._journal)?l._journal:[]).slice(-(JOURNAL_MAX-1));
+  if(keys.own.size+keys.link.size>JOURNAL_KEYS_MAX)jr.push({v:version,all:1});
+  else{
+    const h={}, rec=new Set();
+    jobs.forEach(j=>{if(HASHED_COLS.has(j.coll)){const k=j.coll+'/'+j.id;rec.add(k);h[k]=j.del?'x':recHash(j.payload);}});
+    jr.push({v:version,o:[...keys.own].filter(k=>!rec.has(k)),r:[...keys.link],h});
+  }
+  out._journal=jr;out._ledgerVersion=version;out.updated=at;
+  return out;
 }
 /* Observed listener changes only. This is not a billing counter. */
 const READS = { docs:0, byColl:{}, since:new Date().toISOString() };
@@ -2345,7 +2475,14 @@ function acceptServerRows(coll,snap){
       try{validateNumbers(rows[i],coll+'/'+snap.docs[i].id);}catch(e){onSubErr(coll,{code:'invalid-number',message:e.message});return;}
       index[key]=clone(rows[i]);paths[key]=snap.docs[i].id;
     }
-    if(_lastSaved[field]&&externalChange(coll,_lastSaved[field],index))_dataRevision++;
+    if(_lastSaved[field]){
+      const changed=externalChangedIds(coll,_lastSaved[field],index);
+      if(changed.length){
+        _dataRevision++;const ks=[];
+        changed.forEach(id=>[_lastSaved[field][id],index[id]].forEach(r=>recKeys(coll,r,id).own.forEach(k=>ks.push(k))));
+        markExternal(ks);
+      }
+    }
     _lastSaved[field]=index;_docPaths[coll]=paths;
   }
   SYNC[coll].srv=true; delete DENIED[coll];
@@ -2383,7 +2520,20 @@ function subscribeData(){
     const m=snap.metadata||{};
     if(!m.fromCache&&!m.hasPendingWrites&&snap.exists){try{validateNumbers(snap.data(),'settings');}catch(e){onSubErr('meta',{code:'invalid-number',message:e.message});return;}}
     SYNC.meta={cache:!!m.fromCache,pending:!!m.hasPendingWrites,srv:SYNC.meta.srv,err:null};
-    if(!m.fromCache&&!m.hasPendingWrites){if(_lastMetaData&&!sameRecord(_lastMetaData,snap.exists?snap.data():null)&&!_activeJobs.some(j=>j.coll==='meta'&&sameRecord(j.payload,snap.exists?snap.data():null)))_dataRevision++;_lastMetaData=snap.exists?clone(snap.data()):null;SYNC.meta.srv=true;if(!_saving&&snap.exists)applyMeta(snap.data());}
+    if(!m.fromCache&&!m.hasPendingWrites){
+      const d=snap.exists?snap.data():null;
+      // A version already listed as older in the journal we hold is a late echo: never step back to it.
+      const held=_lastMetaData&&Array.isArray(_lastMetaData._journal)?_lastMetaData._journal:null;
+      const older=!!(d&&d._ledgerVersion&&held&&d._ledgerVersion!==_lastMetaData._ledgerVersion&&held.slice(0,-1).some(e=>e&&e.v===d._ledgerVersion));
+      if(!older){
+        if(_lastMetaData&&!sameRecord(_lastMetaData,d)&&!_activeJobs.some(j=>j.coll==='meta'&&sameRecord(j.payload,d))){
+          _dataRevision++;
+          markExternal(META_KEYS.filter(k=>!COUNTER_KEYS.includes(k)&&!sameRecord(metaVal(_lastMetaData,k),metaVal(d,k))).map(k=>'meta/'+k));
+        }
+        _lastMetaData=d?clone(d):null;
+      }
+      SYNC.meta.srv=true;if(!_saving&&!older&&d)applyMeta(d);
+    }
     if(m.fromCache)_connectionGeneration++;
     loadedOnce=fullServerRead();if(loadedOnce)_readWarning='';refreshSyncDot();scheduleLedgerRender();
   },err=>{if(active())onSubErr('meta',err);}));
@@ -2449,8 +2599,11 @@ function diffWrite(coll,arr,lastIndex,keyFn){
 }
 async function saveToCloud(){
   if(!canEditLedger()){if(!_saving){_deleteIntent={};_extraJobs=[];restoreConfirmedView();}return false;}
-  const owner=uid, epoch=_syncEpoch, generation=_connectionGeneration, revision=_dataRevision;
+  const owner=uid, epoch=_syncEpoch, generation=_connectionGeneration;
+  const formSince=(_pendingSince&&Date.now()-_pendingSince.t<180000)?_pendingSince.since:Infinity;_pendingSince=null;
   let jobs=[];
+  // Listeners replace _lastSaved[field] with a new object, so these references freeze what this device had seen.
+  const seenBase={}, seenOk={};Object.entries(LEDGER_COLS).forEach(([coll,field])=>{seenBase[field]=_lastSaved[field];seenOk[coll]=confirmedCollection(coll);});
   try{
     (S.trash||[]).forEach(_trashId);
     Object.entries(LEDGER_COLS).forEach(([coll,field])=>{
@@ -2464,27 +2617,58 @@ async function saveToCloud(){
     META_KEYS.forEach(k=>validateNumbers(S[k],'settings.'+k));validateNumbers(_extraJobs,'staff operation');
     const meta=ledgerMeta(), oldMeta={};META_KEYS.forEach(k=>{if(_lastMetaData&&_lastMetaData[k]!==undefined)oldMeta[k]=_lastMetaData[k];});
     const metaChanged=!sameRecord(meta,oldMeta);
+    const base=_lastMetaData?clone(_lastMetaData):null, version=uniqId('REV'), savedAt=new Date().toISOString();
+    const keys=jobKeys(jobs.concat(_extraJobs),META_KEYS.filter(k=>!COUNTER_KEYS.includes(k)&&meta[k]!==undefined&&!sameRecord(meta[k],metaVal(base,k))));
+    // A form open on this device is stale only if the records this save touches changed elsewhere.
+    const since=Math.min(formSince,openFormSince());
+    if(since!==Infinity&&[...keys.own,...keys.link].some(k=>(_extMarks[k]||0)>since))
+      throw conflictErr('This record was changed on another device while this form was open. Close the form and reopen it before saving, so the newer data is not overwritten.');
     // Serialize ledger actions across devices, including operations on different records.
-    if(metaChanged||jobs.length||_extraJobs.length)jobs.push({coll:'meta',id:'state',path:'state',prev:clone(_lastMetaData),payload:{...(_lastMetaData||{}),...meta,_ledgerVersion:uniqId('REV'),updated:new Date().toISOString()}});
+    // The payload here is provisional; it is rebuilt inside the transaction from the live server copy.
+    if(metaChanged||jobs.length||_extraJobs.length)jobs.push({coll:'meta',id:'state',path:'state',prev:base,payload:planLedgerMeta([],base,meta,base,keys,version,savedAt)});
     jobs.push(..._extraJobs.map(clone));
     if(!jobs.length){_deleteIntent={};_extraJobs=[];return true;}
     // All changes and their previous versions commit together. Never split a delete
     // from its recovery copy, and never partially apply a large import.
+    // Mass deletion needs an explicit OK, however it was triggered.
+    const dels=jobs.filter(j=>j.del&&j.coll!=='incomingBills');
+    if(dels.length>MASS_DELETE_LIMIT){
+      const byColl={};dels.forEach(j=>{byColl[j.coll]=(byColl[j.coll]||0)+1;});
+      if(!confirm('PERMISSION NEEDED — mass deletion\n\nThis action will delete '+dels.length+' records from the cloud:\n'+Object.entries(byColl).map(([c,n])=>'  • '+n+' '+c).join('\n')+'\n\nPress OK only if you really want to delete all of them.'))
+        throw conflictErr('Mass deletion cancelled. Nothing was deleted or changed.');
+    }
     const auditId=uniqId('H'), at=new Date().toISOString();
-    jobs.forEach((j,i)=>{if(j.prev&&j.coll!=='trash'&&(j.coll!=='meta'||metaChanged))j.history={id:auditId+'-'+i,type:'record',collection:j.coll,recordId:j.id,documentId:j.path,record:clone(j.prev),deletedAt:at,reason:j.del?'Deleted record':'Before edit'};});
+    jobs.forEach((j,i)=>{if(j.prev&&j.coll!=='trash'&&(j.coll!=='meta'||metaChanged))j.history={id:auditId+'-'+i,type:'record',collection:j.coll,recordId:j.id,documentId:j.path,record:j.coll==='meta'?stripJournal(j.prev):clone(j.prev),deletedAt:at,reason:j.del?'Deleted record':'Before edit'};});
     const writes=jobs.reduce((n,j)=>n+1+(j.history?1:0),0);
     if(writes>450 || jobs.reduce((n,j)=>n+_docBytes(j.payload||{})+_docBytes(j.history||{}),0)>7*1024*1024)throw Error('This action is too large to save safely in one operation. Use a smaller import or selection. Nothing was changed.');
     jobs.forEach(j=>{if(j.history&&_docBytes(j.history)>DOC_LIMIT-4096)throw Error('A recovery copy is too large. Nothing was changed.');});
     _activeJobs=jobs;_saving=true;_writeFails=0;refreshSyncDot();
     _netToast('stuck','Saving to cloud','Please wait for confirmation before closing this page.',null,null,null);
     const root=db.collection('users').doc(owner);
+    const metaJob=jobs.find(j=>j.coll==='meta'), orig=jobs.map(j=>j.payload?clone(j.payload):null);
+    // What this device currently holds for a record (undefined = collection not loaded here).
+    // Judged against the records as they were when this save was worked out (seenBase), not
+    // against rows that arrived afterwards and are therefore missing from this save's plan.
+    const baselineOf=k=>{const i=k.indexOf('/'),c=k.slice(0,i),f=LEDGER_COLS[c];if(!f||!seenBase[f]||!seenOk[c])return undefined;const r=seenBase[f][k.slice(i+1)];return r===undefined?null:r;};
     await db.runTransaction(async tx=>{
       if(!isOnline||navigator.onLine===false||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or account changed. Save cancelled.');
       if(!fullServerRead()||generation!==_connectionGeneration)throw Error('Cloud reads became unavailable. Save cancelled; reconnect and retry.');
+      jobs.forEach((j,i)=>{if(orig[i])j.payload=clone(orig[i]);});   // Firestore may re-run this function
       const refs=jobs.map(j=>root.collection(j.coll).doc(j.path));
       const snaps=await Promise.all(refs.map(ref=>tx.get(ref)));
-      snaps.forEach((s,i)=>{const live=s.exists?s.data():null;if(!sameRecord(live,jobs[i].prev))throw Error('Another device changed '+jobs[i].coll+'. Your save was stopped to protect the newer data. Refresh and retry.');});
-      if(!isOnline||navigator.onLine===false||!fullServerRead()||generation!==_connectionGeneration||revision!==_dataRevision||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or cloud read state changed during save. Please reconnect and retry.');
+      let liveMeta=null;
+      snaps.forEach((s,i)=>{
+        const live=s.exists?s.data():null, j=jobs[i];
+        if(j===metaJob){liveMeta=live;return;}
+        // Every record is compare-and-set: a version this device has not seen is never overwritten.
+        if(!sameRecord(live,j.prev))throw conflictErr(recordLabel(j)+' was changed on another device just now. Nothing was saved — the screen now shows the latest data. Check it and enter your change again.');
+      });
+      if(metaJob){
+        metaJob.payload=planLedgerMeta(jobs,base,meta,liveMeta,keys,version,savedAt,baselineOf);
+        if(metaJob.history)metaJob.history.record=stripJournal(liveMeta);
+        if(_docBytes(metaJob.payload)>DOC_LIMIT-16384)throw Error('Settings document is too large. Nothing was saved.');
+      }
+      if(!isOnline||navigator.onLine===false||!fullServerRead()||generation!==_connectionGeneration||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or cloud read state changed during save. Please reconnect and retry.');
       jobs.forEach((j,i)=>{
         if(j.history)tx.set(root.collection('trash').doc(j.history.id),j.history);
         if(j.del)tx.delete(refs[i]);else tx.set(refs[i],j.payload);
@@ -2510,8 +2694,14 @@ async function saveToCloud(){
     return true;
   }catch(e){
     if(uid===owner&&epoch===_syncEpoch){
-      _writeFails=1;_lastWriteErr=(e&&e.message)||String(e);_deleteIntent={};_extraJobs=[];restoreConfirmedView();
-      alert('Not saved.\n\n'+_lastWriteErr+'\n\nNo part of this operation was saved. Check the cloud data before retrying.');
+      if(e&&e.conflict){
+        // A normal multi-device clash, not a sync fault: show the latest data, flag nothing red.
+        _deleteIntent={};_extraJobs=[];restoreConfirmedView();
+        alert('Not saved.\n\n'+e.message);
+      }else{
+        _writeFails=1;_lastWriteErr=(e&&e.message)||String(e);_deleteIntent={};_extraJobs=[];restoreConfirmedView();
+        alert('Not saved.\n\n'+_lastWriteErr+'\n\nNo part of this operation was saved. Check the cloud data before retrying.');
+      }
     }
     return false;
   }finally{
@@ -8983,7 +9173,7 @@ function printStmt(pid) {
 new MutationObserver(records=>{
   for(const {target:el} of records){
     if(!EDIT_MODALS.has(el.id))continue;
-    if(el.classList.contains('open')){if(!el._ledgerWasOpen)el._ledgerRevision=_dataRevision;el._ledgerWasOpen=true;}
+    if(el.classList.contains('open')){if(!el._ledgerWasOpen){el._ledgerRevision=_dataRevision;el._ledgerSeq=_extSeq;}el._ledgerWasOpen=true;}
     else el._ledgerWasOpen=false;
   }
 }).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
