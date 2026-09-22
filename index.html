@@ -2289,17 +2289,20 @@ function canEditLedger(){
   if(!loadedOnce || !fullServerRead()){
     alert('Please wait for the complete cloud data to load before changing records. If this continues, open Sync Status.');return false;
   }
-  // Remember when the open form was opened. saveToCloud() then blocks only if the records
-  // this save touches (or the party/challan/item they belong to) changed since then.
-  const since=openFormSince();
-  if(since!==Infinity){
-    const keep=_pendingSince&&Date.now()-_pendingSince.t<180000?_pendingSince.since:Infinity;
-    _pendingSince={since:Math.min(since,keep),t:Date.now()};
-  }
+  // Remember what the open form was based on: saveToCloud() merges the form's edits against
+  // that version, so re-submitted old values never undo another device's newer changes.
+  const f=openForm(null);
+  if(f){const keep=_pendingSince&&Date.now()-_pendingSince.t<180000?_pendingSince:null;_pendingSince=keep&&keep.since<=f.since?{...keep,t:Date.now()}:{...f,t:Date.now()};}
   return true;
 }
-function openFormSince(){
-  return [...document.querySelectorAll('.overlay.open')].filter(el=>EDIT_MODALS.has(el.id)&&el._ledgerSeq!=null).reduce((m,el)=>Math.min(m,el._ledgerSeq),Infinity);
+function ledgerRefs(){const o={};Object.values(LEDGER_COLS).forEach(f=>{o[f]=_lastSaved[f];});return o;}
+/* The earliest-opened edit form (or the one remembered by canEditLedger): {since, seen}. */
+function openForm(pend){
+  let best=pend&&pend.seen?{since:pend.since,seen:pend.seen}:null;
+  document.querySelectorAll('.overlay.open').forEach(el=>{
+    if(EDIT_MODALS.has(el.id)&&el._ledgerSeen&&(!best||el._ledgerSeq<best.since))best={since:el._ledgerSeq,seen:el._ledgerSeen};
+  });
+  return best;
 }
 function showOfflineAlert(){
   isOnline=false;_connectionGeneration++;_dataRevision++;loadedOnce=false;refreshSyncDot();
@@ -2328,21 +2331,31 @@ function externalChangedIds(coll,before,after){
   });
 }
 function externalChange(coll,before,after){return externalChangedIds(coll,before,after).length>0;}
-/* ── Multi-device editing ──────────────────────────────────────────────────────────────
-   Every save still passes through meta/state, so saves from all devices are serialised.
-   meta/state also carries a short journal: which records each save touched, and which
-   parties / challans / payments / items / seasons those records link to. If another device
-   saved first, this device merges on top of it ONLY when none of those overlap; otherwise it
-   stops exactly as before. Record documents stay compare-and-set, so a newer version is
-   never overwritten. Counters only ever go up, and a new CH/RT/EX number that another
-   device already used is re-issued inside the same transaction, so numbers never repeat. */
+/* ── Multi-device editing: merge, never discard ────────────────────────────────────────
+   A save is never thrown away just because another device saved first. Inside ONE Firestore
+   transaction every record this save touches is re-read from the server, and:
+   • not changed elsewhere          → written as planned;
+   • changed elsewhere              → merged field by field. Fields only this device changed take
+                                      this device's value; fields only the other device changed keep
+                                      theirs. Only if BOTH changed the SAME field is the user asked
+                                      which to keep — the version not kept goes to the Recycle Bin;
+   • deleted elsewhere              → the user chooses: restore it with these changes, or drop it.
+   Every version that gets replaced or deleted is copied to the Recycle Bin in the same commit.
+   Settings merge the same way; counters only go up; CH/RT/EX numbers already used by another
+   device are re-issued. meta/state keeps a short journal with a fingerprint of every record each
+   save wrote, so a device can find records it has not received yet (e.g. a bill another device
+   just added to the party this device is deleting) and ask before touching anything. */
 const COUNTER_KEYS=['pC','cC','pyC','rtC','exC'];
 const NUMBERED={challans:['cC','CH-'],returns:['rtC','RT-'],expenses:['exC','EX-']};
 const JOURNAL_MAX=50, JOURNAL_KEYS_MAX=60, MASS_DELETE_LIMIT=10;
 // Collections written ONLY by this app get per-record fingerprints (items is shared with Contractor Tracker).
 const HASHED_COLS=new Set(['parties','challans','payments','overrides','returns','expenses']);
+// Fields that must stay consistent with each other are merged as one unit.
+const FIELD_GROUPS={challans:[['items','freight','total']],returns:[['items','qty','total']]};
+const PARTY_LINKED=new Set(['challans','payments','returns']);
 let _extSeq=0, _pendingSince=null; const _extMarks={};
 function conflictErr(msg){const e=Error(msg);e.conflict=true;return e;}
+function needDecision(qs){const e=Error('A decision is needed to finish this save.');e.questions=qs;return e;}
 function num0(x){x=+x;return Number.isFinite(x)?x:0;}
 function metaVal(o,k){return o&&o[k]!==undefined?o[k]:null;}
 function stripJournal(m){if(!m)return m;const c=clone(m);delete c._journal;return c;}
@@ -2360,23 +2373,7 @@ function recKeys(coll,rec,id){
   }
   return {own,link};
 }
-function jobKeys(jobs,metaKeys){
-  const own=new Set(), link=new Set();
-  jobs.forEach(j=>{
-    if(j.coll==='meta')return;
-    [j.prev,j.payload].forEach(r=>{const k=recKeys(j.coll,r,j.id);k.own.forEach(x=>own.add(x));k.link.forEach(x=>link.add(x));});
-  });
-  (metaKeys||[]).forEach(k=>own.add('meta/'+k));
-  return {own,link};
-}
 function markExternal(keys){_extSeq++;keys.forEach(k=>{_extMarks[k]=_extSeq;});}
-function entryClashes(e,keys){
-  if(!e||e.all)return true;
-  const eo=new Set([...(e.o||[]),...Object.keys(e.h||{})]), er=new Set(e.r||[]);
-  for(const k of keys.own)if(eo.has(k)||er.has(k))return true;
-  for(const k of keys.link)if(eo.has(k))return true;
-  return false;
-}
 /* Short fingerprint of a record's saved content ('x' = deleted), identical on every device. */
 function recHash(r){
   if(r==null)return 'x';
@@ -2384,44 +2381,60 @@ function recHash(r){
   for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,0x01000193);}
   return (h>>>0).toString(36)+s.length.toString(36);
 }
-/* Journal entries whose record changes this device has NOT received yet. Listeners for
-   different collections can arrive in any order, so this is judged record by record:
-   the newest fingerprint of each journalled record is compared with what this device holds. */
-function unseenEntries(jr,lookup,from){
-  const latest={}, owner={};
-  for(let i=jr.length-1;i>=0;i--){const e=jr[i];if(!e||!e.h)continue;
-    Object.keys(e.h).forEach(k=>{if(!(k in latest)){latest[k]=e.h[k];owner[k]=i;}});}
-  const out=new Set();
-  Object.keys(latest).forEach(k=>{const have=lookup(k);if(have!==undefined&&recHash(have)!==latest[k])out.add(owner[k]);});
-  jr.forEach((e,i)=>{if(e&&e.all&&i>from)out.add(i);});   // bulk entries after our base cannot be checked record by record
-  return [...out].map(i=>jr[i]);
+/* Journalled records whose newest saved version this device has NOT received yet. */
+function unseenKeys(jr,lookup){
+  const latest={};
+  for(let i=jr.length-1;i>=0;i--){const e=jr[i];if(e&&e.h)Object.keys(e.h).forEach(k=>{if(!(k in latest))latest[k]=e.h[k];});}
+  return Object.keys(latest).filter(k=>{const have=lookup(k);return have!==undefined&&recHash(have)!==latest[k];});
+}
+/* Three-way merge of one record. base = what this device started from, mine = this device's
+   result, theirs = what the server holds now. choice ('mine'|'theirs') settles fields BOTH changed. */
+function mergeRecord(coll,base,mine,theirs,choice){
+  const groups=FIELD_GROUPS[coll]||[], unit=k=>groups.find(g=>g.includes(k))||[k];
+  const val=(o,g)=>g.map(x=>o&&o[x]!==undefined?o[x]:null);
+  const out={}, clash=[], done=new Set();
+  new Set([...Object.keys(base||{}),...Object.keys(mine||{}),...Object.keys(theirs||{})]).forEach(k=>{
+    if(done.has(k))return;const g=unit(k);g.forEach(x=>done.add(x));
+    const b=val(base,g), m=val(mine,g), t=val(theirs,g);
+    let src;
+    if(sameRecord(m,b)||sameRecord(m,t))src=theirs;        // this device did not change it
+    else if(sameRecord(t,b))src=mine;                      // only this device changed it
+    else{clash.push(g);src=choice==='theirs'?theirs:mine;} // both changed it differently
+    g.forEach(x=>{if(src&&src[x]!==undefined)out[x]=clone(src[x]);});
+  });
+  return {out,clash};
+}
+const FIELD_NAMES={items:'items / quantities / amount',qty:'quantity',freight:'freight',total:'total',name:'name',phone:'phone',city:'city',ob:'opening balance',
+  amount:'amount',date:'date',mode:'payment mode',remarks:'remarks',pid:'party',pname:'party name',status:'status',season:'season',num:'number'};
+function fieldNames(clash){return [...new Set(clash.map(g=>FIELD_NAMES[g[0]]||g[0]))].join(', ');}
+function recordName(coll,r){
+  r=r||{};
+  if(coll==='challans')return 'Challan '+(r.num||'')+(r.pname?' — '+r.pname:'');
+  if(coll==='parties')return 'Party "'+(r.name||'')+'"';
+  if(coll==='payments')return 'Payment ₹'+(r.amount!=null?r.amount:'')+(r.date?' of '+r.date:'');
+  if(coll==='returns')return 'Return '+(r.num||'')+(r.pname?' — '+r.pname:'');
+  if(coll==='expenses')return 'Expense '+(r.num||'')+(r.head?' — '+r.head:'');
+  if(coll==='items')return 'Item "'+(r.name||'')+'"';
+  return 'A '+coll+' record';
 }
 function recordLabel(j){
   return ({parties:'This party',challans:'This challan',payments:'This payment',items:'This item',returns:'This return',expenses:'This expense',incomingBills:'This staff bill'})[j.coll]||('A record in '+j.coll);
 }
-/* Builds the meta/state document to write, on top of whatever the server holds right now. */
-function planLedgerMeta(jobs,base,mine,live,keys,version,at,lookup){
-  const b=base||{}, l=live||{};
-  const ljr=Array.isArray(l._journal)?l._journal:[];
-  let from=ljr.length-1;
-  if(!sameRecord(live,base)){
-    if(!live||!base)throw conflictErr('Settings were changed on another device. Nothing was saved — wait a few seconds for this screen to update, then try again.');
-    from=b._ledgerVersion?ljr.findIndex(e=>e&&e.v===b._ledgerVersion):-1;
-    if(from<0||!ljr.length||ljr[ljr.length-1].v!==l._ledgerVersion)
-      throw conflictErr('Another device saved changes that this screen has not received yet. Nothing was saved — wait a few seconds for the screen to update, then try again.');
-  }
-  // Any change from another device that this screen has not received, and that touches the
-  // same records or the party / challan / item they belong to, stops this save.
-  const check=new Set(ljr.slice(from+1));if(lookup)unseenEntries(ljr,lookup,from).forEach(e=>check.add(e));
-  if([...check].some(e=>entryClashes(e,keys)))
-    throw conflictErr('The same party or record was changed on another device just now. Nothing was saved — the screen now shows the latest data. Check it and enter your change again.');
-  const out=clone(l);
+/* Builds the meta/state document on top of whatever the server holds right now. */
+function planLedgerMeta(plan,base,mine,live,keys,version,at,decisions,questions){
+  const b=base||{}, l=live||{}, out=clone(l);
   META_KEYS.forEach(k=>{
     if(COUNTER_KEYS.includes(k)||mine[k]===undefined)return;
     const bv=metaVal(b,k), lv=metaVal(l,k);
-    if(sameRecord(mine[k],bv))return;                       // unchanged here: keep the cloud value
-    if(!sameRecord(lv,bv)&&!sameRecord(lv,mine[k]))
-      throw conflictErr('The setting "'+k+'" was also changed on another device. Nothing was saved — check it and try again.');
+    if(sameRecord(mine[k],bv)||sameRecord(mine[k],lv))return;   // unchanged here: keep the cloud value
+    if(!sameRecord(lv,bv)){                                    // both devices changed this setting
+      const id='set:'+k;
+      if(!decisions||!(id in decisions)){
+        if(questions)questions.push({id,ok:'mine',cancel:'theirs',text:'The setting "'+k+'" was also changed on another device.\n\nOK = keep YOUR value\nCancel = keep the OTHER device\'s value'});
+        return;
+      }
+      if(decisions[id]==='theirs')return;
+    }
     out[k]=clone(mine[k]);
   });
   COUNTER_KEYS.forEach(k=>{
@@ -2432,7 +2445,7 @@ function planLedgerMeta(jobs,base,mine,live,keys,version,at,lookup){
     const lc=num0(l[k]), bc=num0(b[k]);
     if(lc<=bc)return;                                       // nobody else issued numbers meanwhile
     const re=new RegExp('^'+prefix+'0*(\\d+)$');
-    const fresh=jobs.filter(j=>j.coll===coll&&!j.del&&!j.prev&&j.payload&&re.test(j.payload.num||''));
+    const fresh=plan.filter(j=>j.coll===coll&&j.isNew&&j.payload&&re.test(j.payload.num||''));
     if(!fresh.length)return;
     fresh.sort((x,y)=>(+re.exec(x.payload.num)[1])-(+re.exec(y.payload.num)[1]));
     let n=lc;
@@ -2443,7 +2456,7 @@ function planLedgerMeta(jobs,base,mine,live,keys,version,at,lookup){
   if(keys.own.size+keys.link.size>JOURNAL_KEYS_MAX)jr.push({v:version,all:1});
   else{
     const h={}, rec=new Set();
-    jobs.forEach(j=>{if(HASHED_COLS.has(j.coll)){const k=j.coll+'/'+j.id;rec.add(k);h[k]=j.del?'x':recHash(j.payload);}});
+    plan.forEach(j=>{if(HASHED_COLS.has(j.coll)&&!j.skip){const k=j.coll+'/'+j.id;rec.add(k);h[k]=j.del?'x':recHash(j.payload);}});
     jr.push({v:version,o:[...keys.own].filter(k=>!rec.has(k)),r:[...keys.link],h});
   }
   out._journal=jr;out._ledgerVersion=version;out.updated=at;
@@ -2600,10 +2613,10 @@ function diffWrite(coll,arr,lastIndex,keyFn){
 async function saveToCloud(){
   if(!canEditLedger()){if(!_saving){_deleteIntent={};_extraJobs=[];restoreConfirmedView();}return false;}
   const owner=uid, epoch=_syncEpoch, generation=_connectionGeneration;
-  const formSince=(_pendingSince&&Date.now()-_pendingSince.t<180000)?_pendingSince.since:Infinity;_pendingSince=null;
-  let jobs=[];
+  const pend=(_pendingSince&&Date.now()-_pendingSince.t<180000)?_pendingSince:null;_pendingSince=null;
   // Listeners replace _lastSaved[field] with a new object, so these references freeze what this device had seen.
-  const seenBase={}, seenOk={};Object.entries(LEDGER_COLS).forEach(([coll,field])=>{seenBase[field]=_lastSaved[field];seenOk[coll]=confirmedCollection(coll);});
+  const seenBase=ledgerRefs(), seenOk={};Object.keys(LEDGER_COLS).forEach(c=>{seenOk[c]=confirmedCollection(c);});
+  let jobs=[];
   try{
     (S.trash||[]).forEach(_trashId);
     Object.entries(LEDGER_COLS).forEach(([coll,field])=>{
@@ -2618,18 +2631,15 @@ async function saveToCloud(){
     const meta=ledgerMeta(), oldMeta={};META_KEYS.forEach(k=>{if(_lastMetaData&&_lastMetaData[k]!==undefined)oldMeta[k]=_lastMetaData[k];});
     const metaChanged=!sameRecord(meta,oldMeta);
     const base=_lastMetaData?clone(_lastMetaData):null, version=uniqId('REV'), savedAt=new Date().toISOString();
-    const keys=jobKeys(jobs.concat(_extraJobs),META_KEYS.filter(k=>!COUNTER_KEYS.includes(k)&&meta[k]!==undefined&&!sameRecord(meta[k],metaVal(base,k))));
-    // A form open on this device is stale only if the records this save touches changed elsewhere.
-    const since=Math.min(formSince,openFormSince());
-    if(since!==Infinity&&[...keys.own,...keys.link].some(k=>(_extMarks[k]||0)>since))
-      throw conflictErr('This record was changed on another device while this form was open. Close the form and reopen it before saving, so the newer data is not overwritten.');
-    // Serialize ledger actions across devices, including operations on different records.
-    // The payload here is provisional; it is rebuilt inside the transaction from the live server copy.
-    if(metaChanged||jobs.length||_extraJobs.length)jobs.push({coll:'meta',id:'state',path:'state',prev:base,payload:planLedgerMeta([],base,meta,base,keys,version,savedAt)});
-    jobs.push(..._extraJobs.map(clone));
-    if(!jobs.length){_deleteIntent={};_extraJobs=[];return true;}
-    // All changes and their previous versions commit together. Never split a delete
-    // from its recovery copy, and never partially apply a large import.
+    // An edit made in a form is merged against the record AS IT WAS when the form opened, so values the
+    // form merely re-submitted can never undo what another device changed in the meantime.
+    const form=openForm(pend);
+    jobs.forEach(j=>{
+      j.base=j.prev;j.mine=j.payload?clone(j.payload):null;
+      if(form&&j.prev&&!j.del){const f=LEDGER_COLS[j.coll], snap=form.seen[f];if(snap&&snap[j.id]!==undefined)j.base=clone(snap[j.id]);}
+    });
+    jobs.push(..._extraJobs.map(x=>{const c=clone(x);c.base=c.prev;c.mine=c.payload?clone(c.payload):null;return c;}));
+    if(!jobs.length&&!metaChanged){_deleteIntent={};_extraJobs=[];return true;}
     // Mass deletion needs an explicit OK, however it was triggered.
     const dels=jobs.filter(j=>j.del&&j.coll!=='incomingBills');
     if(dels.length>MASS_DELETE_LIMIT){
@@ -2637,65 +2647,187 @@ async function saveToCloud(){
       if(!confirm('PERMISSION NEEDED — mass deletion\n\nThis action will delete '+dels.length+' records from the cloud:\n'+Object.entries(byColl).map(([c,n])=>'  • '+n+' '+c).join('\n')+'\n\nPress OK only if you really want to delete all of them.'))
         throw conflictErr('Mass deletion cancelled. Nothing was deleted or changed.');
     }
-    const auditId=uniqId('H'), at=new Date().toISOString();
-    jobs.forEach((j,i)=>{if(j.prev&&j.coll!=='trash'&&(j.coll!=='meta'||metaChanged))j.history={id:auditId+'-'+i,type:'record',collection:j.coll,recordId:j.id,documentId:j.path,record:j.coll==='meta'?stripJournal(j.prev):clone(j.prev),deletedAt:at,reason:j.del?'Deleted record':'Before edit'};});
-    const writes=jobs.reduce((n,j)=>n+1+(j.history?1:0),0);
-    if(writes>450 || jobs.reduce((n,j)=>n+_docBytes(j.payload||{})+_docBytes(j.history||{}),0)>7*1024*1024)throw Error('This action is too large to save safely in one operation. Use a smaller import or selection. Nothing was changed.');
-    jobs.forEach(j=>{if(j.history&&_docBytes(j.history)>DOC_LIMIT-4096)throw Error('A recovery copy is too large. Nothing was changed.');});
-    _activeJobs=jobs;_saving=true;_writeFails=0;refreshSyncDot();
+    if(jobs.length*2+2>450||jobs.reduce((n,j)=>n+2*_docBytes(j.payload||j.prev||{}),0)>7*1024*1024)throw Error('This action is too large to save safely in one operation. Use a smaller import or selection. Nothing was changed.');
+    _activeJobs=[];_saving=true;_writeFails=0;refreshSyncDot();
     _netToast('stuck','Saving to cloud','Please wait for confirmation before closing this page.',null,null,null);
     const root=db.collection('users').doc(owner);
-    const metaJob=jobs.find(j=>j.coll==='meta'), orig=jobs.map(j=>j.payload?clone(j.payload):null);
-    // What this device currently holds for a record (undefined = collection not loaded here).
-    // Judged against the records as they were when this save was worked out (seenBase), not
-    // against rows that arrived afterwards and are therefore missing from this save's plan.
+    const docPath=(coll,id)=>(_docPaths[coll]||{})[id]||id;
+    // What this device held for a record when the save was worked out (undefined = collection not loaded here).
     const baselineOf=k=>{const i=k.indexOf('/'),c=k.slice(0,i),f=LEDGER_COLS[c];if(!f||!seenBase[f]||!seenOk[c])return undefined;const r=seenBase[f][k.slice(i+1)];return r===undefined?null:r;};
-    await db.runTransaction(async tx=>{
-      if(!isOnline||navigator.onLine===false||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or account changed. Save cancelled.');
-      if(!fullServerRead()||generation!==_connectionGeneration)throw Error('Cloud reads became unavailable. Save cancelled; reconnect and retry.');
-      jobs.forEach((j,i)=>{if(orig[i])j.payload=clone(orig[i]);});   // Firestore may re-run this function
-      const refs=jobs.map(j=>root.collection(j.coll).doc(j.path));
-      const snaps=await Promise.all(refs.map(ref=>tx.get(ref)));
-      let liveMeta=null;
-      snaps.forEach((s,i)=>{
-        const live=s.exists?s.data():null, j=jobs[i];
-        if(j===metaJob){liveMeta=live;return;}
-        // Every record is compare-and-set: a version this device has not seen is never overwritten.
-        if(!sameRecord(live,j.prev))throw conflictErr(recordLabel(j)+' was changed on another device just now. Nothing was saved — the screen now shows the latest data. Check it and enter your change again.');
-      });
-      if(metaJob){
-        metaJob.payload=planLedgerMeta(jobs,base,meta,liveMeta,keys,version,savedAt,baselineOf);
-        if(metaJob.history)metaJob.history.record=stripJournal(liveMeta);
-        if(_docBytes(metaJob.payload)>DOC_LIMIT-16384)throw Error('Settings document is too large. Nothing was saved.');
-      }
-      if(!isOnline||navigator.onLine===false||!fullServerRead()||generation!==_connectionGeneration||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or cloud read state changed during save. Please reconnect and retry.');
-      jobs.forEach((j,i)=>{
-        if(j.history)tx.set(root.collection('trash').doc(j.history.id),j.history);
-        if(j.del)tx.delete(refs[i]);else tx.set(refs[i],j.payload);
-      });
-    });
-    if(uid!==owner||epoch!==_syncEpoch)return false;
-    jobs.forEach(j=>{
-      const field=LEDGER_COLS[j.coll];
-      if(field){
-        const baseline=_lastSaved[field]||(_lastSaved[field]={}), live=baseline[j.id]||null;
-        // Do not replace a newer server snapshot received while the commit resolved.
-        if(sameRecord(live,j.prev)||sameRecord(live,j.payload||null)){
-          if(j.del)delete baseline[j.id];else baseline[j.id]=clone(j.payload);
+    const deletingParties=new Set(jobs.filter(j=>j.del&&j.coll==='parties').map(j=>j.id));
+    const deletingIds=new Set(jobs.filter(j=>j.del&&(j.coll==='challans'||j.coll==='payments')).map(j=>j.id));
+    const decisions={};let result=null;
+    for(let round=0;;round++){
+      try{
+        result=await db.runTransaction(async tx=>{
+          if(!isOnline||navigator.onLine===false||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or account changed. Save cancelled.');
+          if(!fullServerRead()||generation!==_connectionGeneration)throw Error('Cloud reads became unavailable. Save cancelled; reconnect and retry.');
+          const plan=[], questions=[], notices=[], read={};
+          const get=async(coll,id)=>{const k=coll+'/'+id;if(!(k in read)){const s=await tx.get(root.collection(coll).doc(coll==='meta'?id:docPath(coll,id)));read[k]=s.exists?s.data():null;}return read[k];};
+          const liveMeta=await get('meta','state');
+          const lives=await Promise.all(jobs.map(j=>get(j.coll,j.id)));
+          // 1) Every record: write as planned, merge, or ask.
+          jobs.forEach((j,i)=>{
+            const L=lives[i], key=j.coll+'/'+j.id, at={coll:j.coll,id:j.id,path:j.path||docPath(j.coll,j.id),basePrev:j.prev||null,mergeBase:j.base,mine:j.mine};
+            if(j.coll==='incomingBills'||j.coll==='trash'){
+              if(!sameRecord(L,j.prev))throw conflictErr(recordLabel(j)+' was already handled on another device. Nothing was saved — the screen now shows the latest data.');
+              plan.push({...at,del:j.del,payload:j.payload?clone(j.payload):undefined,pre:L});return;
+            }
+            if(j.del){
+              if(L==null)return;                                  // already deleted elsewhere
+              if(!sameRecord(L,j.base)&&!(L.pid&&deletingParties.has(L.pid))){
+                const id='del:'+key;
+                if(!(id in decisions)){questions.push({id,ok:'del',cancel:'keep',text:recordName(j.coll,L)+' was changed on another device after you chose to delete it.\n\nOK = delete it anyway (a copy goes to the Recycle Bin)\nCancel = keep it'});return;}
+                if(decisions[id]==='keep')return;
+              }
+              plan.push({...at,del:true,pre:L});return;
+            }
+            if(j.base==null){                                     // new record
+              if(L!=null&&!sameRecord(L,j.payload))throw conflictErr('A record with the same ID already exists in the cloud. Nothing was saved.');
+              if(L==null)plan.push({...at,payload:clone(j.payload),pre:null,isNew:true});
+              return;
+            }
+            if(L==null){                                          // deleted elsewhere while being edited
+              const id='gone:'+key;
+              if(!(id in decisions)){questions.push({id,ok:'restore',cancel:'drop',text:recordName(j.coll,j.payload)+' was deleted on another device while you were editing it.\n\nOK = restore it with your changes\nCancel = leave it deleted (your version goes to the Recycle Bin)'});return;}
+              if(decisions[id]==='drop'){plan.push({...at,skip:true,rejected:j.mine});return;}
+              plan.push({...at,payload:clone(j.payload),pre:null});return;
+            }
+            if(sameRecord(L,j.base)){plan.push({...at,payload:clone(j.payload),pre:L});return;}
+            const id='rec:'+key, m=mergeRecord(j.coll,j.base,j.payload,L,decisions[id]);
+            if(m.clash.length&&!(id in decisions)){
+              questions.push({id,ok:'mine',cancel:'theirs',text:recordName(j.coll,L)+' was also changed on another device.\n\nChanged on both devices: '+fieldNames(m.clash)+'.\n\nOK = keep YOUR version of '+(m.clash.length>1?'these':'this')+'\nCancel = keep the OTHER device\'s version\n\nThe version not kept is saved in the Recycle Bin.'});return;
+            }
+            const e={...at,payload:m.out,pre:L};
+            if(m.clash.length&&decisions[id]==='theirs')e.rejected=j.mine;
+            plan.push(e);
+          });
+          // 2) Bills and payments must belong to a party that still exists; keep party names current.
+          const pids=new Set(plan.filter(e=>!e.del&&!e.skip&&PARTY_LINKED.has(e.coll)&&e.payload&&e.payload.pid).map(e=>e.payload.pid));
+          for(const pid of pids){
+            const own=plan.find(e=>e.coll==='parties'&&e.id===pid&&!e.del&&!e.skip);
+            let P=own?own.payload:await get('parties',pid);
+            if(!P){
+              const id='party:'+pid, was=seenBase.parties&&seenBase.parties[pid];
+              if(!was)throw conflictErr('The party for this entry no longer exists. Nothing was saved.');
+              if(!(id in decisions)){questions.push({id,ok:'restore',cancel:'abort',abortMsg:'Not saved — that party was deleted on another device.',text:'Party "'+was.name+'" was deleted on another device.\n\nOK = restore the party and save your entry\nCancel = cancel this save'});continue;}
+              P=clone(was);plan.push({coll:'parties',id:pid,path:docPath('parties',pid),payload:P,pre:null});
+              notices.push('Party "'+P.name+'" had been deleted on another device and was restored.');
+            }
+            plan.forEach(e=>{if(!e.del&&!e.skip&&PARTY_LINKED.has(e.coll)&&e.payload&&e.payload.pid===pid&&'pname' in e.payload&&e.payload.pname!==P.name)e.payload.pname=P.name;});
+          }
+          // 3) Records this device has not received yet (from the journal).
+          const jr=liveMeta&&Array.isArray(liveMeta._journal)?liveMeta._journal:[];
+          const inPlan=new Set(plan.map(e=>e.coll+'/'+e.id));
+          const unseen=unseenKeys(jr,baselineOf).filter(k=>!inPlan.has(k));
+          if(deletingParties.size||deletingIds.size){
+            const kids=[];
+            for(const k of unseen.filter(k=>/^(challans|payments|returns|overrides)\//.test(k))){
+              const c=k.slice(0,k.indexOf('/')), id=k.slice(k.indexOf('/')+1), L=await get(c,id);
+              if(!L)continue;
+              if(c==='overrides'){if(deletingIds.has(L.payId)||deletingIds.has(L.cid))plan.push({coll:c,id,path:docPath(c,id),del:true,pre:L});continue;}
+              if(L.pid&&deletingParties.has(L.pid))kids.push({c,id,L});
+            }
+            if(kids.length){
+              const id='kids:'+[...deletingParties].sort().join(',');
+              if(!(id in decisions))questions.push({id,ok:'del',cancel:'abort',abortMsg:'Delete cancelled. Nothing was changed.',text:'Another device just added '+kids.length+' record(s) to the party you are deleting:\n'+kids.slice(0,8).map(x=>'  • '+recordName(x.c,x.L)).join('\n')+(kids.length>8?'\n  • …':'')+'\n\nOK = delete them too (copies go to the Recycle Bin)\nCancel = cancel the delete'});
+              else kids.forEach(x=>plan.push({coll:x.c,id:x.id,path:docPath(x.c,x.id),del:true,pre:x.L}));
+            }
+          }
+          // 3b) A party renamed here: bills of that party this device has not received yet get the new name too.
+          const renamed=plan.filter(e=>e.coll==='parties'&&!e.del&&!e.skip&&e.pre&&e.payload&&e.pre.name!==e.payload.name);
+          if(renamed.length){
+            for(const k of unseen.filter(k=>/^(challans|returns)\//.test(k))){
+              const c=k.slice(0,k.indexOf('/')), id=k.slice(k.indexOf('/')+1), L=await get(c,id), r=L&&renamed.find(e=>e.id===L.pid);
+              if(r&&'pname' in L&&L.pname!==r.payload.name)plan.push({coll:c,id,path:docPath(c,id),payload:{...clone(L),pname:r.payload.name},pre:L});
+            }
+          }
+          // 4) A party name another device just used: join that party instead of creating a duplicate.
+          const named=plan.filter(e=>e.coll==='parties'&&!e.del&&!e.skip&&e.payload&&(e.isNew||(e.pre&&normPName(e.pre.name)!==normPName(e.payload.name))));
+          if(named.length){
+            const others=[];
+            for(const k of unseen.filter(k=>k.startsWith('parties/'))){const id=k.slice(8),L=await get('parties',id);if(L)others.push({id,L});}
+            for(const e of named){
+              const hit=others.find(o=>o.id!==e.id&&normPName(o.L.name)===normPName(e.payload.name));
+              if(!hit)continue;
+              if(e.isNew){
+                const same=['phone','city'].every(f=>!e.payload[f]||e.payload[f]===hit.L[f])&&num0(e.payload.ob)===num0(hit.L.ob);
+                const id='dupparty:'+e.id;
+                if(!same&&!(id in decisions)){questions.push({id,ok:'join',cancel:'abort',abortMsg:'Not saved — a party with this name was just created on another device.',text:'A party named "'+hit.L.name+'" was just created on another device (phone '+(hit.L.phone||'-')+', opening balance '+num0(hit.L.ob)+').\n\nOK = use that party for your entry\nCancel = cancel this save'});continue;}
+                e.skip=true;e.rejected=e.payload;
+                plan.forEach(x=>{if(!x.del&&!x.skip&&x.payload&&x.payload.pid===e.id){x.payload.pid=hit.id;if('pname' in x.payload)x.payload.pname=hit.L.name;}});
+                notices.push('Party "'+hit.L.name+'" had just been created on another device — your entry was added to it.');
+              }else{
+                e.payload.name=e.pre.name;
+                notices.push('The party was not renamed to "'+hit.L.name+'": another device just created a party with that name. Your other changes were saved.');
+              }
+            }
+          }
+          // 5) Settings, counters, numbers, journal.
+          const final=plan.filter(e=>!e.skip);
+          const keys={own:new Set(),link:new Set()};
+          final.forEach(e=>[e.pre,e.payload].forEach(r=>{const k=recKeys(e.coll,r,e.id);k.own.forEach(x=>keys.own.add(x));k.link.forEach(x=>keys.link.add(x));}));
+          META_KEYS.forEach(k=>{if(!COUNTER_KEYS.includes(k)&&meta[k]!==undefined&&!sameRecord(meta[k],metaVal(base,k)))keys.own.add('meta/'+k);});
+          const metaPayload=planLedgerMeta(final,base,meta,liveMeta,keys,version,savedAt,decisions,questions);
+          if(questions.length)throw needDecision(questions);
+          if(!isOnline||navigator.onLine===false||!fullServerRead()||generation!==_connectionGeneration||uid!==owner||epoch!==_syncEpoch)throw Error('Connection or cloud read state changed during save. Please reconnect and retry.');
+          // 6) Writes — every replaced, deleted or rejected version is copied to the Recycle Bin first.
+          const auditId=uniqId('H'), when=new Date().toISOString(), active=[];let n=0;
+          const keep=(coll,e,record,reason)=>{const h={id:auditId+'-'+(n++),type:'record',collection:coll,recordId:e.id,documentId:e.path,record:clone(record),deletedAt:when,reason};
+            if(_docBytes(h)>DOC_LIMIT-4096)throw Error('A recovery copy is too large. Nothing was changed.');tx.set(root.collection('trash').doc(h.id),h);return h;};
+          plan.forEach(e=>{
+            const ref=root.collection(e.coll).doc(e.path), rec={coll:e.coll,id:e.id,del:!!e.del,payload:e.payload,basePrev:e.basePrev,mergeBase:e.mergeBase,mine:e.mine};
+            if(e.rejected){const h=keep(e.coll,e,e.rejected,'Your version — not kept (changed on another device)');active.push({coll:'#',id:h.id,history:h});}
+            if(e.skip)return;
+            if(!(e.del||!sameRecord(e.payload,e.pre)))return;
+            if(e.pre&&e.coll!=='trash'&&e.coll!=='incomingBills')rec.history=keep(e.coll,e,e.pre,e.del?'Deleted record':'Before edit');
+            if(e.payload&&_docBytes(e.payload)>DOC_LIMIT-16384)throw Error('A record in '+e.coll+' is too large. Nothing was saved or deleted.');
+            if(e.del)tx.delete(ref);else tx.set(ref,e.payload);
+            rec.pre=e.pre;rec.written=true;active.push(rec);
+          });
+          // meta/state is written with every save: it serialises saves across devices and carries the journal.
+          if(active.length||metaChanged){
+            if(liveMeta&&metaChanged)keep('meta',{id:'state',path:'state'},stripJournal(liveMeta),'Before edit');
+            tx.set(root.collection('meta').doc('state'),metaPayload);
+            active.push({coll:'meta',id:'state',payload:metaPayload,pre:liveMeta});
+          }
+          if(n+active.length>480)throw Error('This action is too large to save safely in one operation. Nothing was changed.');
+          _activeJobs=active;
+          return {active,notices};
+        });
+        break;
+      }catch(e){
+        if(!e||!e.questions||round>=6||uid!==owner||epoch!==_syncEpoch)throw e;
+        // Ask the user only about real clashes, then run the same save again on the newest data.
+        for(const q of e.questions){
+          if(q.id in decisions)continue;
+          const ok=confirm(q.text);
+          if(!ok&&q.cancel==='abort')throw conflictErr(q.abortMsg||'Cancelled. Nothing was saved.');
+          decisions[q.id]=ok?q.ok:q.cancel;
         }
-      }else if(j.coll==='meta'&&(sameRecord(_lastMetaData,j.prev)||sameRecord(_lastMetaData,j.payload)))_lastMetaData=clone(j.payload);
-      if(j.history)(_lastSaved.trash||(_lastSaved.trash={}))[j.history.id]=clone(j.history);
+      }
+    }
+    if(uid!==owner||epoch!==_syncEpoch)return false;
+    result.active.forEach(a=>{
+      const field=LEDGER_COLS[a.coll];
+      if(field&&a.written){
+        const baseline=_lastSaved[field]||(_lastSaved[field]={}), live=baseline[a.id]===undefined?null:baseline[a.id];
+        // Do not replace a newer server snapshot received while the commit resolved.
+        if(sameRecord(live,a.pre||null)||sameRecord(live,a.del?null:a.payload||null)||(a.basePrev!==undefined&&sameRecord(live,a.basePrev))){if(a.del)delete baseline[a.id];else baseline[a.id]=clone(a.payload);}
+      }else if(a.coll==='meta'&&(sameRecord(_lastMetaData,a.pre)||sameRecord(_lastMetaData,base)||sameRecord(_lastMetaData,a.payload)))_lastMetaData=clone(a.payload);
+      if(a.history)(_lastSaved.trash||(_lastSaved.trash={}))[a.history.id]=clone(a.history);
     });
     _deleteIntent={};_extraJobs=[];_lastWriteErr='';restoreConfirmedView();
-    _netToast('ok','Saved to cloud','The server confirmed your changes.',null,null,3500);
+    _netToast('ok','Saved to cloud',result.notices.length||Object.keys(decisions).length?'Merged with changes from another device.':'The server confirmed your changes.',null,null,3500);
+    if(result.notices.length)alert('Saved.\n\n'+result.notices.join('\n\n'));
     // Publishing is derived, never part of the private ledger. Only publish when needed.
-    if(jobs.some(j=>j.coll==='parties'))publishPartyDirectory();
-    if(jobs.some(j=>j.coll==='items'))publishItemDirectory();
+    if(result.active.some(a=>a.coll==='parties'&&a.written))publishPartyDirectory();
+    if(result.active.some(a=>a.coll==='items'&&a.written))publishItemDirectory();
     return true;
   }catch(e){
     if(uid===owner&&epoch===_syncEpoch){
       if(e&&e.conflict){
-        // A normal multi-device clash, not a sync fault: show the latest data, flag nothing red.
+        // A normal multi-device situation, not a sync fault: show the latest data, flag nothing red.
         _deleteIntent={};_extraJobs=[];restoreConfirmedView();
         alert('Not saved.\n\n'+e.message);
       }else{
@@ -9173,7 +9305,7 @@ function printStmt(pid) {
 new MutationObserver(records=>{
   for(const {target:el} of records){
     if(!EDIT_MODALS.has(el.id))continue;
-    if(el.classList.contains('open')){if(!el._ledgerWasOpen){el._ledgerRevision=_dataRevision;el._ledgerSeq=_extSeq;}el._ledgerWasOpen=true;}
+    if(el.classList.contains('open')){if(!el._ledgerWasOpen){el._ledgerRevision=_dataRevision;el._ledgerSeq=_extSeq;el._ledgerSeen=ledgerRefs();}el._ledgerWasOpen=true;}
     else el._ledgerWasOpen=false;
   }
 }).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
