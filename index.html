@@ -892,7 +892,7 @@ setTimeout(()=>{if(!isOnline)showOfflineAlert();},0);
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-09-20.8-multi-season';
+const BUILD = '2026-10-10.1-bill-article-codes';
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -1859,8 +1859,60 @@ async function staffCreateBill() {
   staffCalcTotal();
 }
 
+
+// Article codes are display-only. Resolve known articles without changing saved bill lines.
+function billItemCode(line,catalog){
+  if(!line)return '';
+  const saved=String(line.code||line.itemCode||'').trim();
+  if(saved)return saved;
+  const ownerCatalog=catalog==null;
+  const items=ownerCatalog?(S.items||[]):catalog;
+  if(!Array.isArray(items))return '';
+  const name=normIName(line.name);
+  let master=line.itemId?items.find(it=>it&&it.id===line.itemId):null;
+  if(master){
+    const design=line.design?(findDesign(master,line.design)||{code:String(line.design).trim()}):null;
+    return String(designFullCode(master,design)||'').trim();
+  }
+  // An explicit saved design must resolve its parent before plain article-name matching.
+  // A separate article may legitimately have the same name as another article's design.
+  if(line.design){
+    const parents=items.filter(it=>it&&normIName(it.name)&&name.startsWith(normIName(it.name)+' — '));
+    if(parents.length===1){
+      const parent=parents[0],design=findDesign(parent,line.design)||{code:String(line.design).trim()};
+      return String(designFullCode(parent,design)||'').trim();
+    }
+    if(parents.length>1)return '';
+  }
+  if(!master)master=items.find(it=>it&&normIName(it.name)===name);
+  if(!master&&ownerCatalog){
+    const mapped=(S.itemMap||[]).find(m=>m&&normIName(m.key)===name);
+    if(mapped)master=items.find(it=>it&&it.id===mapped.itemId);
+  }
+  if(master){
+    return String(master.code||'').trim();
+  }
+  // Saved design lines read "Article — Design". Match the complete label exactly;
+  // when a design was deleted, its saved letter still identifies its original article.
+  const matches=[];
+  items.forEach(it=>{
+    if(!it)return;
+    const design=itemDesigns(it).find(d=>normIName(designLabel(it,d))===name);
+    if(design)matches.push(designFullCode(it,design));
+  });
+  return matches.length===1?String(matches[0]||'').trim():'';
+}
+function billItemLabel(line,catalog){
+  const name=String(line?.name||''),code=billItemCode(line,catalog);
+  if(!code)return name;
+  const n=name.toUpperCase(),c=code.toUpperCase();
+  if(n.includes('['+c+']')||n.includes('('+c+')')||n===c||n.startsWith(c+' '))return name;
+  // Prefixing also keeps the code visible when a long article name is shortened in a PDF.
+  return '['+code+'] '+name;
+}
+
 function staffPrintBill(b) {
-  var iR=b.items.map(function(it,i){return '<tr style="background:'+(i%2?'#F9F9F9':'#fff')+'"><td style="padding:8px 10px;border:1px solid #E0E0E0">'+esc(it.name)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">'+it.qty+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">'+fmtR(it.rate)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">'+fmt(it.amount)+'</td></tr>';}).join('');
+  var iR=b.items.map(function(it,i){return '<tr style="background:'+(i%2?'#F9F9F9':'#fff')+'"><td style="padding:8px 10px;border:1px solid #E0E0E0">'+esc(billItemLabel(it,staffItems))+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">'+it.qty+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">'+fmtR(it.rate)+'</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">'+fmt(it.amount)+'</td></tr>';}).join('');
   var subtotal=b.items.reduce(function(s,i){return s+i.amount;},0);
   var pcs=b.items.reduce(function(s,i){return s+(+i.qty||0);},0);
   var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bill - '+esc(b.pname)+'</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">'+
@@ -3466,7 +3518,7 @@ function challanCard(c, showParty) {
     </div>
     <div class="cbody${openCards.has(c.id)?' open':''}" id="cb-${c.id}">
       <table class="itable"><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th style="text-align:right">Amount</th></tr></thead>
-      <tbody>${c.items.map(it=>`<tr><td>${esc(it.name)}</td><td>${it.qty}</td><td>${fmtR(it.rate)}</td><td style="text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody>
+      <tbody>${c.items.map(it=>`<tr><td>${esc(billItemLabel(it))}</td><td>${it.qty}</td><td>${fmtR(it.rate)}</td><td style="text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody>
       <tfoot><tr style="background:#F0F4FF;font-weight:700;font-size:12px"><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#555">Subtotal</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">${c.items.reduce((s,i)=>s+i.qty,0)} pcs</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE"></td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.items.reduce((s,i)=>s+i.amount,0))}</td></tr>${c.freight?`<tr style="background:#F0F4FF;font-size:12px"><td style="padding:4px 8px;color:#555" colspan="3">🚚 Freight</td><td style="padding:4px 8px;text-align:right;font-weight:700;color:#555">+ ${fmt(c.freight)}</td></tr>`:''}<tr style="background:#EFF6FF;font-weight:700;font-size:13px"><td colspan="3" style="padding:6px 8px;border-top:1.5px solid #BFDBFE;color:#1A2E5A">TOTAL</td><td style="padding:6px 8px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot>
       </table>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:3px"><span>Paid: ${fmt(paid)} (${pct}%)</span><span>Due: ${fmt(due)}</span></div>
@@ -8796,7 +8848,7 @@ function buildChallanPDF(cid){
     if(pageBreak(18)) { sectionBar('ITEM DETAILS (contd.)'); thead(); }
     if(i%2) d.rect(M, y, W, 16, {fill:'#F9F9F9'});
     d.rect(M, y, W, 16, {stroke:'#E8E8E8', lw:0.4});
-    d.text(cols[0]+6, y+11, it.name, {size:9, maxWidth:W*0.46-14});
+    d.text(cols[0]+6, y+11, billItemLabel(it), {size:9, maxWidth:W*0.46-14});
     d.text(colR[1], y+11, String(it.qty||0), {size:9, align:'right'});
     d.text(colR[2], y+11, fmtR(it.rate), {size:9, align:'right'});
     d.text(colR[3], y+11, fmt(it.amount), {size:9, bold:true, align:'right'});
@@ -8939,7 +8991,7 @@ function printChallan(cid) {
   const sc=_st==='S'?'#065F46':_st==='T'?'#92400E':'#1E40AF';
   const sb=_st==='S'?'#D1FAE5':_st==='T'?'#FEF3C7':'#DBEAFE';
   const sl=_st==='S'?'SETTLED':_st==='T'?'PARTIAL':'PENDING';
-  const iR=c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(it.name)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
+  const iR=c.items.map((it,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(billItemLabel(it))}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:center">${it.qty}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right">${fmtR(it.rate)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('');
   const pR=setts.length?setts.map((s,i)=>{const py=S.payments.find(x=>x.id===s.payId);return`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:8px 10px;border:1px solid #E0E0E0">${fmtD(s.date)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(s.amount)}</td><td style="padding:8px 10px;border:1px solid #E0E0E0">${esc(py?py.mode:'-')}</td><td style="padding:8px 10px;border:1px solid #E0E0E0;color:#666">${esc(py&&py.remarks?py.remarks:'-')}</td></tr>`;}).join(''):`<tr><td colspan="4" style="padding:12px;text-align:center;color:#999;border:1px solid #E0E0E0">No payments yet</td></tr>`;
   const challanHTML=`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(c.num)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:720px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{background:#1A2E5A;color:#fff;padding:7px 12px;font-weight:700;font-size:12px;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#E8EEF7;color:#1A2E5A;padding:8px 10px;text-align:left;border:1px solid #C8D5E8;font-size:11px}.sum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sb{border:1.5px solid #E0E0E0;border-radius:8px;padding:10px;text-align:center}.bb{background:#E5E7EB;border-radius:4px;height:7px;overflow:hidden;margin:3px 0}.bf{background:#1A2E5A;height:7px;border-radius:4px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
 <div class="pb np"><button onclick="window.print()" style="background:#1A2E5A;color:#fff">🖨 Print</button><button onclick="shareWAChallan()" style="background:#25D366;color:#fff">📲 Share PDF</button><button onclick="window.close()" style="background:#fff;border:1px solid #CCC">✕ Close</button></div>
@@ -9099,7 +9151,7 @@ function buildStatementPDF(pid){
           d.text(X_IT, y+8.4, (c.num||'')+' (contd.)', {size:7, bold:true, color:NAVY});
           y += 12; }
         d.rect(M, y, W, 11, {stroke:'#EFEFEF', lw:0.35});
-        d.text(X_IT,  y+7.6, it.name, {size:7.5, color:'#333', maxWidth:R_QTY-X_IT-30});
+        d.text(X_IT,  y+7.6, billItemLabel(it), {size:7.5, color:'#333', maxWidth:R_QTY-X_IT-30});
         d.text(R_QTY, y+7.6, String(it.qty||0), {size:7.5, color:'#555', align:'right'});
         d.text(R_AMT, y+7.6, fmtR(it.rate), {size:7.5, color:'#555', align:'right'});
         d.text(R_BAL, y+7.6, fmt(it.amount), {size:7.5, color:'#333', align:'right'});
@@ -9146,6 +9198,7 @@ function buildStatementPDF(pid){
     d.text(M+6,       y+10.4, 'Date',    {size:7.5, bold:true, color:NAVY});
     d.text(M+W*0.40,  y+10.4, 'Amount',  {size:7.5, bold:true, color:NAVY, align:'right'});
     d.text(M+W*0.46,  y+10.4, 'Mode',    {size:7.5, bold:true, color:NAVY});
+    d.text(M+W*0.66,  y+10.4, 'Remarks', {size:7.5, bold:true, color:NAVY});
     y += 15;
   };
   ph();
@@ -9156,7 +9209,8 @@ function buildStatementPDF(pid){
       d.rect(M, y, W, 14, {stroke:'#E8E8E8', lw:0.4});
       d.text(M+6,      y+9.8, fmtD(p.date), {size:8});
       d.text(M+W*0.40, y+9.8, fmt(p.amount), {size:8, bold:true, color:'#059669', align:'right'});
-      d.text(M+W*0.46, y+9.8, p.mode||'-', {size:8, maxWidth:W*0.50});
+      d.text(M+W*0.46, y+9.8, p.mode||'-', {size:8, maxWidth:W*0.18});
+      d.text(M+W*0.66, y+9.8, p.remarks||'-', {size:8, color:'#666', maxWidth:W*0.32});
       y += 14;
     });
     if(!pageBreak(18)){
@@ -9260,10 +9314,10 @@ function printStmt(pid) {
     const cst=challanStatus(c);
     const rowBg=i%2?'#F9F9F9':'#fff';
     // Challan header row
-    const headerRow=`<tr style="background:#EFF6FF"><td style="padding:7px 9px;border:1px solid #BFDBFE;font-weight:700;color:#1A2E5A">${esc(c.num)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;color:#555">${fmtD(c.date)}</td><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#1A2E5A;color:#fff"><th style="padding:4px 6px;text-align:left">Item</th><th style="padding:4px 6px;text-align:center;width:12%">Qty</th><th style="padding:4px 6px;text-align:right;width:14%">Rate</th><th style="padding:4px 6px;text-align:right;width:16%">Amount</th></tr></thead><tbody>${c.items.map((it,j)=>`<tr style="background:${j%2?'#F9FAFB':'#fff'}"><td style="padding:4px 6px;border-top:1px solid #F0F0F0">${esc(it.name)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:center">${it.qty}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right">${fmtR(it.rate)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE">Total</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:center">${c.items.reduce((s,it)=>s+(+it.qty||0),0)} pcs</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE"></td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table></td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;font-weight:700">${fmt(paid)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:${due>0?'#DC2626':'#059669'};font-weight:700">${fmt(due)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:center"><span style="background:${sbMap[cst]};color:${scMap[cst]};padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700">${slMap[cst]}</span></td></tr>`;
+    const headerRow=`<tr style="background:#EFF6FF"><td style="padding:7px 9px;border:1px solid #BFDBFE;font-weight:700;color:#1A2E5A">${esc(c.num)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;color:#555">${fmtD(c.date)}</td><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#1A2E5A;color:#fff"><th style="padding:4px 6px;text-align:left">Item</th><th style="padding:4px 6px;text-align:center;width:12%">Qty</th><th style="padding:4px 6px;text-align:right;width:14%">Rate</th><th style="padding:4px 6px;text-align:right;width:16%">Amount</th></tr></thead><tbody>${c.items.map((it,j)=>`<tr style="background:${j%2?'#F9FAFB':'#fff'}"><td style="padding:4px 6px;border-top:1px solid #F0F0F0">${esc(billItemLabel(it))}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:center">${it.qty}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right">${fmtR(it.rate)}</td><td style="padding:4px 6px;border-top:1px solid #F0F0F0;text-align:right;font-weight:700">${fmt(it.amount)}</td></tr>`).join('')}</tbody><tfoot><tr style="background:#F0F4FF;font-weight:700"><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE">Total</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:center">${c.items.reduce((s,it)=>s+(+it.qty||0),0)} pcs</td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE"></td><td style="padding:4px 6px;border-top:1.5px solid #BFDBFE;text-align:right;color:#1A2E5A">${fmt(c.total)}</td></tr></tfoot></table></td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;font-weight:700">${fmt(paid)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:${due>0?'#DC2626':'#059669'};font-weight:700">${fmt(due)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:center"><span style="background:${sbMap[cst]};color:${scMap[cst]};padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700">${slMap[cst]}</span></td></tr>`;
     return headerRow;
   }).join('');
-  const pR=pmts.map((p,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:7px 9px;border:1px solid #E0E0E0">${fmtD(p.date)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(p.amount)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0">${esc(p.mode)}</td></tr>`).join('');
+  const pR=pmts.map((p,i)=>`<tr style="background:${i%2?'#F9F9F9':'#fff'}"><td style="padding:7px 9px;border:1px solid #E0E0E0">${fmtD(p.date)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;font-weight:700;color:#059669">${fmt(p.amount)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0">${esc(p.mode)}</td><td style="padding:7px 9px;border:1px solid #E0E0E0;color:#666">${esc(p.remarks||'-')}</td></tr>`).join('');
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Statement - ${esc(party.name)}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:13px;color:#1A1A1A}@media print{.np{display:none!important}@page{margin:12mm;size:A4}}.pg{max-width:760px;margin:0 auto;padding:24px}.pb{background:#f0f0f0;padding:10px 16px;display:flex;gap:10px;align-items:center;margin:-24px -24px 24px;flex-wrap:wrap}.pb button{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-family:Arial;font-weight:600}.top{display:flex;justify-content:space-between;border-bottom:3px solid #1A2E5A;padding-bottom:14px;margin-bottom:16px}.co{font-size:19px;font-weight:700;color:#1A2E5A}.cs{font-size:11px;color:#888;margin-top:2px}.meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #E0E0E0;border-radius:6px;overflow:hidden;margin-bottom:14px}.ml{padding:7px 12px;background:#F5F7FA;color:#555;font-weight:600;font-size:12px;border-bottom:1px solid #E8E8E8;border-right:1px solid #E8E8E8}.mv{padding:7px 12px;font-weight:700;border-bottom:1px solid #E8E8E8}.sec{font-weight:700;font-size:12px;color:#1A2E5A;margin:14px 0 7px;text-transform:uppercase;border-bottom:2px solid #1A2E5A;padding-bottom:3px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#1A2E5A;color:#fff;padding:8px 9px;text-align:left;font-size:11px}.db{border:2px solid #1A2E5A;border-radius:8px;padding:13px 16px;display:flex;justify-content:space-between;align-items:center;margin:14px 0;background:#EFF6FF}.sig{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px;padding-top:16px;border-top:1px dashed #CCC}.sl{border-top:1.5px solid #1A1A1A;margin-top:36px;padding-top:5px;font-size:11px;font-weight:600;color:#555;text-align:center}.ft{text-align:center;font-size:10px;color:#AAA;padding:8px 0 0;border-top:1px solid #F0F0F0;margin-top:8px}</style></head><body><div class="pg">
 <div class="pb np">
@@ -9278,7 +9332,7 @@ function printStmt(pid) {
 <div class="sec">Challan Details</div>
 <table><thead><tr><th style="width:10%">Challan</th><th style="width:13%">Date</th><th>Items</th><th style="width:11%;text-align:right">Amount</th><th style="width:11%;text-align:right">Paid</th><th style="width:11%;text-align:right">Balance</th><th style="width:10%;text-align:center">Status</th></tr></thead><tbody>${chR||'<tr><td colspan="7" style="padding:12px;text-align:center;color:#999">No challans</td></tr>'}</tbody><tfoot><tr style="background:#EFF6FF;font-weight:700"><td colspan="3" style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">TOTAL</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">${fmt(chs.reduce((s,c)=>s+c.total,0))}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right;color:#059669">${fmt(settledOnChallans)}</td><td style="padding:7px 9px;border:1px solid #BFDBFE;text-align:right">${fmt(chs.reduce((s,c)=>s+c.total,0)-settledOnChallans)}</td><td style="border:1px solid #BFDBFE"></td></tr>${ob>0?`<tr style="background:#FFF7ED"><td colspan="3" style="padding:7px 9px;border:1px solid #FDE68A;color:#92400E;font-weight:600">Opening Balance</td><td style="padding:7px 9px;border:1px solid #FDE68A;text-align:right;font-weight:700;color:#92400E">${fmt(ob)}</td><td style="padding:7px 9px;border:1px solid #FDE68A;text-align:right;color:#059669;font-weight:700">${fmt(obPaidAmt)}</td><td style="padding:7px 9px;border:1px solid #FDE68A;text-align:right;color:${(ob-obPaidAmt)>0?'#DC2626':'#059669'};font-weight:700">${fmt(Math.max(0,ob-obPaidAmt))}</td><td style="border:1px solid #FDE68A"></td></tr>`:''}</tfoot></table>
 <div class="sec">Payment History</div>
-<table><thead><tr><th style="width:25%">Date</th><th style="width:30%">Amount</th><th>Mode</th></tr></thead><tbody>${pR||'<tr><td colspan="3" style="padding:12px;text-align:center;color:#999">No payments</td></tr>'}</tbody></table>
+<table><thead><tr><th style="width:18%">Date</th><th style="width:20%">Amount</th><th style="width:16%">Mode</th><th>Remarks</th></tr></thead><tbody>${pR||'<tr><td colspan="4" style="padding:12px;text-align:center;color:#999">No payments</td></tr>'}</tbody></table>
 <div class="db"><div style="font-size:13px;font-weight:600;color:#1A2E5A">NET OUTSTANDING</div><div style="font-size:22px;font-weight:700;color:${bal>0?'#DC2626':'#059669'}">${fmt(Math.abs(bal))} ${bal<=0?'(CLEAR)':''}</div></div>
 <div class="sig"><div><div class="sl">Party Signature<br><strong>${esc(party.name)}</strong></div></div><div><div class="sl">Authorised Signatory</div></div></div>
 <div class="ft">Generated: ${new Date().toLocaleString('en-IN')} · ${esc(party.name)}</div>
