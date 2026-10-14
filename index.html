@@ -30,6 +30,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <style>
+.icard.design-missing,.st-irow.design-missing{outline:2px solid #DC2626;outline-offset:1px;background:#FFF5F5;border-radius:10px}
+select.design-select-missing{border:2px solid #DC2626!important;background:#FEF2F2!important;color:#991B1B}
+.design-error{font-size:12px;font-weight:700;color:#B91C1C;line-height:1.4;margin:2px 0 8px;padding:7px 9px;border-radius:7px;background:#FEE2E2}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#F0F2F5;color:#1A1A1A;font-size:14px}
 
@@ -892,7 +895,7 @@ setTimeout(()=>{if(!isOnline)showOfflineAlert();},0);
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-10-14.1-contractor-design-stock';
+const BUILD = '2026-10-14.2-required-bill-design';
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -1753,11 +1756,15 @@ function stPickItem(sel){
 function stRenderDesign(row,it){
   var sel=row.querySelector('.st-dsel'); if(!sel)return;
   var designs=itemDesigns(it),selected=row.dataset.design||'';
-  sel.innerHTML='<option value="">— Select design —</option>'+designs.map(function(d){
+  sel.required=designs.length>0;
+  sel.innerHTML='<option value="">'+(designs.length?'— Select design (required) —':'— Select design —')+'</option>'+designs.map(function(d){
     return '<option value="'+esc(d.code)+'">'+esc(designFullCode(it,d))+' · '+esc(d.name||d.code)+' · ₹'+designRate(it,d)+'</option>';
   }).join('');
   if(selected&&!findDesign(it,selected))sel.innerHTML+='<option value="'+esc(selected)+'">'+esc(selected)+' (unavailable — choose a design)</option>';
   sel.value=selected; sel.style.display=designs.length||selected?'':'none';
+  setBillDesignError(row,row.querySelector('.st-isel'),'');
+  var missing=it&&((designs.length&&!selected)||(selected&&!findDesign(it,selected)));
+  setBillDesignError(row,sel,missing?'Select a design for '+it.name+'.':'');
 }
 function stSetRowItem(row,it,design){
   row.dataset.itemId=it.id; row.dataset.design=design?design.code:'';
@@ -1792,6 +1799,28 @@ function stNameTyped(inp){
   staffCalcTotal();
 }
 function stRateTyped(inp){ delete inp.closest('.st-irow').dataset.autoRate; staffCalcTotal(); }
+function staffValidateDesignRows(){
+  var first=null;
+  document.querySelectorAll('#st-items .st-irow').forEach(function(row){
+    var name=String(row.querySelector('.st-i-name').value||'').trim();
+    var it=staffItems.find(function(x){return x.id===row.dataset.itemId;});
+    if(name&&!row.dataset.itemId){
+      var match=stResolveName(name);
+      if(match){it=match.item;row.dataset.itemId=it.id;row.dataset.design=match.design?match.design.code:'';row.querySelector('.st-isel').value=it.id;}
+    }
+    stRenderDesign(row,name?it:null);
+    if(!name)return;
+    var selected=row.dataset.design||'',missing=it&&((itemDesigns(it).length&&!selected)||(selected&&!findDesign(it,selected)));
+    if(missing){if(!first)first={row:row,select:row.querySelector('.st-dsel')};return;}
+    if(!it&&!row.dataset.itemId&&staffItems.some(function(x){return itemDesigns(x).length&&(normIName(x.name)===normIName(name)||(x.code&&normIName(x.code)===normIName(name)));})){
+      var sel=row.querySelector('.st-isel');
+      setBillDesignError(row,sel,'Select the article and its design.');
+      if(!first)first={row:row,select:sel};
+    }
+  });
+  if(first){first.row.scrollIntoView({behavior:'smooth',block:'center'});first.select.focus();return false;}
+  return true;
+}
 
 function staffFillParties() {
   var sel=document.getElementById('st-party');
@@ -1856,6 +1885,7 @@ function staffCalcTotal() {
 }
 
 async function staffCreateBill() {
+  if(!staffValidateDesignRows())return;
   if(!requireOnline())return;
   if(window._staffSaving){alert('Please wait for your previous bill to save.');return;}
   // Resolve party (existing selection or new)
@@ -4138,6 +4168,7 @@ async function addParty() {
 
 async function saveChallan() {
   if(!canEditLedger())return;
+  if(!validateOwnerBillDesigns('item-rows'))return;
   const pid=document.getElementById('ch-party').value;
   const dt =document.getElementById('ch-date').value;
   if (!pid||!dt) { alert('Select party and date'); return; }
@@ -7568,6 +7599,59 @@ async function bulkCreateFromSelected(){
 
 /* Bind owner rows to the article AND design. Name typing, item picking, and editing all use
    the same state so a previous design cannot leak onto a newly selected article. */
+function setBillDesignError(row,select,message){
+  row.classList.toggle('design-missing',!!message);
+  let error=row.querySelector('.design-error');
+  if(select){
+    select.classList.toggle('design-select-missing',!!message);
+    select.setAttribute('aria-invalid',message?'true':'false');
+    select.setCustomValidity(message||'');
+  }
+  if(!message){
+    if(error)error.remove();
+    if(select)select.removeAttribute('aria-describedby');
+    return;
+  }
+  if(!error){
+    error=document.createElement('div');error.className='design-error';error.setAttribute('role','alert');
+    if(select){
+      if(!select.id)select.id='bill-design-'+(setBillDesignError.seq=(setBillDesignError.seq||0)+1);
+      error.id=select.id+'-error';select.insertAdjacentElement('afterend',error);
+    }else row.appendChild(error);
+  }
+  error.textContent=message;
+  if(select)select.setAttribute('aria-describedby',error.id);
+}
+function ownerBillDesignState(card){
+  const inputs=card.querySelectorAll('input'),name=String(inputs[0].value||'').trim();
+  const bound=normIName(name)===normIName(card.dataset.boundName);
+  const identity=name?resolveBillArticle(bound?{name,itemId:card.dataset.itemId,design:card.dataset.design,code:card.dataset.code}:{name}):null;
+  if(!identity)return {identity:null,required:false,message:''};
+  const it=identity.item,design=identity.designCode;
+  const savedBase=bound&&card.dataset.savedLine==='1'&&card.dataset.allowBase==='1';
+  const required=itemDesigns(it).length>0&&!savedBase;
+  let message=required&&!design?'Select a design for '+it.name+'.':'';
+  if(design&&!identity.design&&!(bound&&card.dataset.historicalDesign===design))message='Select an available design for '+it.name+'.';
+  return {identity,required,message};
+}
+function refreshOwnerDesignError(card){
+  const state=ownerBillDesignState(card),select=document.getElementById(card.id+'-dz');
+  if(select){
+    select.required=state.required;
+    select.setAttribute('aria-label',state.required?'Design (required)':'Design');
+  }
+  setBillDesignError(card,select,state.message);
+  return state;
+}
+function validateOwnerBillDesigns(scope){
+  let first=null;
+  document.querySelectorAll('#'+scope+' .icard').forEach(card=>{
+    const state=refreshOwnerDesignError(card);
+    if(state.message&&!first)first=document.getElementById(card.id+'-dz')||card;
+  });
+  if(first){first.scrollIntoView({block:'center',behavior:'smooth'});first.focus({preventScroll:true});return false;}
+  return true;
+}
 function syncOwnerBillRow(rowId,identity,options){
   const row=document.getElementById(rowId); if(!row)return;
   const opts=options||{},inputs=row.querySelectorAll('input'),dz=document.getElementById(rowId+'-dz');
@@ -7575,6 +7659,7 @@ function syncOwnerBillRow(rowId,identity,options){
   if(!identity){
     ['itemId','design','code','boundName','allowBase','historicalDesign','savedLine'].forEach(k=>delete row.dataset[k]);
     if(dz){dz.innerHTML='';dz.style.display='none';dz.dataset.itemId='';}
+    refreshOwnerDesignError(row);
     return;
   }
   const it=identity.item,d=identity.design,design=String(identity.designCode||'');
@@ -7591,11 +7676,12 @@ function syncOwnerBillRow(rowId,identity,options){
   if(dz){
     const ds=itemDesigns(it);
     dz.dataset.itemId=it.id;
-    dz.innerHTML='<option value="">— select design —</option>'+ds.map(x=>`<option value="${esc(x.code)}">${esc(designFullCode(it,x))} · ${esc(x.name||x.code)} · ₹${designRate(it,x)}</option>`).join('');
+    dz.innerHTML='<option value="">— select design (required) —</option>'+ds.map(x=>`<option value="${esc(x.code)}">${esc(designFullCode(it,x))} · ${esc(x.name||x.code)} · ₹${designRate(it,x)}</option>`).join('');
     if(design&&!d)dz.innerHTML+=`<option value="${esc(design)}">${esc(row.dataset.code||designFullCode(it,{code:design}))} · saved design (removed from master)</option>`;
     dz.value=design;
     dz.style.display=ds.length||design?'':'none';
   }
+  refreshOwnerDesignError(row);
 }
 /* Snapshot fields survive an edit, including designs removed from the current master.
    Existing undifferentiated history stays editable; newly chosen design articles need a design. */
@@ -7615,6 +7701,7 @@ function restoreOwnerBillRow(rowId,line){
     else row.dataset.allowBase='1';
   }
   row.dataset.savedLine='1';
+  refreshOwnerDesignError(row);
 }
 function ownerBillRowLine(card,roundAmount){
   const inputs=card.querySelectorAll('input');
@@ -8762,6 +8849,7 @@ function calcECTotal() {
 
 async function saveEditChallan() {
   if(!canEditLedger())return;
+  if(!validateOwnerBillDesigns('ec-item-rows'))return;
   const cid = curEditChallanIdEC; if(!cid) return;
   const c   = S.challans.find(x=>x.id===cid); if(!c) return;
   const newPid  = document.getElementById('ec-party').value;
