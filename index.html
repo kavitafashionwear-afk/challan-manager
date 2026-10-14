@@ -892,7 +892,7 @@ setTimeout(()=>{if(!isOnline)showOfflineAlert();},0);
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-10-13.1-design-billing-stock';
+const BUILD = '2026-10-14.1-contractor-design-stock';
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -4852,6 +4852,15 @@ function hasOwnCutover(itemId){
    Already written: the moment S.lots is present (Contractor Tracker merged),
    finished-goods receivals dated on/after the item's own start date credit stock.
    Fabric lots are excluded by design. No other engine change is required. */
+/* Contractor Tracker stores article designs as designCode/designFullCode on the lot.
+   Receipt quantities keep only date/pieces/bags, so they inherit that saved lot identity.
+   Keep the older design/code schema readable without rewriting either application's records. */
+function contractorReceiptLine(lot,receipt){
+  const r=receipt||{},l=lot||{};
+  return {name:l.item,itemId:r.itemId||l.itemId,
+    design:r.designCode||r.design||l.designCode||l.design||'',
+    code:r.designFullCode||r.code||l.designFullCode||l.code||''};
+}
 function stockContractorIn(add, cutOf, gcut, unmapped){
   if(!Array.isArray(S.lots)) return;               // tracker not merged yet
   S.lots.forEach(l=>{
@@ -4860,7 +4869,7 @@ function stockContractorIn(add, cutOf, gcut, unmapped){
                : (l.piecesReceived!=null && l.piecesReceived!=='' ? [{date:l.dateReceived, pieces:l.piecesReceived}] : []);
     recs.forEach(r=>{
       const q = +r.pieces || 0; if(!q) return;
-      const match = resolveBillArticle({name:l.item,itemId:l.itemId,design:r.design||l.design,code:r.code||l.code});
+      const match = resolveBillArticle(contractorReceiptLine(l,r));
       if(match){
         if(!_onOrAfter(r.date, cutOf(match.item.id,match.designCode))) return;
         add(match.item.id,match.designCode,'inCon',q,true);
@@ -5610,7 +5619,7 @@ function stockItemMoves(itemId,design){
     if(!l||l.kind==='fabric')return;
     const recs=l.receivals&&l.receivals.length?l.receivals:(l.piecesReceived!=null&&l.piecesReceived!==''?[{date:l.dateReceived,pieces:l.piecesReceived}]:[]);
     recs.forEach(r=>{
-      const q=+r.pieces||0,m=accepts({name:l.item,itemId:l.itemId,design:r.design||l.design,code:r.code||l.code},r.date);if(!q||!m)return;
+      const q=+r.pieces||0,m=accepts(contractorReceiptLine(l,r),r.date);if(!q||!m)return;
       out.push({date:r.date,kind:'in',label:'Lot receival'+suffix(m),qty:q,ref:l.contractorName||''});
     });
   });
