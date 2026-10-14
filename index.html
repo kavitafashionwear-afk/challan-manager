@@ -675,6 +675,24 @@ input[type=checkbox]{width:19px;height:19px;min-width:19px;padding:0;margin:0;-w
 </div></div>
 
 <!-- ══════════ CLOSE SEASON ══════════ -->
+<div class="overlay" id="mo-bill-design" style="z-index:220">
+<div class="mbox" style="max-width:460px"><div class="mhandle"></div>
+  <div class="mhead">
+    <div><h3>Add design</h3><div style="font-size:12px;color:#888" id="bd-sub"></div></div>
+    <button class="xbtn" id="bd-close" onclick="closeBillDesign()" aria-label="Close add design">✕</button>
+  </div>
+  <div class="mbody">
+    <div class="fg"><label for="bd-name">Design name *</label><input id="bd-name" placeholder="e.g. Floral Red" onkeydown="if(event.key==='Enter'){event.preventDefault();saveBillDesign();}"></div>
+    <div class="fg"><label for="bd-rate">Sale rate (optional)</label><input id="bd-rate" type="number" min="0" step="any" inputmode="decimal" onkeydown="if(event.key==='Enter'){event.preventDefault();saveBillDesign();}"><div id="bd-rate-hint" style="font-size:11px;color:#888;margin-top:4px"></div></div>
+    <div style="font-size:12px;margin-bottom:10px">Design code: <strong id="bd-code" style="color:#1A2E5A"></strong></div>
+    <div id="bd-error" role="alert" style="display:none;font-size:12px;color:#B91C1C;background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:9px"></div>
+  </div>
+  <div class="mfoot" style="display:flex;gap:8px">
+    <button class="btn" id="bd-cancel" style="flex:1;justify-content:center" onclick="closeBillDesign()">Cancel</button>
+    <button class="btn pri" id="bd-save" style="flex:1;justify-content:center" onclick="saveBillDesign()">Add &amp; select</button>
+  </div>
+</div></div>
+
 <div class="overlay" id="mo-closeseason">
 <div class="mbox"><div class="mhandle"></div>
   <div class="mhead">
@@ -895,7 +913,7 @@ setTimeout(()=>{if(!isOnline)showOfflineAlert();},0);
 /* ══════════════════════════════
    STATE
 ══════════════════════════════ */
-const BUILD = '2026-10-14.2-required-bill-design';
+const BUILD = '2026-10-14.3-inline-bill-design';
 let S = { parties:[], challans:[], payments:[], settlements:[], overrides:[], items:[], itemMap:[], trash:[], pC:0, cC:0, pyC:0, seasons:[], curSeason:'',
           stock:[], stockMv:[], stockFrom:'', lots:[], returns:[],
           expenses:[], cashOpen:null, ctPays:[], ctAdv:[],
@@ -2526,7 +2544,7 @@ let _deleteIntent={}, _extraJobs=[], _activeJobs=[], _writeFails=0, _lastWriteEr
 let _seasonsLoaded=false, _reconcileDone=false;
 let _chServerLoaded=false,_payServerLoaded=false,_setServerLoaded=false;
 let _renderTimer=null, _offlineNotified=false, _connectionNotified=false, _dataRevision=0;
-const EDIT_MODALS=new Set(['mo-party','mo-challan','mo-payment','mo-del','mo-edit-party','mo-edit-challan','mo-edit-settle','mo-return','mo-import','mo-closeseason','mo-itemedit']);
+const EDIT_MODALS=new Set(['mo-party','mo-challan','mo-payment','mo-del','mo-edit-party','mo-edit-challan','mo-edit-settle','mo-return','mo-import','mo-closeseason','mo-itemedit','mo-bill-design']);
 const clone=x=>JSON.parse(JSON.stringify(x));
 function stableValue(x){
   if(Array.isArray(x)) return x.map(stableValue);
@@ -3790,7 +3808,7 @@ function openModal(type) {
   document.getElementById('mo-'+type).classList.add('open');
 }
 function closeModal(type) { document.getElementById('mo-'+type).classList.remove('open'); }
-document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{ if(e.target===o) o.classList.remove('open'); }));
+document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{ if(e.target===o){if(o.id==='mo-bill-design')closeBillDesign();else o.classList.remove('open');} }));
 
 function openChallanFor(pid) { openModal('challan'); document.getElementById('ch-party').value=pid; }
 function openPayFor(pid) {
@@ -3816,6 +3834,7 @@ function addItemRow() {
   div.innerHTML=`<button class="deli" onclick="document.getElementById('${id}').remove();calcTotal()">✕</button>
     ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',false)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
     <select id="${id}-dz" onchange="pickDesign(this,'${id}',false)" style="width:100%;margin-bottom:6px;font-size:12px;display:none"></select>
+    <button class="btn sm" id="${id}-add-dz" type="button" onclick="openBillDesign('${id}',false)" style="display:none;margin-bottom:6px">＋ Add design</button>
     <input type="text" list="items-dl" placeholder="Item name e.g. Lower, Kurta" oninput="ownNameTyped(this,'${id}',false)">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" oninput="calcItem('${id}')"></div>
@@ -7636,6 +7655,8 @@ function ownerBillDesignState(card){
 }
 function refreshOwnerDesignError(card){
   const state=ownerBillDesignState(card),select=document.getElementById(card.id+'-dz');
+  const addButton=document.getElementById(card.id+'-add-dz');
+  if(addButton)addButton.style.display=state.identity?'':'none';
   if(select){
     select.required=state.required;
     select.setAttribute('aria-label',state.required?'Design (required)':'Design');
@@ -7651,6 +7672,117 @@ function validateOwnerBillDesigns(scope){
   });
   if(first){first.scrollIntoView({block:'center',behavior:'smooth'});first.focus({preventScroll:true});return false;}
   return true;
+}
+let billDesignDraft=null;
+function billDesignError(message){
+  const box=document.getElementById('bd-error');
+  box.textContent=message||'';box.style.display=message?'block':'none';
+}
+function setBillDesignBusy(busy){
+  const completed=!!(billDesignDraft&&billDesignDraft.completed);
+  ['bd-name','bd-rate','bd-save'].forEach(id=>document.getElementById(id).disabled=busy||completed);
+  ['bd-close','bd-cancel'].forEach(id=>document.getElementById(id).disabled=busy);
+  document.getElementById('bd-save').textContent=busy?'Saving…':completed?'Design added':'Add & select';
+}
+function billDesignRequestError(draft){
+  const row=document.getElementById(draft.rowId);
+  if(!row||row!==draft.row)return 'The bill row was removed or replaced. Close this window and use Add design from a current row.';
+  const form=document.getElementById(draft.isEC?'mo-edit-challan':'mo-challan');
+  if(!form||!form.classList.contains('open'))return 'The bill form was closed. Close this window and reopen the bill before adding a design.';
+  const it=(S.items||[]).find(x=>x&&x.id===draft.itemId);
+  if(!it)return 'This article is no longer available. Close this window and select a current article.';
+  const identity=ownerBillDesignState(row).identity;
+  if(!identity||identity.item.id!==draft.itemId)return 'The article on this bill row changed. Close this window and use Add design for the article you want.';
+  return '';
+}
+function billDesignRequestRow(draft){
+  return billDesignRequestError(draft)?null:document.getElementById(draft.rowId);
+}
+function openBillDesign(rowId,isEC){
+  if(billDesignDraft&&billDesignDraft.saving)return;
+  if(!canEditLedger())return;
+  const row=document.getElementById(rowId),state=row?ownerBillDesignState(row):null;
+  if(!state||!state.identity){alert('Select an article before adding its design.');return;}
+  const it=state.identity.item;
+  billDesignDraft={rowId,row,itemId:it.id,isEC:!!isEC,saving:false,completed:false};
+  document.getElementById('bd-sub').textContent=it.name+(it.code?' · '+it.code:'');
+  document.getElementById('bd-name').value='';document.getElementById('bd-rate').value='';
+  document.getElementById('bd-rate').placeholder=String(+it.rate||0);
+  document.getElementById('bd-rate-hint').textContent='Leave blank to use the article default of '+fmt(+it.rate||0)+'.';
+  document.getElementById('bd-code').textContent=designFullCode(it,{code:nextDesignLetter(it)});
+  billDesignError('');setBillDesignBusy(false);
+  document.getElementById('mo-bill-design').classList.add('open');
+  document.getElementById('bd-name').focus();
+}
+function closeBillDesign(){
+  if(billDesignDraft&&billDesignDraft.saving)return;
+  document.getElementById('mo-bill-design').classList.remove('open');billDesignDraft=null;
+}
+function refreshBillDesignRows(itemId){
+  document.querySelectorAll('#item-rows .icard, #ec-item-rows .icard').forEach(card=>{
+    const state=ownerBillDesignState(card);
+    if(!state.identity||state.identity.item.id!==itemId)return;
+    const inputs=card.querySelectorAll('input'),bound=normIName(inputs[0].value)===normIName(card.dataset.boundName);
+    const opts={preserveHistory:true};if(bound)opts.savedCode=card.dataset.code;
+    // Refresh choices and validation while preserving every other line's name, quantity and price.
+    syncOwnerBillRow(card.id,state.identity,opts);
+  });
+}
+async function saveBillDesign(){
+  const draft=billDesignDraft;if(!draft||draft.saving||draft.completed)return;
+  billDesignError('');
+  const requestError=billDesignRequestError(draft);
+  if(requestError){billDesignError(requestError);return;}
+  const nameEl=document.getElementById('bd-name'),rateEl=document.getElementById('bd-rate');
+  const name=String(nameEl.value||'').trim(),rawRate=String(rateEl.value||'').trim();
+  if(!name){billDesignError('Enter a design name.');nameEl.focus();return;}
+  const rate=rawRate===''?'':Number(rawRate);
+  if((rateEl.validity&&rateEl.validity.badInput)||(rawRate!==''&&(!Number.isFinite(rate)||!(rate>0)))){
+    billDesignError('Enter a sale rate greater than zero, or leave it blank to use the article default.');rateEl.focus();return;
+  }
+  if(!canEditLedger())return;
+  const index=(S.items||[]).findIndex(x=>x&&x.id===draft.itemId),original=S.items[index];
+  if(itemDesigns(original).some(d=>d&&normIName(d.name)===normIName(name))){
+    billDesignError('A design named “'+name+'” already exists for this article.');nameEl.focus();return;
+  }
+  const code=nextDesignLetter(original),copy=JSON.parse(JSON.stringify(original));
+  if(!Array.isArray(copy.designs))copy.designs=[];
+  copy.designs.push({code,name,rate});copy.dzSeq=Math.max(+copy.dzSeq||0,letterIndex(code)+1);
+  document.getElementById('bd-code').textContent=designFullCode(copy,{code});
+  draft.saving=true;setBillDesignBusy(true);
+  S.items[index]=copy;_itemCanonIdx=null;invalidateStock();
+  try{
+    const saved=await saveToCloud();
+    if(!saved){
+      // saveToCloud normally restores confirmed data. Also roll back only our own tentative copy
+      // if a failed save left it in place, without replacing a newer server version.
+      const at=(S.items||[]).findIndex(x=>x&&x.id===draft.itemId);
+      if(at!==-1&&S.items[at]===copy)S.items[at]=original;
+      _itemCanonIdx=null;invalidateStock();refreshBillDesignRows(draft.itemId);
+      billDesignError('The design was not saved. Your bill and design entry are still here. Check the connection and retry.');return;
+    }
+    const confirmed=(S.items||[]).find(x=>x&&x.id===draft.itemId),design=confirmed?findDesign(confirmed,code):null;
+    if(!confirmed){billDesignError('The article is no longer available. Your bill and design entry are still here.');return;}
+    if(!design||normIName(design.name)!==normIName(name)){
+      refreshBillDesignRows(draft.itemId);
+      billDesignError('The new design was not kept after the cloud changes were merged. Your entry is still here; review the article and retry.');return;
+    }
+    refreshItemDatalist();refreshBillDesignRows(draft.itemId);
+    const row=billDesignRequestRow(draft);
+    if(!row){
+      draft.completed=true;billDesignError('Design '+designFullCode(confirmed,design)+' was added, but '+billDesignRequestError(draft).replace(/^The /,'the '));return;
+    }
+    const select=document.getElementById(draft.rowId+'-dz');select.value=design.code;
+    pickDesign(select,draft.rowId,draft.isEC);
+    document.getElementById('mo-bill-design').classList.remove('open');billDesignDraft=null;
+  }catch(error){
+    const at=(S.items||[]).findIndex(x=>x&&x.id===draft.itemId);
+    if(at!==-1&&S.items[at]===copy)S.items[at]=original;
+    _itemCanonIdx=null;invalidateStock();refreshBillDesignRows(draft.itemId);
+    billDesignError('The design could not be saved. Your bill and design entry are still here. '+(error&&error.message||''));
+  }finally{
+    draft.saving=false;setBillDesignBusy(false);
+  }
 }
 function syncOwnerBillRow(rowId,identity,options){
   const row=document.getElementById(rowId); if(!row)return;
@@ -8814,6 +8946,7 @@ function addECItemRow(item) {
     <button class="deli" onclick="document.getElementById('${id}').remove();calcECTotal()">✕</button>
     ${(S.items&&S.items.length)?`<select onchange="pickItem(this,'${id}',true)" style="width:100%;margin-bottom:6px;font-size:12px">${itemOptions()}</select>`:''}
     <select id="${id}-dz" onchange="pickDesign(this,'${id}',true)" style="width:100%;margin-bottom:6px;font-size:12px;display:none"></select>
+    <button class="btn sm" id="${id}-add-dz" type="button" onclick="openBillDesign('${id}',true)" style="display:none;margin-bottom:6px">＋ Add design</button>
     <input type="text" list="items-dl" placeholder="Item name e.g. Lower, Kurta" value="${item?esc(item.name):''}" oninput="ownNameTyped(this,'${id}',true)">
     <div class="inum">
       <div><label style="font-size:10px">Qty</label><input type="number" placeholder="0" inputmode="numeric" value="${item?item.qty:''}" oninput="calcECItem('${id}')"></div>
